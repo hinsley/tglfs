@@ -21,6 +21,6 @@ pub fn ufid(file_path: &str) -> Result<String, std::io::Error> {
         hasher.update(&buffer[..count]);
     }
 
-    let hash = hasher.finalize();
+    let hash: sha2::digest::generic_array::GenericArray<u8, sha2::digest::typenum::UInt<sha2::digest::typenum::UInt<sha2::digest::typenum::UInt<sha2::digest::typenum::UInt<sha2::digest::typenum::UInt<sha2::digest::typenum::UInt<sha2::digest::typenum::UTerm, sha2::digest::consts::B1>, sha2::digest::consts::B0>, sha2::digest::consts::B0>, sha2::digest::consts::B0>, sha2::digest::consts::B0>, sha2::digest::consts::B0>> = hasher.finalize();
     Ok(format!("{:x}", hash))
 }
