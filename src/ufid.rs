@@ -1,9 +1,9 @@
-// Unique file identifiers
+// Unique file identifiers.
 // We use a SHA-256 hash of the file's contents as its identifier.
 
 use std::fs::File;
 use std::io::{BufReader, Read};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 // Unique File IDentifier
 pub fn ufid(file_path: &str) -> Result<String, std::io::Error> {

@@ -1,3 +1,4 @@
+mod chunks;
 mod ufid;
 use ufid::ufid;
 
