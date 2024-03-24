@@ -34,7 +34,7 @@ async def main():
                 file_path = input("Enter the file path: ")
                 encryption_password = None
                 while True:
-                    encryption_password = getpass("Password for decryption (hidden & optional): ")
+                    encryption_password = getpass("Password for encryption (hidden & optional): ")
                     confirm = getpass("Confirm password: ")
                     if encryption_password == confirm:
                         break
