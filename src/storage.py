@@ -16,7 +16,7 @@ with open("config.json") as config_file:
     config_data = json.load(config_file)
     CHUNK_SIZE_GB = config_data["chunk_size_gb"]
 
-def get_chunk(file_path:str, chunk_index:int, chunk_size:int=CHUNK_SIZE_GB*GB) -> bytes:
+def get_chunk(file_path:str, chunk_index:int, chunk_size:int=int(CHUNK_SIZE_GB*GB)) -> bytes:
     with open(file_path, "rb") as file:
         file.seek(chunk_index * chunk_size)
         chunk_data = file.read(chunk_size)
@@ -37,7 +37,7 @@ def save_chunk(file_ufid:str, chunk_index:int, chunk:bytes, dir_path:str=".") ->
     # Return the path of the created chunk file.
     return chunk_file_path
 
-def get_num_chunks(file_path:str, chunk_size:int=CHUNK_SIZE_GB*GB) -> int:
+def get_num_chunks(file_path:str, chunk_size:int=int(CHUNK_SIZE_GB*GB)) -> int:
     file_size = os.path.getsize(file_path)
     num_chunks = (file_size + chunk_size - 1) // chunk_size
     return num_chunks

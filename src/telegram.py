@@ -82,11 +82,16 @@ async def download_file(client:TelegramClient, tgfs_file:TgfsFile, decryption_pa
     # Download file chunk-by-chunk and stream to a file locally.
     for i in range(tgfs_file.num_chunks):
         search_query = f"tgfs {tgfs_file.ufid} chunk {i+1}/{tgfs_file.num_chunks} {tgfs_file.file_name}"
-        async for message in client.iter_messages("me", search=search_query):
+        # Store all message objects in a list.
+        messages = await client.get_messages("me", search=search_query)
+        # Sort messages by the chunk index of each.
+        messages.sort(key=lambda m: int(m.message[76:76+m.message[76:].index("/")]))
+        # Download each chunk and decrypt it.
+        for message in messages:
             chunk_file_name = await message.download_media()
             with open(chunk_file_name, "rb") as chunk_file:
                 chunk_data = decrypt(chunk_file.read(), decryption_password)
                 with open(tgfs_file.file_name, "ab") as file:
                     file.write(chunk_data)
             os.remove(chunk_file_name)
-            print(f"Finished downloading chunk {i+1}/{tgfs_file.num_chunks} of file `{tgfs_file.file_name}`.")
+        print(f"Finished downloading chunk {i+1}/{tgfs_file.num_chunks} of file `{tgfs_file.file_name}`.")
