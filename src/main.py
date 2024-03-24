@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 from getpass import getpass
 import json
 import os
