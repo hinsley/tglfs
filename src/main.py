@@ -1,3 +1,4 @@
+from getpass import getpass
 import json
 import os
 
@@ -29,7 +30,14 @@ async def main():
             if command == "1":
                 print()
                 file_path = input("Enter the file path: ")
-                tgfs_file = await telegram.store_file(client, file_path)
+                encryption_password = None
+                while True:
+                    encryption_password = getpass("Password for decryption (hidden & optional): ")
+                    confirm = getpass("Confirm password: ")
+                    if encryption_password == confirm:
+                        break
+                    print("Passwords do not match. Please try again.")
+                tgfs_file = await telegram.store_file(client, file_path, encryption_password)
                 print(tgfs_file)
             elif command == "2":
                 print()
@@ -53,7 +61,8 @@ async def main():
                         continue
                     print("Overwriting file.")
                     os.remove(file_name)
-                await telegram.download_file(client, tgfs_file)
+                decryption_password = getpass("Password for decryption (hidden & optional): ")
+                await telegram.download_file(client, tgfs_file, decryption_password)
             elif command == "4":
                 break
             else: 
