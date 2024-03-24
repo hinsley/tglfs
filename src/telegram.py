@@ -36,16 +36,17 @@ async def store_file(client:TelegramClient, file_path:str, encryption_password:s
         chunk = encrypt(storage.get_chunk(file_path, i), encryption_password)
         chunk_file_path = storage.save_chunk(file_ufid, i, chunk)
 
-        # Send the chunk to Telegram.
-        file_caption = f"tgfs {file_ufid} chunk {i+1}/{num_chunks} {os.path.basename(file_path)}"
-        await client.send_message(
-            "me",
-            file_caption,
-            file=chunk_file_path
-        )
-        
-        # Remove the chunk file locally.
-        os.remove(chunk_file_path)
+        try:
+            # Send the chunk to Telegram.
+            file_caption = f"tgfs {file_ufid} chunk {i+1}/{num_chunks} {os.path.basename(file_path)}"
+            await client.send_message(
+                "me",
+                file_caption,
+                file=chunk_file_path
+            )
+        finally:
+            # Remove the chunk file locally.
+            os.remove(chunk_file_path)
         print(f"Uploaded chunk {i+1}/{num_chunks}.")
     
     return tgfs_file
@@ -89,9 +90,11 @@ async def download_file(client:TelegramClient, tgfs_file:TgfsFile, decryption_pa
         # Download each chunk and decrypt it.
         for message in messages:
             chunk_file_name = await message.download_media()
-            with open(chunk_file_name, "rb") as chunk_file:
-                chunk_data = decrypt(chunk_file.read(), decryption_password)
-                with open(tgfs_file.file_name, "ab") as file:
-                    file.write(chunk_data)
-            os.remove(chunk_file_name)
+            try:
+                with open(chunk_file_name, "rb") as chunk_file:
+                    chunk_data = decrypt(chunk_file.read(), decryption_password)
+                    with open(tgfs_file.file_name, "ab") as file:
+                        file.write(chunk_data)
+            finally:
+                os.remove(chunk_file_name)
         print(f"Finished downloading chunk {i+1}/{tgfs_file.num_chunks} of file `{tgfs_file.file_name}`.")
