@@ -1,4 +1,3 @@
-import datetime
 import json
 import os
 
@@ -7,9 +6,6 @@ from telethon import TelegramClient
 import telegram
 
 # Load config data.
-api_id = 0
-api_hash = ""
-phone_number = ""
 with open("config.json") as config_file:
     config_data = json.load(config_file)
     api_id = config_data["api_id"]
@@ -24,7 +20,7 @@ async def main():
     while True:
         print()
         print("Enter a command:")
-        print("1. Send a file")
+        print("1. Upload a file")
         print("2. Search for a file")
         print("3. Download a file")
         print("4. Exit")
@@ -41,12 +37,8 @@ async def main():
                 tgfs_files = await telegram.lookup_file(client, query_file_name)
                 for file_ufid in tgfs_files:
                     print()
-                    print(f"UFID: {file_ufid}")
-                    print(f"File name: {tgfs_files[file_ufid].file_name}")
-                    print(f"File size (bytes): {tgfs_files[file_ufid].file_size}")
-                    print(f"Timestamp: {datetime.datetime.fromtimestamp(tgfs_files[file_ufid].time).strftime('%Y-%m-%d %H:%M:%S')}")
-
-                print(f"{len(tgfs_files)} files found.")
+                    print(tgfs_files[file_ufid])
+                print(f"{len(tgfs_files)} file(s) found.")
             elif command == "3":
                 print()
                 file_ufid = input("Enter the UFID of the file to download: ")

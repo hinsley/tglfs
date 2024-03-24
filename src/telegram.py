@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Dict
+import datetime
 import os
 import tempfile
 import time
@@ -16,6 +17,9 @@ class TgfsFile:
     file_size: int # In bytes.
     num_chunks: int
     time: int # Unix timestamp.
+
+    def __str__(self):
+        return f"UFID: {self.ufid}\nFile name: {self.file_name}\nFile size (bytes): {self.file_size}\nTimestamp: {datetime.datetime.fromtimestamp(self.time).strftime('%Y-%m-%d %H:%M:%S')}"
 
 async def store_file(client:TelegramClient, file_path:str) -> TgfsFile:
     file_ufid = ufid(file_path)
@@ -42,7 +46,7 @@ async def store_file(client:TelegramClient, file_path:str) -> TgfsFile:
         
         # Remove the chunk file locally.
         os.remove(chunk_file_path)
-        print(f"Sent file {file_ufid} chunk {i+1}/{num_chunks}.")
+        print(f"Uploaded chunk {i+1}/{num_chunks}.")
     
     return tgfs_file
 
