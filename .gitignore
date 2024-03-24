@@ -1,1 +1,26 @@
-/target
+# Python compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+env/
+.env
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Distribution files
+dist/
+build/
+*.egg-info/
+
+# Other
+.DS_Store
+Thumbs.db
+*.session
