@@ -3,5 +3,5 @@ In order to upload large files to Telegram, we subdivide them into smaller files
 
 ### Caption annotations to aid in search
 ```
-tgfs <ufid> chunk <chunk_id>/<total_num_chunks> <filename>
+tglfs <ufid> chunk <chunk_id>/<total_num_chunks> <filename>
 ```

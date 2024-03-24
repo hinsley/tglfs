@@ -15,7 +15,7 @@ with open("config.json") as config_file:
     api_hash = config_data["api_hash"]
     phone_number = config_data["phone"]
 
-client = TelegramClient("tgfs", api_id, api_hash)
+client = TelegramClient("tglfs", api_id, api_hash)
 
 async def main():
     await client.start(phone=phone_number)
@@ -39,23 +39,23 @@ async def main():
                     if encryption_password == confirm:
                         break
                     print("Passwords do not match. Please try again.")
-                tgfs_file = await telegram.store_file(client, file_path, encryption_password)
-                print(tgfs_file)
+                tglfs_file = await telegram.store_file(client, file_path, encryption_password)
+                print(tglfs_file)
             elif command == "2":
                 print()
                 query_file_name = input("Enter the file name to look up: ")
-                tgfs_files = await telegram.lookup_file(client, query_file_name)
-                for file_ufid in tgfs_files:
+                tglfs_files = await telegram.lookup_file(client, query_file_name)
+                for file_ufid in tglfs_files:
                     print()
-                    print(tgfs_files[file_ufid])
-                print(f"{len(tgfs_files)} file(s) found.")
+                    print(tglfs_files[file_ufid])
+                print(f"{len(tglfs_files)} file(s) found.")
             elif command == "3":
                 print()
                 file_ufid = input("Enter the UFID of the file to download: ")
-                tgfs_files = await telegram.lookup_file(client, file_ufid) # Note: This method is a little inefficient.
-                tgfs_file = tgfs_files[file_ufid]
+                tglfs_files = await telegram.lookup_file(client, file_ufid) # Note: This method is a little inefficient.
+                tglfs_file = tglfs_files[file_ufid]
                 # Check if file with same name exists in current directory.
-                file_name = tgfs_file.file_name
+                file_name = tglfs_file.file_name
                 if os.path.exists(file_name):
                     confirm = input(f"File {file_name} already exists. Overwrite? [y/n] ")
                     if confirm.lower().strip() != "y":
@@ -64,7 +64,7 @@ async def main():
                     print("Overwriting file.")
                     os.remove(file_name)
                 decryption_password = getpass("Password for decryption (hidden & optional): ")
-                await telegram.download_file(client, tgfs_file, decryption_password)
+                await telegram.download_file(client, tglfs_file, decryption_password)
             elif command == "4":
                 break
             else: 

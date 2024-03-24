@@ -1,5 +1,5 @@
-# tgfs
-File storage on Telegram
+# tglfs
+Large file storage on Telegram
 
 ## Getting started
 Install dependencies:
