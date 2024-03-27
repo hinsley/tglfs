@@ -53,6 +53,8 @@ async def main():
             elif command == "3":
                 print()
                 file_ufid = input("Enter the UFID of the file to rename: ")
+                if len(file_ufid) != 64:
+                    raise ValueError("Invalid UFID.")
                 tglfs_files = await telegram.lookup_file(client, file_ufid) # Note: This method is a little inefficient.
                 tglfs_file = tglfs_files[file_ufid]
                 print(f"Current file name: `{tglfs_file.file_name}`")
@@ -62,6 +64,8 @@ async def main():
             elif command == "4":
                 print()
                 file_ufid = input("Enter the UFID of the file to download: ")
+                if len(file_ufid) != 64:
+                    raise ValueError("Invalid UFID.")
                 tglfs_files = await telegram.lookup_file(client, file_ufid) # Note: This method is a little inefficient.
                 tglfs_file = tglfs_files[file_ufid]
                 # Check if file with same name exists in current directory.
