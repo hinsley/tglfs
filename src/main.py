@@ -17,6 +17,7 @@ with open("config.json") as config_file:
 
 client = TelegramClient("tglfs", api_id, api_hash)
 
+
 async def main():
     await client.start(phone=phone_number)
 
@@ -35,12 +36,16 @@ async def main():
                 file_path = input("Enter the file path: ")
                 encryption_password = None
                 while True:
-                    encryption_password = getpass("Password for encryption (hidden & optional): ")
+                    encryption_password = getpass(
+                        "Password for encryption (hidden & optional): "
+                    )
                     confirm = getpass("Confirm password: ")
                     if encryption_password == confirm:
                         break
                     print("Passwords do not match. Please try again.")
-                tglfs_file = await telegram.store_file(client, file_path, encryption_password)
+                tglfs_file = await telegram.store_file(
+                    client, file_path, encryption_password
+                )
                 print(tglfs_file)
             elif command == "2":
                 print()
@@ -55,7 +60,9 @@ async def main():
                 file_ufid = input("Enter the UFID of the file to rename: ")
                 if len(file_ufid) != 64:
                     raise ValueError("Invalid UFID.")
-                tglfs_files = await telegram.lookup_file(client, file_ufid) # Note: This method is a little inefficient.
+                tglfs_files = await telegram.lookup_file(
+                    client, file_ufid
+                )  # Note: This method is a little inefficient.
                 tglfs_file = tglfs_files[file_ufid]
                 print(f"Current file name: `{tglfs_file.file_name}`")
                 new_file_name = input("Enter new file name: ")
@@ -66,29 +73,36 @@ async def main():
                 file_ufid = input("Enter the UFID of the file to download: ")
                 if len(file_ufid) != 64:
                     raise ValueError("Invalid UFID.")
-                tglfs_files = await telegram.lookup_file(client, file_ufid) # Note: This method is a little inefficient.
+                tglfs_files = await telegram.lookup_file(
+                    client, file_ufid
+                )  # Note: This method is a little inefficient.
                 tglfs_file = tglfs_files[file_ufid]
                 # Check if file with same name exists in current directory.
                 file_name = tglfs_file.file_name
                 if os.path.exists(file_name):
-                    confirm = input(f"File {file_name} already exists. Overwrite? [y/n] ")
+                    confirm = input(
+                        f"File {file_name} already exists. Overwrite? [y/n] "
+                    )
                     if confirm.lower().strip() != "y":
                         print("Download cancelled.")
                         continue
                     print("Overwriting file.")
                     os.remove(file_name)
-                decryption_password = getpass("Password for decryption (hidden & optional): ")
+                decryption_password = getpass(
+                    "Password for decryption (hidden & optional): "
+                )
                 await telegram.download_file(client, tglfs_file, decryption_password)
                 print("Download complete.")
             elif command == "5":
                 break
-            else: 
+            else:
                 print("Invalid command.")
         except Exception as e:
             print("An error occurred:", e)
             continue
-    
+
     await client.disconnect()
+
 
 with client:
     client.loop.run_until_complete(main())
