@@ -27,8 +27,9 @@ async def main():
         print("1. Upload a file")
         print("2. Search for a file")
         print("3. Rename a file")
-        print("4. Download a file")
-        print("5. Exit")
+        print("4. Delete a file")
+        print("5. Download a file")
+        print("6. Exit")
         command = input().strip()
         try:
             if command == "1":
@@ -70,6 +71,26 @@ async def main():
                 print("File renamed successfully.")
             elif command == "4":
                 print()
+                file_ufid = input("Enter the UFID of the file to delete: ")
+                if len(file_ufid) != 64:
+                    raise ValueError("Invalid UFID.")
+                tglfs_files = await telegram.lookup_file(
+                    client, file_ufid
+                )  # Note: This method is a little inefficient.
+                tglfs_file = tglfs_files[file_ufid]
+                # Confirm deletion.
+                print("Deletion candidate:")
+                print(tglfs_file)
+                print()
+                confirm = input("Are you sure you want to delete this file? [y/n] ")
+                if confirm.lower().strip() != "y":
+                    print("Deletion cancelled.")
+                    continue
+                print("Deleting file.")
+                await telegram.delete_file(client, tglfs_file)
+                print("Deletion complete.")
+            elif command == "5":
+                print()
                 file_ufid = input("Enter the UFID of the file to download: ")
                 if len(file_ufid) != 64:
                     raise ValueError("Invalid UFID.")
@@ -93,7 +114,7 @@ async def main():
                 )
                 await telegram.download_file(client, tglfs_file, decryption_password)
                 print("Download complete.")
-            elif command == "5":
+            elif command == "6":
                 break
             else:
                 print("Invalid command.")

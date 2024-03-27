@@ -43,9 +43,7 @@ async def store_file(
         try:
             # Send the chunk to Telegram.
             file_caption = f"tglfs {file_ufid} chunk {i+1}/{num_chunks} {os.path.basename(file_path)}"
-            await client.send_message(
-                "me", file_caption, file=chunk_file_path, allow_cache=False
-            )
+            await client.send_message("me", file_caption, file=chunk_file_path)
         finally:
             # Remove the chunk file locally.
             os.remove(chunk_file_path)
@@ -118,4 +116,14 @@ async def rename_file(
         prefix = msg[: 77 + msg[77:].index(" ")]
         await message.edit(f"{prefix} {new_file_name}")
         print(f"Chunk {i}/{tglfs_file.num_chunks} renamed.")
+        i += 1
+
+
+async def delete_file(client: TelegramClient, tglfs_file: TglfsFile) -> None:
+    # Get a list of all message objects containing chunks of the file.
+    search_query = f"tglfs {tglfs_file.ufid} chunk"
+    i = 1
+    async for message in client.iter_messages("me", search=search_query):
+        await message.delete()
+        print(f"Chunk {i}/{tglfs_file.num_chunks} deleted.")
         i += 1

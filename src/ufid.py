@@ -6,7 +6,7 @@ import os
 
 KB = 1024
 MB = 1024 * KB
-GB = 1024 * GB
+GB = 1024 * MB
 
 
 def ufid(file_path: str, chunk_size: int = MB) -> str:
