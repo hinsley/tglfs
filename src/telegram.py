@@ -83,12 +83,8 @@ async def download_file(client:TelegramClient, tglfs_file:TglfsFile, decryption_
     # Download file chunk-by-chunk and stream to a file locally.
     for i in range(tglfs_file.num_chunks):
         search_query = f"tglfs {tglfs_file.ufid} chunk {i+1}/{tglfs_file.num_chunks} {tglfs_file.file_name}"
-        # Store all message objects in a list.
-        messages = await client.get_messages("me", search=search_query)
-        # Sort messages by the chunk index of each.
-        messages.sort(key=lambda m: int(m.message[77:77+m.message[77:].index("/")]))
         # Download each chunk and decrypt it.
-        for message in messages:
+        async for message in client.iter_messages("me", search=search_query):
             chunk_file_name = await message.download_media()
             try:
                 with open(chunk_file_name, "rb") as chunk_file:
@@ -97,4 +93,17 @@ async def download_file(client:TelegramClient, tglfs_file:TglfsFile, decryption_
                         file.write(chunk_data)
             finally:
                 os.remove(chunk_file_name)
+                break
         print(f"Finished downloading chunk {i+1}/{tglfs_file.num_chunks} of file `{tglfs_file.file_name}`.")
+
+async def rename_file(client:TelegramClient, tglfs_file:TglfsFile, new_file_name:str) -> None:
+    # Get a list of all message objects containing chunks of the file.
+    search_query = f"tglfs {tglfs_file.ufid} chunk"
+    i = 1
+    async for message in client.iter_messages("me", search=search_query):
+        msg = message.message
+        prefix = msg[:77+msg[77:].index(" ")]
+        await message.edit(f"{prefix} {new_file_name}")
+        print(f"Chunk {i}/{tglfs_file.num_chunks} renamed.")
+        i += 1
+

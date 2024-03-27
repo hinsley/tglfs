@@ -25,8 +25,9 @@ async def main():
         print("Enter a command:")
         print("1. Upload a file")
         print("2. Search for a file")
-        print("3. Download a file")
-        print("4. Exit")
+        print("3. Rename a file")
+        print("4. Download a file")
+        print("5. Exit")
         command = input().strip()
         try:
             if command == "1":
@@ -51,6 +52,15 @@ async def main():
                 print(f"{len(tglfs_files)} file(s) found.")
             elif command == "3":
                 print()
+                file_ufid = input("Enter the UFID of the file to rename: ")
+                tglfs_files = await telegram.lookup_file(client, file_ufid) # Note: This method is a little inefficient.
+                tglfs_file = tglfs_files[file_ufid]
+                print(f"Current file name: `{tglfs_file.file_name}`")
+                new_file_name = input("Enter new file name: ")
+                await telegram.rename_file(client, tglfs_file, new_file_name)
+                print("File renamed successfully.")
+            elif command == "4":
+                print()
                 file_ufid = input("Enter the UFID of the file to download: ")
                 tglfs_files = await telegram.lookup_file(client, file_ufid) # Note: This method is a little inefficient.
                 tglfs_file = tglfs_files[file_ufid]
@@ -65,7 +75,8 @@ async def main():
                     os.remove(file_name)
                 decryption_password = getpass("Password for decryption (hidden & optional): ")
                 await telegram.download_file(client, tglfs_file, decryption_password)
-            elif command == "4":
+                print("Download complete.")
+            elif command == "5":
                 break
             else: 
                 print("Invalid command.")
