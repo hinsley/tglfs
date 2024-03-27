@@ -97,4 +97,5 @@ async def download_file(client:TelegramClient, tglfs_file:TglfsFile, decryption_
                         file.write(chunk_data)
             finally:
                 os.remove(chunk_file_name)
+                break
         print(f"Finished downloading chunk {i+1}/{tglfs_file.num_chunks} of file `{tglfs_file.file_name}`.")
