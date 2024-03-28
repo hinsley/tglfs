@@ -31,14 +31,24 @@ async def store_file(
     tglfs_file = TglfsFile(
         ufid=file_ufid,
         file_name=os.path.basename(file_path),
-        encrypted_file_size=os.path.getsize(file_path),
+        encrypted_file_size=0,  # Hasn't been encrypted yet, so we don't know.
         num_chunks=num_chunks,
         time=int(time.time()),
     )
-    for i in range(num_chunks):
+    # Search for partial uploads for resuming.
+    search_query = f"tglfs {tglfs_file.ufid} chunk"
+    largest_chunk_uploaded = 0  # No chunks have been found, so we write 0 (1-indexing).
+    async for message in client.iter_messages("me", search=search_query):
+        tglfs_file.encrypted_file_size += message.document.size
+        msg = message.message
+        chunk_index = int(msg[77 : 77 + msg[77:].index("/")])
+        largest_chunk_uploaded = max([largest_chunk_uploaded, chunk_index])
+    # Upload missing chunks.
+    for i in range(largest_chunk_uploaded, num_chunks):
         # Store a chunk in a local file.
         chunk = encrypt(storage.get_chunk(file_path, i), encryption_password)
         chunk_file_path = storage.save_chunk(file_ufid, i, chunk)
+        tglfs_file.encrypted_file_size += os.path.getsize(chunk_file_path)
 
         try:
             # Send the chunk to Telegram.
@@ -62,7 +72,7 @@ async def lookup_file(
         msg = message.message
         file_ufid = msg[6:70]
         chunk_size = message.document.size
-        chunk_index = msg[71 : 71 + msg[71:].index("/")]
+        chunk_index = msg[77 : 77 + msg[77:].index("/")]
         num_chunks = int(msg[71 + msg[71:].index("/") + 1 : 77 + msg[77:].index(" ")])
         file_name = msg[77 + msg[77:].index(" ") + 1 :]
         chunk_time = int(message.date.timestamp())
