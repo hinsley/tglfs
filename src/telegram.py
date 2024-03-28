@@ -152,11 +152,13 @@ async def rename_file(
         i += 1
 
 
-async def delete_file(client: TelegramClient, tglfs_file: TglfsFile) -> None:
+async def delete_file(
+    client: TelegramClient, tglfs_file: TglfsFile, source: str = "me"
+) -> None:
     # Get a list of all message objects containing chunks of the file.
     search_query = f"tglfs {tglfs_file.ufid} chunk"
     i = 1
-    async for message in client.iter_messages("me", search=search_query):
+    async for message in client.iter_messages(source, search=search_query):
         await message.delete()
         print(f"Chunk {i}/{tglfs_file.num_chunks} deleted.")
         i += 1
