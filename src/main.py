@@ -26,10 +26,11 @@ async def main():
         print("Enter a command:")
         print("1. Upload a file")
         print("2. Search for a file")
-        print("3. Rename a file")
-        print("4. Delete a file")
-        print("5. Download a file")
-        print("6. Exit")
+        print("3. Send a file")
+        print("4. Rename a file")
+        print("5. Delete a file")
+        print("6. Download a file")
+        print("7. Exit")
         command = input().strip()
         try:
             if command == "1":
@@ -58,9 +59,21 @@ async def main():
                 print(f"{len(tglfs_files)} file(s) found.")
             elif command == "3":
                 print()
+                file_ufid = input("Enter the UFID of the file to send: ")
+                if len(file_ufid) != 64:
+                    raise KeyError("Invalid UFID.")
+                tglfs_files = await telegram.lookup_file(
+                    client, file_ufid
+                )  # Note: This method is a little inefficient.
+                tglfs_file = tglfs_files[file_ufid]
+                recipient_id = input("Enter the identifier of the recipient: ")
+                await telegram.send_file(client, tglfs_file, recipient_id)
+                print("File sent successfully.")
+            elif command == "4":
+                print()
                 file_ufid = input("Enter the UFID of the file to rename: ")
                 if len(file_ufid) != 64:
-                    raise ValueError("Invalid UFID.")
+                    raise KeyError("Invalid UFID.")
                 tglfs_files = await telegram.lookup_file(
                     client, file_ufid
                 )  # Note: This method is a little inefficient.
@@ -69,11 +82,11 @@ async def main():
                 new_file_name = input("Enter new file name: ")
                 await telegram.rename_file(client, tglfs_file, new_file_name)
                 print("File renamed successfully.")
-            elif command == "4":
+            elif command == "5":
                 print()
                 file_ufid = input("Enter the UFID of the file to delete: ")
                 if len(file_ufid) != 64:
-                    raise ValueError("Invalid UFID.")
+                    raise KeyError("Invalid UFID.")
                 tglfs_files = await telegram.lookup_file(
                     client, file_ufid
                 )  # Note: This method is a little inefficient.
@@ -89,11 +102,11 @@ async def main():
                 print("Deleting file.")
                 await telegram.delete_file(client, tglfs_file)
                 print("Deletion complete.")
-            elif command == "5":
+            elif command == "6":
                 print()
                 file_ufid = input("Enter the UFID of the file to download: ")
                 if len(file_ufid) != 64:
-                    raise ValueError("Invalid UFID.")
+                    raise KeyError("Invalid UFID.")
                 tglfs_files = await telegram.lookup_file(
                     client, file_ufid
                 )  # Note: This method is a little inefficient.
@@ -114,7 +127,7 @@ async def main():
                 )
                 await telegram.download_file(client, tglfs_file, decryption_password)
                 print("Download complete.")
-            elif command == "6":
+            elif command == "7":
                 break
             else:
                 print("Invalid command.")

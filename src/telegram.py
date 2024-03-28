@@ -93,9 +93,21 @@ async def lookup_file(
     return files
 
 
+async def send_file(
+    client: TelegramClient, tglfs_file: TglfsFile, recipient_id: str
+) -> None:
+    # Get a list of all message objects containing chunks of the file.
+    search_query = f"tglfs {tglfs_file.ufid} chunk"
+    i = 1
+    async for message in client.iter_messages("me", search=search_query):
+        await message.forward_to(recipient_id)
+        print(f"Chunk {i}/{tglfs_file.num_chunks} sent.")
+        i += 1
+
+
 async def download_file(
     client: TelegramClient, tglfs_file: TglfsFile, decryption_password: str
-) -> bytes:
+) -> None:
     # Download file chunk-by-chunk and stream to a file locally.
     for i in range(tglfs_file.num_chunks):
         search_query = f"tglfs {tglfs_file.ufid} chunk {i+1}/{tglfs_file.num_chunks} {tglfs_file.file_name}"
