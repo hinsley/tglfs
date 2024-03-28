@@ -78,7 +78,7 @@ async def main():
                 if len(file_ufid) != 64:
                     raise KeyError("Invalid UFID.")
                 tglfs_files = await telegram.lookup_file(
-                    client, file_ufid, source=sender_id
+                    client, file_ufid, source=recipient_id
                 )  # Note: This method is a little inefficient.
                 tglfs_file = tglfs_files[file_ufid]
                 # Confirm unsend.
