@@ -63,12 +63,12 @@ async def store_file(
 
 
 async def lookup_file(
-    client: TelegramClient, query_file_name: str
+    client: TelegramClient, query_file_name: str, source: str = "me"
 ) -> Dict[str, TglfsFile]:
     files: Dict[str, TglfsFile] = {}
     search_query = f"tglfs {query_file_name} chunk"
 
-    async for message in client.iter_messages("me", search=search_query):
+    async for message in client.iter_messages(source, search=search_query):
         msg = message.message
         file_ufid = msg[6:70]
         chunk_size = message.document.size
@@ -102,6 +102,17 @@ async def send_file(
     async for message in client.iter_messages("me", search=search_query):
         await message.forward_to(recipient_id)
         print(f"Chunk {i}/{tglfs_file.num_chunks} sent.")
+        i += 1
+
+
+async def receive_file(
+    client: TelegramClient, tglfs_file: TglfsFile, sender_id: str
+) -> None:
+    search_query = f"tglfs {tglfs_file.ufid} chunk"
+    i = 1
+    async for message in client.iter_messages(sender_id, search=search_query):
+        await message.forward_to("me")
+        print(f"Chunk {i}/{tglfs_file.num_chunks} received.")
         i += 1
 
 
