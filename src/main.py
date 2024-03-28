@@ -50,6 +50,7 @@ async def main():
                 tglfs_file = await telegram.store_file(
                     client, file_path, encryption_password
                 )
+                print("Upload complete.")
                 print(tglfs_file)
             elif command == "2":
                 print()

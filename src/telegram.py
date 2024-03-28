@@ -26,6 +26,7 @@ class TglfsFile:
 async def store_file(
     client: TelegramClient, file_path: str, encryption_password: str
 ) -> TglfsFile:
+    print("Calculating UFID.")
     file_ufid = ufid(file_path)
     num_chunks = storage.get_num_chunks(file_path)
     tglfs_file = TglfsFile(
@@ -46,18 +47,19 @@ async def store_file(
     # Upload missing chunks.
     for i in range(largest_chunk_uploaded, num_chunks):
         # Store a chunk in a local file.
+        print(f"Encrypting chunk {i+1}/{num_chunks}.")
         chunk = encrypt(storage.get_chunk(file_path, i), encryption_password)
         chunk_file_path = storage.save_chunk(file_ufid, i, chunk)
         tglfs_file.encrypted_file_size += os.path.getsize(chunk_file_path)
 
+        print(f"Uploading chunk {i+1}/{num_chunks}.")
         try:
             # Send the chunk to Telegram.
             file_caption = f"tglfs {file_ufid} chunk {i+1}/{num_chunks} {os.path.basename(file_path)}"
-            await client.send_message("me", file_caption, file=chunk_file_path)
+            await client.send_file("me", caption=file_caption, file=chunk_file_path)
         finally:
             # Remove the chunk file locally.
             os.remove(chunk_file_path)
-        print(f"Uploaded chunk {i+1}/{num_chunks}.")
 
     return tglfs_file
 
