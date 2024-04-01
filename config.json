@@ -1,6 +1,6 @@
 {
-    "api_id": 0,
-    "api_hash": "change this",
+    "apiId": 0,
+    "apiHash": "change this",
     "phone": "+10123456789",
-    "chunk_size_gb": 2.0
+    "chunkSizeGB": 2.0
 }
