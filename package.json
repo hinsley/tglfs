@@ -6,7 +6,8 @@
     },
     "dependencies": {
         "input": "^1.0.1",
-        "telegram": "^2.20.2"
+        "telegram": "^2.20.2",
+        "zstd-codec": "^0.1.4"
     },
     "scripts": {
         "format": "prettier --write .",
