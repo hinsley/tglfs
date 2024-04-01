@@ -1,14 +1,22 @@
 import  { TelegramClient } from "telegram";
-import { StringSession } from "telegram/sessions";
-import * as input from "input";
+import { StoreSession, StringSession } from "telegram/sessions";
+import input from "input";
+import fs from "fs/promises";
 
 import * as cfg from "./config";
 
-export async function init(config: cfg.Config) {
+export async function init(config: cfg.Config): Promise<TelegramClient> {
     console.log("Starting up...")
-    const client = new TelegramClient(new StringSession(""), config.apiId, config.apiHash, {
-        connectionRetries: 5
-    });
+    // Load previous session from a session string.
+    const storeSession = new StoreSession("./tglfs.session");
+    // Connect.
+    const client = new TelegramClient(
+        storeSession,
+        config.apiId,
+        config.apiHash,
+        { connectionRetries: 5 },
+    );
+    // Provide credentials to the server.
     await client.start({
         phoneNumber: config.phone,
         password: async () => await input.password("Enter your password: "),
@@ -16,9 +24,5 @@ export async function init(config: cfg.Config) {
         onError: (error) => console.error(error),
     });
     console.log("You are now logged in!");
-    console.log(client.session.save());
-    await client.sendMessage("me", {message: "Welcome to TypeScript."});
-    console.log("Message sent.");
+    return client;
 }
-
-
