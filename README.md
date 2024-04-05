@@ -4,7 +4,7 @@ Large file storage on Telegram
 ## Getting started
 Install dependencies:
 ```sh
-pip3 install encryption telethon
+pip3 install cryptography encryption telethon
 ```
 
 Edit `config.json` (you need to get an API key [from Telegram](https://my.telegram.org) first).
