@@ -10,8 +10,8 @@ tglfs <ufid> chunk <chunk_id>/<total_num_chunks> <filename>
 
 ### Procedure for encoding
 
-Compress -> Encrypt -> Chunk.
+Internal-Chunk -> Compress -> Encrypt ->  -> Chunk.
 
--   Compression: `Zstandard` default (compression level 3).
+-   Compression: `GZip` using the [Compression Streams API](https://developer.mozilla.org/en-US/docs/Web/API/Compression_Streams_API).
 -   Encryption: `XChaCha20-Poly1305`.
 -   Chunking: Even-sized splitting, chunk sizes set in `config.json`.

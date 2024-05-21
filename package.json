@@ -1,16 +1,30 @@
 {
     "devDependencies": {
+        "@types/libsodium-wrappers-sumo": "^0.7.8",
+        "@types/wicg-file-system-access": "^2023.10.5",
+        "crypto-browserify": "^3.12.0",
+        "events": "^3.3.0",
+        "npx": "^10.2.2",
+        "parcel": "^2.12.0",
         "prettier": "^3.2.5",
+        "process": "^0.11.10",
+        "stream-browserify": "^3.0.0",
+        "string_decoder": "^1.3.0",
         "ts-node": "^10.9.2",
-        "typescript": "^5.4.3"
+        "typescript": "^5.4.3",
+        "vm-browserify": "^1.1.2"
     },
     "dependencies": {
+        "brotli-compress": "^1.3.3",
+        "buffer": "^6.0.3",
         "input": "^1.0.1",
+        "libsodium-wrappers-sumo": "^0.7.13",
         "telegram": "^2.20.2",
         "zstd-codec": "^0.1.4"
     },
     "scripts": {
-        "format": "prettier --write .",
-        "dev": "ts-node src/index.ts"
+        "run": "npx parcel src/index.html",
+        "dev": "ts-node src/index.ts",
+        "format": "prettier --write ."
     }
 }
