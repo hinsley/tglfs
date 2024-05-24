@@ -9,9 +9,10 @@ tglfs <ufid> chunk <chunk_id>/<total_num_chunks> <filename>
 ```
 
 ### Procedure for encoding
+- Compression: `Zstandard` using [zstd-codec](https://www.npmjs.com/package/zstd-codec).
+- Encryption: `XChaCha20-Poly1305` using [`libsodium-wrappers-sumo`](https://www.npmjs.com/package/libsodium-wrappers-sumo).
+- Chunking: Even-sized splitting, chunk sizes set in `config.json`.
 
-Internal-Chunk -> Compress -> Encrypt ->  -> Chunk.
-
--   Compression: `GZip` using the [Compression Streams API](https://developer.mozilla.org/en-US/docs/Web/API/Compression_Streams_API).
--   Encryption: `XChaCha20-Poly1305`.
--   Chunking: Even-sized splitting, chunk sizes set in `config.json`.
+Data is read through a compression and encryption stream (via the WebStreams API), chunking afterwards as necessary to be sent to Telegram.
+This streaming approach prevents the need for a free parameter (chunk size) while chunking, which would be required if performing a subsequent compression and encryption.
+Similarly, when decrypting and decompressing, a streaming approach is used.

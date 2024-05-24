@@ -6,7 +6,27 @@
         <script type="module" src="web/app.ts"></script>
     </head>
     <body>
-        <h1>In-browser compression</h1>
-        <button id="fileSelect">Select file</button>
+        <h1>Telegram Large File Storage</h1>
+        <div id="login" style="margin-top: 20px;">
+            <div style="margin-top: 20px;">
+                <label for="apiId">API ID:</label>
+                <input type="number" id="apiId" name="apiId">
+            </div>
+            <div style="margin-top: 10px;">
+                <label for="apiHash">API Hash:</label>
+                <input type="text" id="apiHash" name="apiHash">
+            </div>
+            <div style="margin-top: 10px;">
+                <label for="phone">Phone Number:</label>
+                <input type="tel" id="phone" name="phone">
+            </div>
+            <div style="margin-top: 10px;">
+                <label for="telegramPremium">Telegram Premium (4GB file size limit)</label>
+                <input type="checkbox" id="telegramPremium" name="telegramPremium">
+            </div>
+            <div style="margin-top: 10px;">
+                <button id="loginButton">Log In</button>
+            </div>
+        </div>
     </body>
 </html>
