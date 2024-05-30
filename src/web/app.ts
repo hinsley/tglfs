@@ -4,56 +4,6 @@ import * as Config from "../config";
 import * as FileProcessing from "./fileProcessing";
 import * as Telegram from "../telegram";
 
-async function main(client: TelegramClient, config: Config.Config) {
-    while (true) {
-        try {
-            console.log("Enter a command:");
-            console.log("1. Upload a file");
-            console.log("2. Search for a file");
-            console.log("3. Send a file");
-            console.log("4. Unsend a file");
-            console.log("5. Receive a file");
-            console.log("6. Rename a file");
-            console.log("7. Delete a file");
-            console.log("8. Download a file");
-
-            const command = prompt("Choose an action (1-9).");
-
-            switch (command) {
-                case "1":
-                    console.log("TODO: Implement file uploads.");
-                    await Telegram.fileUpload(client, config);
-                    break;
-                case "2":
-                    console.log("TODO: Implement file lookup.");
-                    break;
-                case "3":
-                    console.log("TODO: Implement file sending.");
-                    break;
-                case "4":
-                    console.log("TODO: Implement file unsending.");
-                    break;
-                case "5":
-                    console.log("TODO: Implement file receipt.");
-                    break;
-                case "6":
-                    console.log("TODO: Implement file renaming.");
-                    break;
-                case "7":
-                    console.log("TODO: Implement file deletion.");
-                    break;
-                case "8":
-                    console.log("TODO: Implement file downloading.");
-                    break;
-                default:
-                    console.log("Invalid option. Please try again.");
-            }
-        } catch (error) {
-            console.error("An error occurred:", error);
-        }
-    }
-}
-
 async function init() {
     const apiIdElement = document.getElementById("apiId") as HTMLInputElement | null;
     const apiHashElement = document.getElementById("apiHash") as HTMLInputElement | null;
@@ -75,17 +25,54 @@ async function init() {
         phone: phoneElement.value,
     };
 
+    const client = await Telegram.init(config);
+
+    // Expose the client and config objects to the browser console
+    (window as any).client = client;
+    (window as any).config = config;
+
+    // Set up UI
     const loginDiv = document.getElementById("login");
     if (loginDiv) {
         loginDiv.remove();
     }
-
-    const client = await Telegram.init(config);
-
-    // Expose the client object to the browser console
-    (window as any).client = client;
-
-    await main(client, config);
+    const controlsDiv = document.getElementById("controls");
+    if (controlsDiv) {
+        controlsDiv.removeAttribute("hidden");
+    }
+    const uploadFileButton = document.getElementById("uploadFileButton") as HTMLButtonElement;
+    uploadFileButton.addEventListener("click", async () => {
+        console.log("TODO: Implement file uploads.");
+        await Telegram.fileUpload(client, config);
+    });
+    const fileLookupButton = document.getElementById("fileLookupButton") as HTMLButtonElement;
+    fileLookupButton.addEventListener("click", async () => {
+        console.log("TODO: Implement file lookup.");
+    });
+    const sendFileButton = document.getElementById("sendFileButton") as HTMLButtonElement;
+    sendFileButton.addEventListener("click", async () => {
+        console.log("TODO: Implement file sending.");
+    });
+    const unsendFileButton = document.getElementById("unsendFileButton") as HTMLButtonElement;
+    unsendFileButton.addEventListener("click", async () => {
+        console.log("TODO: Implement file unsending.");
+    });
+    const receiveFileButton = document.getElementById("receiveFileButton") as HTMLButtonElement;
+    receiveFileButton.addEventListener("click", async () => {
+        console.log("TODO: Implement file receiving.");
+    });
+    const renameFileButton = document.getElementById("renameFileButton") as HTMLButtonElement;
+    renameFileButton.addEventListener("click", async () => {
+        console.log("TODO: Implement file renaming.");
+    });
+    const deleteFileButton = document.getElementById("deleteFileButton") as HTMLButtonElement;
+    deleteFileButton.addEventListener("click", async () => {
+        console.log("TODO: Implement file deletion.");
+    });
+    const downloadFileButton = document.getElementById("downloadFileButton") as HTMLButtonElement;
+    downloadFileButton.addEventListener("click", async () => {
+        console.log("TODO: Implement file downloading.");
+    });
 }
 
 const loginButton = document.getElementById("loginButton") as HTMLButtonElement;
