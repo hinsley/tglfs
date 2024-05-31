@@ -31,10 +31,12 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
         const [fileHandle] = await (window as any).showOpenFilePicker();
         const file = await fileHandle.getFile();
         console.log(`Selected file: ${file.name}`);
-        const UFID = await FileProcessing.UFID(file);
-        console.log(`UFID: ${UFID}`);
 
         const password = prompt("(Optional) Encryption password:");
+
+        console.log("Calculating UFID...");
+        const UFID = await FileProcessing.UFID(file);
+        console.log(`UFID: ${UFID}`);
 
         let fileCardData: FileCardData = {
             name: file.name,
@@ -92,7 +94,7 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
                 if (!partResult) {
                     throw new Error(`Failed to save file part ${partIndex}.`);
                 } else {
-                    console.log(`Uploaded chunk ${chunkIndex+1} part ${partIndex+1} of ${totalParts}.`);
+                    console.log(`Uploaded chunk ${chunkIndex+1} part ${partIndex+1}/${totalParts}.`);
                 }
             }
             const chunkFileUploaded = new Api.InputFileBig({

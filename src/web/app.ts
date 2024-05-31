@@ -89,7 +89,6 @@ async function init() {
             for await (const [name, handle] of directoryHandle.entries()) {
                 if (handle.kind === 'file') {
                     await directoryHandle.removeEntry(name);
-                    console.log(`Deleted file: ${name}`);
                 }
             }
         }
