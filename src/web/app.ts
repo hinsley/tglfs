@@ -73,7 +73,7 @@ async function init() {
     });
     const renameFileButton = document.getElementById("renameFileButton") as HTMLButtonElement;
     renameFileButton.addEventListener("click", async () => {
-        console.log("TODO: Implement file renaming.");
+        await Telegram.fileRename(client, config);
     });
     const deleteFileButton = document.getElementById("deleteFileButton") as HTMLButtonElement;
     deleteFileButton.addEventListener("click", async () => {

@@ -62,7 +62,7 @@ export async function fileLookup(client: TelegramClient, config: Config.Config) 
             minute: "2-digit",
             second: "2-digit",
             hour12: false
-        }).replace(",", ""); // Remove the comma between date and time
+        }).replace(",", ""); // Remove the comma between date and time.
         response += `\n\nFile ${fileCards.length}\nName: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`;
     }
     let selection = 1;
@@ -81,6 +81,61 @@ export async function fileLookup(client: TelegramClient, config: Config.Config) 
     }
     const UFID = fileCards[selection - 1].ufid;
     await navigator.clipboard.writeText(UFID);
+}
+
+export async function fileRename(client: TelegramClient, config: Config.Config) {
+    const fileUfid = prompt("Enter UFID of file to rename:");
+    if (!fileUfid || fileUfid.trim() === "") {
+        alert("No UFID provided. Operation cancelled.");
+        return;
+    }
+    const msgs = await client.getMessages("me", {
+        search: "tglfs:file \"ufid\":\"" + fileUfid.trim() + "\""
+    });
+    if (msgs.length === 0) {
+        throw new Error("File not found.");
+    }
+
+    const fileCardData: FileCardData = JSON.parse(msgs[0].message.substring(msgs[0].message.indexOf("{")));
+    
+    // TODO: Move this function to a more appropriate place.
+    function humanReadableSize(size: number): string {
+        const i = Math.floor(Math.log(size) / Math.log(1024));
+        const sizes = ['bytes', 'KB', 'MB', 'GB', 'TB'];
+        return (size / Math.pow(1024, i)).toFixed(i == 0 ? 0 : 2) + ' ' + sizes[i];
+    }
+    
+    const humanReadableFileSize = humanReadableSize(fileCardData.size);
+    const date = new Date(msgs[0].date * 1000);
+    const formattedDate = date.toLocaleString("en-US", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+    }).replace(",", ""); // Remove the comma between date and time.
+    
+    const fileInfo = `Name: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`;
+    
+    const newName = prompt(`Renaming file:\n\n${fileInfo}\n\nEnter new name:`);
+    if (!newName || newName.trim() === "") {
+        alert("No new name provided. Operation cancelled.");
+        return;
+    }
+    fileCardData.name = newName;
+    const result = await client.invoke(new Api.messages.EditMessage({
+        peer: msgs[0].peerId,
+        id: msgs[0].id,
+        message: `tglfs:file\n${JSON.stringify(fileCardData)}`,
+    }));
+
+    if (result) {
+        alert(`File successfully renamed to ${newName}.`);
+    } else {
+        alert("Failed to rename file.");
+    }
 }
 
 export async function fileUpload(client: TelegramClient, config: Config.Config) {
