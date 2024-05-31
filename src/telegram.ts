@@ -63,7 +63,6 @@ export async function fileLookup(client: TelegramClient, config: Config.Config) 
             second: "2-digit",
             hour12: false
         }).replace(",", ""); // Remove the comma between date and time
-        console.log(msg);
         response += `\n\nFile ${fileCards.length}\nName: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`;
     }
     let selection = 1;
