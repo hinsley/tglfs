@@ -25,6 +25,59 @@ type FileCardData = {
     chunks: FileChunk[];
 }
 
+// TODO: Move this function to a more appropriate place.
+function humanReadableSize(size: number): string {
+    const i = Math.floor(Math.log(size) / Math.log(1024));
+    const sizes = ['bytes', 'KB', 'MB', 'GB', 'TB'];
+    return (size / Math.pow(1024, i)).toFixed(i == 0 ? 0 : 2) + ' ' + sizes[i];
+}
+
+export async function fileDelete(client: TelegramClient, config: Config.Config) {
+    const fileUfid = prompt("Enter UFID of file to delete:");
+    if (!fileUfid || fileUfid.trim() === "") {
+        alert("No UFID provided. Operation cancelled.");
+        return;
+    }
+    const msgs = await client.getMessages("me", {
+        search: "tglfs:file \"ufid\":\"" + fileUfid.trim() + "\""
+    });
+    if (msgs.length === 0) {
+        throw new Error("File not found.");
+    }
+
+    const fileCardData: FileCardData = JSON.parse(msgs[0].message.substring(msgs[0].message.indexOf("{")));
+    
+    const humanReadableFileSize = humanReadableSize(fileCardData.size);
+    const date = new Date(msgs[0].date * 1000);
+    const formattedDate = date.toLocaleString("en-US", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+    }).replace(",", ""); // Remove the comma between date and time.
+    
+    const fileInfo = `Name: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`;
+
+    const chunkMessageIds = fileCardData.chunks.map(chunk => chunk.messageId);
+
+    const confirmation = confirm(`Delete file?\n\n${fileInfo}`);
+    if (!confirmation) {
+        alert("Operation cancelled.");
+        return;
+    }
+    const result = await client.invoke(new Api.messages.DeleteMessages({
+        id: [...chunkMessageIds, msgs[0].id], // Delete chunk messages and file card message.
+    }));
+    if (result) {
+        alert(`File ${fileCardData.name} successfully deleted.`);
+    } else {
+        alert(`Failed to delete file ${fileCardData.name}.`);
+    }
+}
+
 export async function fileLookup(client: TelegramClient, config: Config.Config) {
     const query = prompt("Search query (filename or UFID):");
     if (query === null) {
@@ -33,10 +86,6 @@ export async function fileLookup(client: TelegramClient, config: Config.Config) 
     const msgs = await client.getMessages("me", {
         search: ("tglfs:file " + query).trim(),
     });
-    if (msgs.length == 0) {
-        alert(`No results found for "${query}".`);
-        return;
-    }
     let response = `Lookup results for "${query}":`;
     const fileCards: FileCardData[] = [];
     for (const msg of msgs) {
@@ -46,12 +95,6 @@ export async function fileLookup(client: TelegramClient, config: Config.Config) 
         const fileCardData: FileCardData = JSON.parse(msg.message.substring(msg.message.indexOf("{")));
         fileCards.push(fileCardData);
 
-        // TODO: Move this function to a more appropriate place.
-        function humanReadableSize(size: number): string {
-            const i = Math.floor(Math.log(size) / Math.log(1024));
-            const sizes = ['bytes', 'KB', 'MB', 'GB', 'TB'];
-            return (size / Math.pow(1024, i)).toFixed(i == 0 ? 0 : 2) + ' ' + sizes[i];
-        }
         const humanReadableFileSize = humanReadableSize(fileCardData.size);
         const date = new Date(msg.date * 1000);
         const formattedDate = date.toLocaleString("en-US", {
@@ -64,6 +107,10 @@ export async function fileLookup(client: TelegramClient, config: Config.Config) 
             hour12: false
         }).replace(",", ""); // Remove the comma between date and time.
         response += `\n\nFile ${fileCards.length}\nName: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`;
+    }
+    if (fileCards.length == 0) {
+        alert(`No results found for "${query}".`);
+        return;
     }
     let selection = 1;
     if (fileCards.length == 1) {
@@ -97,13 +144,6 @@ export async function fileRename(client: TelegramClient, config: Config.Config) 
     }
 
     const fileCardData: FileCardData = JSON.parse(msgs[0].message.substring(msgs[0].message.indexOf("{")));
-    
-    // TODO: Move this function to a more appropriate place.
-    function humanReadableSize(size: number): string {
-        const i = Math.floor(Math.log(size) / Math.log(1024));
-        const sizes = ['bytes', 'KB', 'MB', 'GB', 'TB'];
-        return (size / Math.pow(1024, i)).toFixed(i == 0 ? 0 : 2) + ' ' + sizes[i];
-    }
     
     const humanReadableFileSize = humanReadableSize(fileCardData.size);
     const date = new Date(msgs[0].date * 1000);

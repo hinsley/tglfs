@@ -77,7 +77,7 @@ async function init() {
     });
     const deleteFileButton = document.getElementById("deleteFileButton") as HTMLButtonElement;
     deleteFileButton.addEventListener("click", async () => {
-        console.log("TODO: Implement file deletion.");
+        await Telegram.fileDelete(client, config);
     });
     const downloadFileButton = document.getElementById("downloadFileButton") as HTMLButtonElement;
     downloadFileButton.addEventListener("click", async () => {
