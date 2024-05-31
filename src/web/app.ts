@@ -46,7 +46,7 @@ async function init() {
     });
     const fileLookupButton = document.getElementById("fileLookupButton") as HTMLButtonElement;
     fileLookupButton.addEventListener("click", async () => {
-        console.log("TODO: Implement file lookup.");
+        await Telegram.fileLookup(client, config);
     });
     const sendFileButton = document.getElementById("sendFileButton") as HTMLButtonElement;
     sendFileButton.addEventListener("click", async () => {

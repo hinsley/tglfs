@@ -25,6 +25,65 @@ type FileCardData = {
     chunks: FileChunk[];
 }
 
+export async function fileLookup(client: TelegramClient, config: Config.Config) {
+    const query = prompt("Search query (filename or UFID):");
+    if (query === null) {
+        return;
+    }
+    const msgs = await client.getMessages("me", {
+        search: ("tglfs:file " + query).trim(),
+    });
+    if (msgs.length == 0) {
+        alert(`No results found for "${query}".`);
+        return;
+    }
+    let response = `Lookup results for "${query}":`;
+    const fileCards: FileCardData[] = [];
+    for (const msg of msgs) {
+        if (!msg.message.startsWith("tglfs:file")) {
+            continue; // Not a file card message.
+        }
+        const fileCardData: FileCardData = JSON.parse(msg.message.substring(msg.message.indexOf("{")));
+        fileCards.push(fileCardData);
+
+        // TODO: Move this function to a more appropriate place.
+        function humanReadableSize(size: number): string {
+            const i = Math.floor(Math.log(size) / Math.log(1024));
+            const sizes = ['bytes', 'KB', 'MB', 'GB', 'TB'];
+            return (size / Math.pow(1024, i)).toFixed(i == 0 ? 0 : 2) + ' ' + sizes[i];
+        }
+        const humanReadableFileSize = humanReadableSize(fileCardData.size);
+        const date = new Date(msg.date * 1000);
+        const formattedDate = date.toLocaleString("en-US", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false
+        }).replace(",", ""); // Remove the comma between date and time
+        console.log(msg);
+        response += `\n\nFile ${fileCards.length}\nName: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`;
+    }
+    let selection = 1;
+    if (fileCards.length == 1) {
+        response += "\n\nCopying UFID to clipboard.";
+        alert(response);
+    } else {
+        response += `\n\nChoose a file (1-${fileCards.length}) to copy UFID to clipboard [1]:`;
+        const selectionString = prompt(response);
+        if (selectionString !== null && selectionString.trim() !== "") {
+            selection = parseInt(selectionString, 10);
+            if (isNaN(selection) || selection < 1 || selection > fileCards.length) {
+                selection = 1;
+            }
+        }
+    }
+    const UFID = fileCards[selection - 1].ufid;
+    await navigator.clipboard.writeText(UFID);
+}
+
 export async function fileUpload(client: TelegramClient, config: Config.Config) {
     try {
         // TODO: Implement upload resumption.
@@ -32,7 +91,10 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
         const file = await fileHandle.getFile();
         console.log(`Selected file: ${file.name}`);
 
-        const password = prompt("(Optional) Encryption password:");
+        let password = prompt("(Optional) Encryption password:");
+        if (password === null) {
+            password = "";
+        }
 
         console.log("Calculating UFID...");
         const UFID = await FileProcessing.UFID(file);
@@ -83,7 +145,6 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
                 const end = Math.min(start + UPLOAD_PART_SIZE, chunkFile.size);
                 const partBlob = chunkFile.slice(start, end);
                 const partBuffer = Buffer.from(await partBlob.arrayBuffer()); // Gram.js wants a Buffer for uploads.
-
                 partResults.push(client.invoke(new Api.upload.SaveBigFilePart({
                     fileId: fileId,
                     filePart: partIndex,
@@ -141,7 +202,10 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
 
             chunkIndex += 1;
         }
-        alert(`File upload complete. Copy the UFID: ${UFID}`);
+        const copyUFID = confirm(`File upload complete. Press OK to copy UFID ${UFID} to clipboard, otherwise press Cancel.`);
+        if (copyUFID) {
+            await navigator.clipboard.writeText(UFID);
+        }
     } catch (error) {
         console.error(
             "An error occurred during file upload:",
