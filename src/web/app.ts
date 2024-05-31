@@ -1,4 +1,4 @@
-import { TelegramClient } from "telegram";
+import { Api, TelegramClient } from "telegram";
 
 import * as Config from "../config";
 import * as FileProcessing from "./fileProcessing";
@@ -42,7 +42,6 @@ async function init() {
     }
     const uploadFileButton = document.getElementById("uploadFileButton") as HTMLButtonElement;
     uploadFileButton.addEventListener("click", async () => {
-        console.log("TODO: Implement file uploads.");
         await Telegram.fileUpload(client, config);
     });
     const fileLookupButton = document.getElementById("fileLookupButton") as HTMLButtonElement;
@@ -52,6 +51,17 @@ async function init() {
     const sendFileButton = document.getElementById("sendFileButton") as HTMLButtonElement;
     sendFileButton.addEventListener("click", async () => {
         console.log("TODO: Implement file sending.");
+        // TODO: Remove the following.
+        // const message = await client.sendMessage("me", { message: "Hello, world!" });
+        // (window as any).lastMessage = message;
+        // console.log("Exposed message as lastMessage.");
+        // console.log("ID is", message.id);
+        const messages = await client.invoke(new Api.messages.GetMessages({ id: [new Api.InputMessageID({ id: 36100 })] }));
+        if ('messages' in messages) {
+            console.log("Messages:", messages.messages[0]);
+        } else {
+            console.log("No messages found or messages not modified.");
+        }
     });
     const unsendFileButton = document.getElementById("unsendFileButton") as HTMLButtonElement;
     unsendFileButton.addEventListener("click", async () => {
@@ -72,6 +82,24 @@ async function init() {
     const downloadFileButton = document.getElementById("downloadFileButton") as HTMLButtonElement;
     downloadFileButton.addEventListener("click", async () => {
         console.log("TODO: Implement file downloading.");
+    });
+    const clearCacheButton = document.getElementById("clearCacheButton") as HTMLButtonElement;
+    clearCacheButton.addEventListener("click", async () => {
+        async function deleteAllFiles(directoryHandle: FileSystemDirectoryHandle) {
+            for await (const [name, handle] of directoryHandle.entries()) {
+                if (handle.kind === 'file') {
+                    await directoryHandle.removeEntry(name);
+                    console.log(`Deleted file: ${name}`);
+                }
+            }
+        }
+
+        (async () => {
+            const dirHandle = await navigator.storage.getDirectory();
+            await deleteAllFiles(dirHandle);
+        })();
+
+        alert("Local cache cleared.");
     });
 }
 

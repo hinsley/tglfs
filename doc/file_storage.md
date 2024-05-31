@@ -9,6 +9,7 @@ tglfs <ufid> chunk <chunk_id>/<total_num_chunks> <filename>
 ```
 
 ### Procedure for encoding
+<!-- TODO: Update this. -->
 - Compression: `Zstandard` using [zstd-codec](https://www.npmjs.com/package/zstd-codec).
 - Encryption: `XChaCha20-Poly1305` using [`libsodium-wrappers-sumo`](https://www.npmjs.com/package/libsodium-wrappers-sumo).
 - Chunking: Even-sized splitting, chunk sizes set in `config.json`.
