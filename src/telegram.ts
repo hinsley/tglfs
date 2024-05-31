@@ -74,23 +74,25 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
             const chunkFileHandle = await rootDir.getFileHandle(chunkFileName, { create: false });
             const chunkFile = await chunkFileHandle.getFile();
 
-            // Upload chunk in parts.
+            // Upload chunk in parts (all in parallel with async).
             const fileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
             const totalParts = Math.ceil(chunkFile.size / UPLOAD_PART_SIZE);
+            const partResults = [];
             for (let partIndex = 0; partIndex < totalParts; partIndex++) {
                 const start = partIndex * UPLOAD_PART_SIZE;
                 const end = Math.min(start + UPLOAD_PART_SIZE, chunkFile.size);
                 const partBlob = chunkFile.slice(start, end);
                 const partBuffer = Buffer.from(await partBlob.arrayBuffer()); // Gram.js wants a Buffer for uploads.
 
-                const partResult = await client.invoke(new Api.upload.SaveBigFilePart({
+                partResults.push(client.invoke(new Api.upload.SaveBigFilePart({
                     fileId: fileId,
                     filePart: partIndex,
                     fileTotalParts: totalParts,
                     bytes: partBuffer,
-                    workers: 10, // TODO: Determine if this actually does anything.
-                }));
-
+                })));
+            }
+            for (let partIndex = 0; partIndex < totalParts; partIndex++) {
+                const partResult = await partResults[partIndex];
                 if (!partResult) {
                     throw new Error(`Failed to save file part ${partIndex}.`);
                 } else {
