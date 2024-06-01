@@ -7,22 +7,40 @@ import { Api, TelegramClient } from "telegram";
 import { StoreSession, StringSession } from "telegram/sessions";
 
 import * as Config from "./config";
+import * as Encryption from "./web/encryption";
 import * as FileProcessing from "./web/fileProcessing";
 
-const UPLOAD_PART_SIZE = 128 * 1024; // 128 KB.
+// https://core.telegram.org/api/files
+// Must be divisible by 1 KB.
+// Must divide 512 KB.
+const UPLOAD_PART_SIZE = 512 * 1024; // 512 KB.
 
-// TODO: Consider moving these type definitions to a more appropriate place.
-type FileChunk = {
-    IV: string;
-    messageId: number;
-}
-
+// TODO: Consider moving this type definition to a more appropriate place.
 type FileCardData = {
     name: string;
     ufid: string;
     size: number;
     uploadComplete: boolean;
-    chunks: FileChunk[];
+    chunks: number[];
+    IV: string;
+}
+
+// TODO: Move this function to a more appropriate place.
+function bytesToBase64(bytes: Uint8Array) {
+    const binString = Array.from(bytes, (byte: number) => String.fromCodePoint(byte)).join("");
+    return btoa(binString);
+}
+
+// TODO: Move this function to a more appropriate place.
+function base64ToBytes(base64: string) {
+    const binString = atob(base64);
+    return Uint8Array.from(binString, (char: string) => {
+        const code = char.codePointAt(0);
+        if (code === undefined) {
+            throw new Error("Invalid character in base64 string");
+        }
+        return code;
+    });
 }
 
 // TODO: Move this function to a more appropriate place.
@@ -61,21 +79,58 @@ export async function fileDelete(client: TelegramClient, config: Config.Config) 
     
     const fileInfo = `Name: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`;
 
-    const chunkMessageIds = fileCardData.chunks.map(chunk => chunk.messageId);
-
     const confirmation = confirm(`Delete file?\n\n${fileInfo}`);
     if (!confirmation) {
         alert("Operation cancelled.");
         return;
     }
     const result = await client.invoke(new Api.messages.DeleteMessages({
-        id: [...chunkMessageIds, msgs[0].id], // Delete chunk messages and file card message.
+        id: [...fileCardData.chunks, msgs[0].id], // Delete chunk messages and file card message.
     }));
     if (result) {
         alert(`File ${fileCardData.name} successfully deleted.`);
     } else {
         alert(`Failed to delete file ${fileCardData.name}.`);
     }
+}
+
+export async function fileDownload(client: TelegramClient, config: Config.Config) {
+    const fileUfid = prompt("Enter UFID of file to download:");
+    if (!fileUfid || fileUfid.trim() === "") {
+        alert("No UFID provided. Operation cancelled.");
+        return;
+    }
+    const msgs = await client.getMessages("me", {
+        search: "tglfs:file \"ufid\":\"" + fileUfid.trim() + "\""
+    });
+    if (msgs.length === 0) {
+        throw new Error("File not found.");
+    }
+
+    const fileCardData: FileCardData = JSON.parse(msgs[0].message.substring(msgs[0].message.indexOf("{")));
+
+    const humanReadableFileSize = humanReadableSize(fileCardData.size);
+    const date = new Date(msgs[0].date * 1000);
+    const formattedDate = date.toLocaleString("en-US", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+    }).replace(",", ""); // Remove the comma between date and time.
+
+    const fileInfo = `Name: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`;
+
+    const confirmation = confirm(`Download file?\n\n${fileInfo}`);
+    if (!confirmation) {
+        alert("Operation cancelled.");
+        return;
+    }
+    
+    // Download file to OPFS.
+
 }
 
 export async function fileLookup(client: TelegramClient, config: Config.Config) {
@@ -179,135 +234,369 @@ export async function fileRename(client: TelegramClient, config: Config.Config) 
 }
 
 export async function fileUpload(client: TelegramClient, config: Config.Config) {
-    try {
-        // TODO: Implement upload resumption.
-        const [fileHandle] = await (window as any).showOpenFilePicker();
-        const file = await fileHandle.getFile();
-        console.log(`Selected file: ${file.name}`);
+    // TODO: Introduce byte counting for the original file's stream so we know
+    // how close to being done the upload is.
+    if (config.chunkSize < UPLOAD_PART_SIZE) {
+        throw new Error(`config.chunkSize (${config.chunkSize}) must be larger than UPLOAD_PART_SIZE (${UPLOAD_PART_SIZE}).`);
+    }
 
-        let password = prompt("(Optional) Encryption password:");
-        if (password === null) {
-            password = "";
-        }
+    const [fileHandle] = await (window as any).showOpenFilePicker();
+    const file = await fileHandle.getFile();
+    console.log(`Selected file: ${file.name}`);
 
-        console.log("Calculating UFID...");
-        const UFID = await FileProcessing.UFID(file);
-        console.log(`UFID: ${UFID}`);
+    let password = prompt("(Optional) Encryption password:");
+    if (password === null) {
+        return;
+    }
+    alert("Beginning upload."); // TODO: Remove and introduce progress bar.
+    const salt = window.crypto.getRandomValues(new Uint8Array(16));
+    const aesKey = await Encryption.deriveAESKeyFromPassword(password, salt);
+    const initialCounter = window.crypto.getRandomValues(new Uint8Array(16));
+    const IVBytes = new Uint8Array(salt.length + initialCounter.length);
+    IVBytes.set(salt, 0);
+    IVBytes.set(initialCounter, salt.length);
+    const IV = bytesToBase64(IVBytes);
+    let encryptionCounter = new Uint8Array(initialCounter);
 
-        let fileCardData: FileCardData = {
-            name: file.name,
-            ufid: UFID,
-            size: 0, // In bytes.
-            uploadComplete: false,
-            chunks: []
-        };
-        const fileCardMessage = await client.sendMessage("me", { message: `tglfs:file\n${JSON.stringify(fileCardData)}` });
+    console.log("Calculating UFID...");
+    const UFID = await FileProcessing.UFID(file);
+    console.log(`UFID: ${UFID}`);
 
-        // TODO: Move these helper function definitions to a more appropriate place.
-        function bytesToBase64(bytes: Uint8Array) {
-            const binString = Array.from(bytes, (byte: number) => String.fromCodePoint(byte)).join("");
-            return btoa(binString);
-        }
-        function base64ToBytes(base64: string) {
-            const binString = atob(base64);
-            return Uint8Array.from(binString, (char: string) => {
-                const code = char.codePointAt(0);
-                if (code === undefined) {
-                    throw new Error("Invalid character in base64 string");
+    const existingMsgs = await client.getMessages("me", {
+        search: `tglfs:file "ufid":"${UFID}"`
+    });
+
+    if (existingMsgs.length > 0) {
+        alert(`Error: Duplicate UFID.\n\nA file with the same contents already exists.\n\nCopying UFID to clipboard.`);
+        await navigator.clipboard.writeText(UFID);
+        return;
+    }
+
+    let fileCardData: FileCardData = {
+        name: file.name,
+        ufid: UFID,
+        size: file.size,
+        uploadComplete: false,
+        chunks: [],
+        IV: IV,
+    };
+    const fileCardMessage = await client.sendMessage("me", { message: `tglfs:file\n${JSON.stringify(fileCardData)}` });
+
+    const fileStream = file.stream();
+    const compressedStream = fileStream.pipeThrough(new CompressionStream("gzip"));
+    const reader = compressedStream.getReader();
+    
+    let aesBlockBytesWritten = 0;
+    const encryptionBuffer = new Uint8Array(Encryption.ENCRYPTION_CHUNK_SIZE);
+    let partBytesWritten = 0;
+    const partBuffer = new Uint8Array(UPLOAD_PART_SIZE);
+    let partIndex = 0;
+    let chunkIndex = 0;
+    let chunkBytesWritten = 0;
+    let chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
+
+    let done, value;
+    while ({ done, value } = await reader.read(), !done) {
+        let valueBytesProcessed = 0;
+        // Write the value to encryptionBuffer.
+        while (valueBytesProcessed < value.length) {
+            const remainingEncryptionBufferSpace = encryptionBuffer.length - aesBlockBytesWritten; // Remaining space in encryptionBuffer.
+            const remainingValueBytesToProcess = value.length - valueBytesProcessed;
+            const bytesToCopy = Math.min(
+                remainingValueBytesToProcess,
+                remainingEncryptionBufferSpace
+            );
+            encryptionBuffer.set(value.subarray(valueBytesProcessed, valueBytesProcessed + bytesToCopy), aesBlockBytesWritten);
+            aesBlockBytesWritten += bytesToCopy;
+            valueBytesProcessed += bytesToCopy;
+            if (aesBlockBytesWritten === encryptionBuffer.length) {
+                // encryptionBuffer is full. Encrypt it.
+                const encryptedData = new Uint8Array(await window.crypto.subtle.encrypt(
+                    {
+                        name: "AES-CTR",
+                        counter: encryptionCounter,
+                        length: 64 // Bit length of the counter block.
+                    },
+                    aesKey,
+                    encryptionBuffer
+                ));
+                // Reset the encryption buffer and increment AES-CTR encryption counter.
+                aesBlockBytesWritten = 0;
+                encryptionCounter = Encryption.incrementCounter(encryptionCounter);
+                // Write the encrypted data to partBuffer in a loop.
+                let encryptedDataBytesProcessed = 0;
+                while (encryptedDataBytesProcessed < encryptedData.length) {
+                    const remainingPartBufferSpace = partBuffer.length - partBytesWritten;
+                    const remainingEncryptedDataBytesToProcess = encryptedData.length - encryptedDataBytesProcessed;
+                    const bytesToCopy = Math.min(
+                        remainingEncryptedDataBytesToProcess,
+                        remainingPartBufferSpace,
+                    );
+                    partBuffer.set(
+                        encryptedData.subarray(
+                            encryptedDataBytesProcessed,
+                            encryptedDataBytesProcessed + bytesToCopy
+                        ),
+                        partBytesWritten
+                    );
+                    partBytesWritten += bytesToCopy;
+                    if (partBytesWritten === UPLOAD_PART_SIZE) {
+                        // partBuffer is full. Send as much as will fit in this chunk.
+                        const remainingChunkSpace = config.chunkSize - chunkBytesWritten;
+                        if (remainingChunkSpace <= UPLOAD_PART_SIZE) {
+                            // Part overflows chunk size. Finalize the chunk
+                            // and populate next one with leftover data in partBuffer.
+                            const partBufferSubarray = partBuffer.subarray(0, remainingChunkSpace);
+                            // Send partBufferSubarray as a file part to Telegram.
+                            const result = await client.invoke(new Api.upload.SaveBigFilePart({
+                                fileId: chunkFileId,
+                                filePart: partIndex,
+                                fileTotalParts: partIndex + 1,
+                                bytes: Buffer.from(partBufferSubarray),
+                            }));
+                            if (!result) {
+                                throw new Error(`Failed to upload chunk ${chunkIndex+1} part ${partIndex+1}.`);
+                            }
+                            console.log(`Uploaded chunk ${chunkIndex+1} part ${partIndex+1}.`);
+
+                            // Finalize the chunk.
+                            const chunkFileUploaded = new Api.InputFileBig({
+                                id: chunkFileId,
+                                parts: partIndex+1,
+                                name: `${UFID}.chunk${chunkIndex+1}`,
+                            });
+                            // Send the chunk message.
+                            const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded });
+
+                            // Update file card.
+                            fileCardData.chunks.push(chunkMessage.id);
+                            await client.invoke(new Api.messages.EditMessage({
+                                peer: fileCardMessage.peerId,
+                                id: fileCardMessage.id,
+                                message: `tglfs:file\n${JSON.stringify(fileCardData)}`,
+                            }));
+
+                            // Reset chunk index and fileId for the next chunk.
+                            chunkIndex++;
+                            chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
+
+                            // Left shift bytes in partBuffer by remainingChunkSpace.
+                            partBuffer.copyWithin(0, remainingChunkSpace);
+                            partBytesWritten -= remainingChunkSpace;
+                            partIndex = 0;
+
+                            // Update chunkBytesWritten with the size of the roll-over data.
+                            chunkBytesWritten = UPLOAD_PART_SIZE - remainingChunkSpace;
+                        } else {
+                            // Send the partBuffer data as a file part.
+                            const result = await client.invoke(new Api.upload.SaveBigFilePart({
+                                fileId: chunkFileId,
+                                filePart: partIndex,
+                                fileTotalParts: -1,
+                                bytes: Buffer.from(partBuffer),
+                            }));
+                            if (!result) {
+                                throw new Error(`Failed to upload chunk ${chunkIndex+1} part ${partIndex+1}.`);
+                            }
+                            console.log(`Uploaded chunk ${chunkIndex+1} part ${partIndex+1}.`);
+                            partBytesWritten = 0;
+                            partIndex++;
+
+                            // Update chunkBytesWritten.
+                            chunkBytesWritten += UPLOAD_PART_SIZE;
+                        }
+                    }
                 }
-                return code;
-            });
-        }
-
-        let chunkIndex = 0;
-        while (!fileCardData.uploadComplete) {
-            // Compress and encrypt chunk.
-            const [salt, initialCounter] = await FileProcessing.prepChunk(file, UFID, password ? password : "", config.chunkSize, chunkIndex);
-
-            // Load the chunk file handle.
-            const rootDir = await navigator.storage.getDirectory();
-            const chunkFileName = `${UFID}.chunk${chunkIndex+1}`;
-            const chunkFileHandle = await rootDir.getFileHandle(chunkFileName, { create: false });
-            const chunkFile = await chunkFileHandle.getFile();
-
-            // Upload chunk in parts (all in parallel with async).
-            const fileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
-            const totalParts = Math.ceil(chunkFile.size / UPLOAD_PART_SIZE);
-            const partResults = [];
-            for (let partIndex = 0; partIndex < totalParts; partIndex++) {
-                const start = partIndex * UPLOAD_PART_SIZE;
-                const end = Math.min(start + UPLOAD_PART_SIZE, chunkFile.size);
-                const partBlob = chunkFile.slice(start, end);
-                const partBuffer = Buffer.from(await partBlob.arrayBuffer()); // Gram.js wants a Buffer for uploads.
-                partResults.push(client.invoke(new Api.upload.SaveBigFilePart({
-                    fileId: fileId,
-                    filePart: partIndex,
-                    fileTotalParts: totalParts,
-                    bytes: partBuffer,
-                })));
             }
-            for (let partIndex = 0; partIndex < totalParts; partIndex++) {
-                const partResult = await partResults[partIndex];
-                if (!partResult) {
-                    throw new Error(`Failed to save file part ${partIndex}.`);
+        }
+    }
+    // Flush encryptionBuffer.
+    if (aesBlockBytesWritten > 0) {
+        const encryptedData = new Uint8Array(await window.crypto.subtle.encrypt(
+            {
+                name: "AES-CTR",
+                counter: encryptionCounter,
+                length: 64 // Bit length of the counter block.
+            },
+            aesKey,
+            encryptionBuffer.subarray(0, aesBlockBytesWritten)
+        ));
+        let encryptedDataBytesProcessed = 0;
+        while (encryptedDataBytesProcessed < encryptedData.length) {
+            const remainingPartBufferSpace = partBuffer.length - partBytesWritten;
+            const remainingEncryptedDataBytesToProcess = encryptedData.length - encryptedDataBytesProcessed;
+            const bytesToCopy = Math.min(
+                remainingEncryptedDataBytesToProcess,
+                remainingPartBufferSpace,
+            );
+            partBuffer.set(
+                encryptedData.subarray(
+                    encryptedDataBytesProcessed,
+                    encryptedDataBytesProcessed + bytesToCopy
+                ),
+                partBytesWritten
+            );
+            partBytesWritten += bytesToCopy;
+            encryptedDataBytesProcessed += bytesToCopy;
+
+            if (partBytesWritten === UPLOAD_PART_SIZE) {
+                // Part buffer is full. Send as much as will fit in this chunk.
+                const remainingChunkSpace = config.chunkSize - chunkBytesWritten;
+                if (remainingChunkSpace <= UPLOAD_PART_SIZE) {
+                    // Part overflows chunk size. Finalize the chunk
+                    // and populate next one with leftover data in partBuffer.
+                    const partBufferSubarray = partBuffer.subarray(0, remainingChunkSpace);
+                    const result = await client.invoke(new Api.upload.SaveBigFilePart({
+                        fileId: chunkFileId,
+                        filePart: partIndex,
+                        fileTotalParts: partIndex + 1,
+                        bytes: Buffer.from(partBufferSubarray),
+                    }));
+                    if (!result) {
+                        throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`);
+                    }
+                    console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`);
+
+                    const chunkFileUploaded = new Api.InputFileBig({
+                        id: chunkFileId,
+                        parts: partIndex + 1,
+                        name: `${UFID}.chunk${chunkIndex + 1}`,
+                    });
+                    // Send the chunk message.
+                    const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded });
+
+                    // Update file card.
+                    fileCardData.chunks.push(chunkMessage.id);
+                    await client.invoke(new Api.messages.EditMessage({
+                        peer: fileCardMessage.peerId,
+                        id: fileCardMessage.id,
+                        message: `tglfs:file\n${JSON.stringify(fileCardData)}`,
+                    }));
+
+                    // Reset chunk index and fileId for the next chunk.
+                    chunkIndex++;
+                    chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
+
+                    // Left shift bytes in partBuffer by remainingChunkSpace.
+                    partBuffer.copyWithin(0, remainingChunkSpace);
+                    partBytesWritten -= remainingChunkSpace;
+                    partIndex = 0;
+
+                    // Update chunkBytesWritten with the size of the roll-over data.
+                    chunkBytesWritten = UPLOAD_PART_SIZE - remainingChunkSpace;
                 } else {
-                    console.log(`Uploaded chunk ${chunkIndex+1} part ${partIndex+1}/${totalParts}.`);
+                    const result = await client.invoke(new Api.upload.SaveBigFilePart({
+                        fileId: chunkFileId,
+                        filePart: partIndex,
+                        fileTotalParts: -1,
+                        bytes: Buffer.from(partBuffer),
+                    }));
+                    if (!result) {
+                        throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`);
+                    }
+                    console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`);
+                    partBytesWritten = 0;
+                    partIndex++;
+
+                    // Update chunkBytesWritten.
+                    chunkBytesWritten += UPLOAD_PART_SIZE;
                 }
             }
+        }
+    }
+    // Flush partBuffer.
+    if (partBytesWritten > 0) {
+        const remainingChunkSpace = config.chunkSize - chunkBytesWritten;
+        if (remainingChunkSpace <= partBytesWritten) {
+            // Part overflows chunk size. Finalize the chunk
+            // and populate next one with leftover data in partBuffer.
+            const partBufferSubarray = partBuffer.subarray(0, remainingChunkSpace);
+            const result = await client.invoke(new Api.upload.SaveBigFilePart({
+                fileId: chunkFileId,
+                filePart: partIndex,
+                fileTotalParts: partIndex + 1,
+                bytes: Buffer.from(partBufferSubarray),
+            }));
+            if (!result) {
+                throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`);
+            }
+            console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`);
+
             const chunkFileUploaded = new Api.InputFileBig({
-                id: fileId,
-                parts: totalParts,
-                name: chunkFileName,
+                id: chunkFileId,
+                parts: partIndex + 1,
+                name: `${UFID}.chunk${chunkIndex + 1}`,
             });
+            // Send the chunk message.
             const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded });
 
-            // Delete chunk file locally.
-            try {
-                await rootDir.removeEntry(chunkFileName);
-            } catch (e: any) {
-                if (e.name !== 'NotFoundError') {
-                    console.error(`Failed to delete chunk file locally: ${chunkFileName}`, e);
-                } else {
-                    console.warn(`Chunk file not found locally: ${chunkFileName}`);
-                }
-            }
-
-            // Encode initialization vector for storage.
-            const IVBytes = new Uint8Array(salt.length + initialCounter.length);
-            IVBytes.set(salt, 0);
-            IVBytes.set(initialCounter, salt.length);
-            const IV = bytesToBase64(IVBytes);
-
-            // Update fileCard message.
-            fileCardData.chunks.push({
-                IV: IV,
-                messageId: chunkMessage.id,
-            });
-            fileCardData.size += config.chunkSize;
-            if (fileCardData.size >= file.size) {
-                fileCardData.size = file.size;
-                fileCardData.uploadComplete = true;
-            }
-            const result = await client.invoke(new Api.messages.EditMessage({
+            // Update file card.
+            fileCardData.chunks.push(chunkMessage.id);
+            await client.invoke(new Api.messages.EditMessage({
                 peer: fileCardMessage.peerId,
                 id: fileCardMessage.id,
                 message: `tglfs:file\n${JSON.stringify(fileCardData)}`,
             }));
 
-            chunkIndex += 1;
+            // Reset chunk index and fileId for the next chunk.
+            chunkIndex++;
+            chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER));
+
+            // Left shift bytes in partBuffer by remainingChunkSpace.
+            partBuffer.copyWithin(0, remainingChunkSpace);
+            partBytesWritten -= remainingChunkSpace;
+            partIndex = 0;
+
+            // Note: We don't need chunkBytesWritten anymore,
+            // so we don't update it here as we did before.
         }
-        const copyUFID = confirm(`File upload complete. Press OK to copy UFID ${UFID} to clipboard, otherwise press Cancel.`);
-        if (copyUFID) {
-            await navigator.clipboard.writeText(UFID);
+        // Upload the roll-over data in partBuffer as the last chunk.
+        const partBufferSubarray = partBuffer.subarray(0, partBytesWritten);
+        const result = await client.invoke(new Api.upload.SaveBigFilePart({
+            fileId: chunkFileId,
+            filePart: partIndex,
+            fileTotalParts: partIndex + 1,
+            bytes: Buffer.from(partBufferSubarray),
+        }));
+        if (!result) {
+            throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`);
         }
-    } catch (error) {
-        console.error(
-            "An error occurred during file upload:",
-            (error as Error).name,
-            (error as Error).message,
-            error
-        );
+        console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`);
     }
+    const chunkFileUploaded = new Api.InputFileBig({
+        id: chunkFileId,
+        parts: partIndex + 1,
+        name: `${UFID}.chunk${chunkIndex + 1}`,
+    });
+    // Send the chunk message.
+    const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded });
+
+    // Update file card with last chunk included and uploadComplete being true.
+    fileCardData.chunks.push(chunkMessage.id);
+    fileCardData.uploadComplete = true;
+    await client.invoke(new Api.messages.EditMessage({
+        peer: fileCardMessage.peerId,
+        id: fileCardMessage.id,
+        message: `tglfs:file\n${JSON.stringify(fileCardData)}`,
+    }));
+
+    const humanReadableFileSize = humanReadableSize(fileCardData.size);
+    const date = new Date(fileCardMessage.date * 1000);
+    const formattedDate = date.toLocaleString("en-US", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+    }).replace(",", ""); // Remove the comma between date and time.
+
+    const fileInfo = `Name: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`;
+    
+    alert(`File upload complete:\n\n${fileInfo}\n\nCopying UFID to clipboard.`);
+    
+    await navigator.clipboard.writeText(fileCardData.ufid);
 }
 
 export async function init(config: Config.Config): Promise<TelegramClient> {

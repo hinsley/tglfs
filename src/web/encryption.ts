@@ -3,6 +3,8 @@
  * @module encryption
  */
 
+export const ENCRYPTION_CHUNK_SIZE = 32 * 1024 * 1024; // 32 MB.
+
 export async function deriveAESKeyFromPassword(
     password: string,
     salt: Uint8Array

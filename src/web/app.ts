@@ -82,6 +82,7 @@ async function init() {
     const downloadFileButton = document.getElementById("downloadFileButton") as HTMLButtonElement;
     downloadFileButton.addEventListener("click", async () => {
         console.log("TODO: Implement file downloading.");
+        await Telegram.fileDownload(client, config);
     });
     const clearCacheButton = document.getElementById("clearCacheButton") as HTMLButtonElement;
     clearCacheButton.addEventListener("click", async () => {
