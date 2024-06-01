@@ -236,6 +236,7 @@ export async function fileRename(client: TelegramClient, config: Config.Config) 
 export async function fileUpload(client: TelegramClient, config: Config.Config) {
     // TODO: Introduce byte counting for the original file's stream so we know
     // how close to being done the upload is.
+    // TODO: Implement upload resumption.
     if (config.chunkSize < UPLOAD_PART_SIZE) {
         throw new Error(`config.chunkSize (${config.chunkSize}) must be larger than UPLOAD_PART_SIZE (${UPLOAD_PART_SIZE}).`);
     }
