@@ -20,6 +20,8 @@ const DOWNLOAD_PART_SIZE = 1024 * 1024; // 1 MiB.
 // UPLOAD_PART_SIZE must be divisible by 1 KiB (Telegram policy).
 // UPLOAD_PART_SIZE must divide 512 KiB (Telegram policy).
 const UPLOAD_PART_SIZE = 512 * 1024; // 512 KiB.
+const BATCH_LIMIT = 50; // How many messages to manipulate at a time with forwarding/deletion.
+const BATCH_DELAY = 1000; // How many milliseconds to wait before processing the next batch (may prevent spam bans).
 
 // TODO: Consider moving this type definition to a more appropriate place.
 type FileCardData = {
@@ -111,7 +113,8 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
         search: "tglfs:file \"ufid\":\"" + fileUfid.trim() + "\""
     });
     if (msgs.length === 0) {
-        throw new Error("File not found.");
+        alert("File not found.");
+        return;
     }
 
     const fileCardData: FileCardData = JSON.parse(msgs[0].message.substring(msgs[0].message.indexOf("{")));
@@ -408,6 +411,81 @@ export async function fileRename(client: TelegramClient, config: Config.Config) 
         alert(`File successfully renamed to ${newName}.`);
     } else {
         alert("Failed to rename file.");
+    }
+}
+
+export async function fileSend(client: TelegramClient, config: Config.Config) {
+    // TODO: Add batch size for the number of chunks that can be sent at a time.
+    const fileUfid = prompt("Enter UFID of file to send:");
+    if (!fileUfid || fileUfid.trim() === "") {
+        alert("No UFID provided. Operation cancelled.");
+        return;
+    }
+    const msgs = await client.getMessages("me", {
+        search: "tglfs:file \"ufid\":\"" + fileUfid.trim() + "\""
+    });
+    if (msgs.length === 0) {
+        alert("File not found.");
+        return;
+    }
+
+    const fileCardData: FileCardData = JSON.parse(msgs[0].message.substring(msgs[0].message.indexOf("{")));
+    
+    const humanReadableFileSize = humanReadableSize(fileCardData.size);
+    const date = new Date(msgs[0].date * 1000);
+    const formattedDate = date.toLocaleString("en-US", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false
+    }).replace(",", ""); // Remove the comma between date and time.
+    
+    const fileInfo = `Name: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`;
+
+    const fileRecipient = prompt(`Sending file:\n\n${fileInfo}\n\nEnter recipient:`);
+    if (!fileRecipient || fileRecipient.trim() === "") {
+        alert("No recipient provided. Operation cancelled.");
+        return;
+    }
+
+    let result;
+    try {
+        // Forward file card message.
+        result = await client.invoke(new Api.messages.ForwardMessages({
+            fromPeer: "me",
+            toPeer: fileRecipient,
+            id: [msgs[0].id],// ...fileCardData.chunks],
+            silent: false,
+        }));
+        // Forward chunk messages in batches.
+        await (async () => {
+            for (let i = 0; i < fileCardData.chunks.length; i += BATCH_LIMIT) {
+                const batch = fileCardData.chunks.slice(i, i + BATCH_LIMIT);
+                try {
+                    result = await client.invoke(new Api.messages.ForwardMessages({
+                        fromPeer: "me",
+                        toPeer: fileRecipient,
+                        id: batch,
+                        silent: true,
+                    }));
+                } catch (error: any) {
+                    alert("Failed to forward some chunks: " + error.message);
+                    return;
+                }
+                await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
+            }
+        })();
+    } catch (error: any) {
+        alert("Failed to send file: " + error.message);
+        return;
+    }
+    if (result) {
+        alert(`File successfully sent to ${fileRecipient}.`);
+    } else {
+        alert("Failed to send file.");
     }
 }
 
@@ -806,3 +884,4 @@ export async function init(config: Config.Config): Promise<TelegramClient> {
     });
     console.log("You are now logged in!");
     return client;
+}

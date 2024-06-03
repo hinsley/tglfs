@@ -50,18 +50,7 @@ async function init() {
     });
     const sendFileButton = document.getElementById("sendFileButton") as HTMLButtonElement;
     sendFileButton.addEventListener("click", async () => {
-        console.log("TODO: Implement file sending.");
-        // TODO: Remove the following.
-        // const message = await client.sendMessage("me", { message: "Hello, world!" });
-        // (window as any).lastMessage = message;
-        // console.log("Exposed message as lastMessage.");
-        // console.log("ID is", message.id);
-        const messages = await client.invoke(new Api.messages.GetMessages({ id: [new Api.InputMessageID({ id: 36100 })] }));
-        if ('messages' in messages) {
-            console.log("Messages:", messages.messages[0]);
-        } else {
-            console.log("No messages found or messages not modified.");
-        }
+        await Telegram.fileSend(client, config);
     });
     const unsendFileButton = document.getElementById("unsendFileButton") as HTMLButtonElement;
     unsendFileButton.addEventListener("click", async () => {
