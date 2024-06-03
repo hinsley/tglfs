@@ -3,10 +3,9 @@ import * as Telegram from "../telegram"
 async function init() {
     const apiIdElement = document.getElementById("apiId") as HTMLInputElement | null
     const apiHashElement = document.getElementById("apiHash") as HTMLInputElement | null
-    const telegramPremiumElement = document.getElementById("telegramPremium") as HTMLInputElement | null
     const phoneElement = document.getElementById("phone") as HTMLInputElement | null
 
-    if (!apiIdElement || !apiHashElement || !telegramPremiumElement || !phoneElement) {
+    if (!apiIdElement || !apiHashElement || !phoneElement) {
         throw new Error("Required input elements are missing.")
     }
 
@@ -17,11 +16,16 @@ async function init() {
     const config = {
         apiId: Number(apiIdElement.value),
         apiHash: apiHashElement.value,
-        chunkSize: 1024 ** 3 * (telegramPremiumElement.checked ? 4 : 2),
+        chunkSize: 1024 ** 3 * 2,
         phone: phoneElement.value,
     }
 
     const client = await Telegram.init(config)
+
+    const me = await client.getMe()
+    if (me.premium) {
+        config.chunkSize = 1024 ** 3 * 4
+    }
 
     // Expose the client and config objects to the browser console
     ;(window as any).client = client
