@@ -1,7 +1,3 @@
-import { Api } from "telegram";
-
-import * as Config from "../config";
-import * as FileProcessing from "./fileProcessing";
 import * as Telegram from "../telegram";
 
 async function init() {
@@ -54,7 +50,7 @@ async function init() {
     });
     const unsendFileButton = document.getElementById("unsendFileButton") as HTMLButtonElement;
     unsendFileButton.addEventListener("click", async () => {
-        console.log("TODO: Implement file unsending.");
+        await Telegram.fileUnsend(client, config);
     });
     const receiveFileButton = document.getElementById("receiveFileButton") as HTMLButtonElement;
     receiveFileButton.addEventListener("click", async () => {

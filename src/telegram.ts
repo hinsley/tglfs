@@ -3,6 +3,8 @@
  * @module Telegram
  */
 
+// TODO: Add `tglfs:chunk` annotation to chunk files.
+
 import { Api, TelegramClient } from "telegram";
 import { StoreSession } from "telegram/sessions";
 import { getFileInfo } from "telegram/Utils";
@@ -416,12 +418,6 @@ export async function fileReceive(client: TelegramClient, config: Config.Config)
     let result;
     try {
         let newChunkIds: number[] = [];
-        // // Forward file card message to Saved Messages.
-        // result = await client.invoke(new Api.messages.ForwardMessages({
-        //     fromPeer: source,
-        //     toPeer: "me",
-        //     id: [msgs[0].id],
-        // }));
         // Forward chunk messages to Saved Messages in batches.
         await (async () => {
             for (let i = 0; i < fileCards[selection].chunks.length; i += BATCH_LIMIT) {
@@ -573,6 +569,79 @@ export async function fileSend(client: TelegramClient, config: Config.Config) {
         alert(`File successfully sent to ${fileRecipient}.`);
     } else {
         alert("Failed to send file.");
+    }
+}
+
+export async function fileUnsend(client: TelegramClient, config: Config.Config) {
+    const source = prompt("Enter sender or receipt location:")?.trim();
+    if (!source) {
+        alert("No sender or receipt location provided. Operation cancelled.");
+        return;
+    }
+    const msgs = await client.getMessages(source, {
+        search: "tglfs:file"
+    });
+    let response = `Available files from ${source}:`;
+    const fileCards: FileCardData[] = [];
+    for (const msg of msgs) {
+        if (!msg.message.startsWith("tglfs:file")) {
+            continue;
+        }
+        const fileCardData: FileCardData = JSON.parse(msg.message.substring(msg.message.indexOf("{")));
+        fileCards.push(fileCardData);
+
+        const humanReadableFileSize = humanReadableSize(fileCardData.size);
+        // TODO: DRY-ify datetime formatting.
+        const date = new Date(msg.date * 1000);
+        const formattedDate = date.toLocaleString("en-US", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false
+        }).replace(",", ""); // Remove the comma between date and time.
+        response += `\n\nFile ${fileCards.length}\nName: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`;
+    }
+    if (fileCards.length == 0) {
+        alert(`No files found at ${source}.`);
+        return;
+    }
+    response += `\n\nChoose a file (1-${fileCards.length}) to copy UFID to clipboard:`;
+    const selectionString = prompt(response);
+    let selection = NaN; // Necessary to initialize to NaN for TypeScript not to complain.
+    if (selectionString !== null && selectionString.trim() !== "") {
+        selection = parseInt(selectionString, 10);
+        if (isNaN(selection) || selection < 1 || selection > fileCards.length) {
+            alert("Invalid selection. Aborting.");
+            return;
+        }
+        selection--; // Adjust to 0-based index.
+    }
+    // Unsend chunk messages in batches.
+    await (async () => {
+        for (let i = 0; i < fileCards[selection].chunks.length; i += BATCH_LIMIT) {
+            const batch = fileCards[selection].chunks.slice(i, i + BATCH_LIMIT);
+            try {
+                await client.invoke(new Api.messages.DeleteMessages({
+                    id: batch,
+                }));
+            } catch (error: any) {
+                alert("Failed to unsend some chunks:" + error.message);
+                return;
+            }
+            await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
+        }
+    })();
+    // Unsend file card.
+    let result = await client.invoke(new Api.messages.DeleteMessages({
+        id: [msgs[selection].id],
+    }));
+    if (result) {
+        alert(`File successfully unsent from ${source}.`);
+    } else {
+        alert("Failed to unsend file.");
     }
 }
 
