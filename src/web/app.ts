@@ -16,16 +16,16 @@ async function init() {
     const config = {
         apiId: Number(apiIdElement.value),
         apiHash: apiHashElement.value,
-        chunkSize: 1024 ** 3 * 2,
+        chunkSize: 1024 ** 3 * 2, // 2 GiB.
         phone: phoneElement.value,
     }
 
     const client = await Telegram.init(config)
 
-    const me = await client.getMe()
-    if (me.premium) {
-        config.chunkSize = 1024 ** 3 * 4
-    }
+    // const me = await client.getMe()
+    // if (me.premium) {
+    //     config.chunkSize = 1024 ** 3 * 4
+    // }
 
     // Expose the client and config objects to the browser console
     ;(window as any).client = client
