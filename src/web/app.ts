@@ -1,4 +1,4 @@
-import { Api, TelegramClient } from "telegram";
+import { Api } from "telegram";
 
 import * as Config from "../config";
 import * as FileProcessing from "./fileProcessing";
@@ -80,27 +80,21 @@ async function init() {
         await Telegram.fileDelete(client, config);
     });
     const downloadFileButton = document.getElementById("downloadFileButton") as HTMLButtonElement;
-    downloadFileButton.addEventListener("click", async () => {
-        console.log("TODO: Implement file downloading.");
-        await Telegram.fileDownload(client, config);
-    });
-    const clearCacheButton = document.getElementById("clearCacheButton") as HTMLButtonElement;
-    clearCacheButton.addEventListener("click", async () => {
-        async function deleteAllFiles(directoryHandle: FileSystemDirectoryHandle) {
-            for await (const [name, handle] of directoryHandle.entries()) {
-                if (handle.kind === 'file') {
-                    await directoryHandle.removeEntry(name);
-                }
-            }
-        }
-
-        (async () => {
-            const dirHandle = await navigator.storage.getDirectory();
-            await deleteAllFiles(dirHandle);
-        })();
-
-        alert("Local cache cleared.");
-    });
+    if ("serviceWorker" in navigator) {
+        await navigator.serviceWorker.register(
+            new URL("/src/service-worker.js", import.meta.url),
+            { type: "module" }
+        )
+        .then(function(registration) {
+            downloadFileButton.addEventListener("click", async () => {
+                await Telegram.fileDownload(client, config);
+            });
+        })
+        .catch(function(error) {
+            alert("Failed to register ServiceWorker.\nYou will not be able to download files.\nSee developer console for details.");
+            console.error("ServiceWorker registration failed: ", error);
+        });
+    }
 }
 
 const loginButton = document.getElementById("loginButton") as HTMLButtonElement;

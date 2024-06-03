@@ -4,16 +4,22 @@
  */
 
 import { Api, TelegramClient } from "telegram";
-import { StoreSession, StringSession } from "telegram/sessions";
+import { StoreSession } from "telegram/sessions";
+import { getFileInfo } from "telegram/Utils";
 
 import * as Config from "./config";
 import * as Encryption from "./web/encryption";
 import * as FileProcessing from "./web/fileProcessing";
 
 // https://core.telegram.org/api/files
-// Must be divisible by 1 KB.
-// Must divide 512 KB.
-const UPLOAD_PART_SIZE = 512 * 1024; // 512 KB.
+// DOWNLOAD_PART_SIZE must be divisible by 4 KiB (Telegram policy).
+// DOWNLOAD_PART_SIZE must divide 1 MiB (Telegram policy).
+// DOWNLOAD_PART_SIZE must divide `Config.chunkSize` (to be safe, 2 GiB). Subject to change.
+// DOWNLOAD_PART_SIZE must divide `Encryption.ENCRYPTION_CHUNK_SIZE`. Subject to change.
+const DOWNLOAD_PART_SIZE = 1024 * 1024; // 1 MiB.
+// UPLOAD_PART_SIZE must be divisible by 1 KiB (Telegram policy).
+// UPLOAD_PART_SIZE must divide 512 KiB (Telegram policy).
+const UPLOAD_PART_SIZE = 512 * 1024; // 512 KiB.
 
 // TODO: Consider moving this type definition to a more appropriate place.
 type FileCardData = {
@@ -46,7 +52,7 @@ function base64ToBytes(base64: string) {
 // TODO: Move this function to a more appropriate place.
 function humanReadableSize(size: number): string {
     const i = Math.floor(Math.log(size) / Math.log(1024));
-    const sizes = ['bytes', 'KB', 'MB', 'GB', 'TB'];
+    const sizes = ['bytes', 'KiB', 'MiB', 'GiB', 'TiB'];
     return (size / Math.pow(1024, i)).toFixed(i == 0 ? 0 : 2) + ' ' + sizes[i];
 }
 
@@ -95,6 +101,7 @@ export async function fileDelete(client: TelegramClient, config: Config.Config) 
 }
 
 export async function fileDownload(client: TelegramClient, config: Config.Config) {
+    // TODO: Implement file validation via UFID comparison.
     const fileUfid = prompt("Enter UFID of file to download:");
     if (!fileUfid || fileUfid.trim() === "") {
         alert("No UFID provided. Operation cancelled.");
@@ -108,6 +115,7 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
     }
 
     const fileCardData: FileCardData = JSON.parse(msgs[0].message.substring(msgs[0].message.indexOf("{")));
+    // TODO: Verify that uploadComplete field is set to `true`.
 
     const humanReadableFileSize = humanReadableSize(fileCardData.size);
     const date = new Date(msgs[0].date * 1000);
@@ -129,12 +137,182 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
         return;
     }
     
-    // Download file to OPFS.
+    const password = prompt("(Optional) Decryption password:");
+    if (password === null) {
+        alert("Operation cancelled.");
+        return;
+    }
 
+    // Request chunk messages by their IDs in the file card.
+    const chunkMsgs: Api.messages.Messages = await client.getMessages(
+        "me",
+        { ids: fileCardData.chunks }
+    );
+
+    const IVBytes = base64ToBytes(fileCardData.IV);
+    // TODO: DRY-ify the salt & counter byte size. Should be
+    // module-level constants.
+    const salt = IVBytes.subarray(0, 16);
+    const aesKey = await Encryption.deriveAESKeyFromPassword(password, salt);
+    let decryptionCounter = IVBytes.slice(16);
+
+    let aesBlockBytesWritten = 0;
+    const decryptionBuffer = new Uint8Array(Encryption.ENCRYPTION_CHUNK_SIZE);
+    
+    let decompressionStreamController: ReadableStreamController<Uint8Array> | null = null;
+    const decompressionReadableStream = new ReadableStream({
+        start(controller) {
+            decompressionStreamController = controller;
+        }
+    });
+    const decompressionStream = new DecompressionStream("gzip");
+    const decompressedDataStream = decompressionReadableStream.pipeThrough(decompressionStream);
+    const decompressedDataStreamReader = decompressedDataStream.getReader();
+
+    async function downloadFile(serviceWorkerRegistration: ServiceWorkerRegistration) {
+        // Inform the service worker of the file name.
+        serviceWorkerRegistration.active?.postMessage({
+            type: "SET_FILE_NAME",
+            fileName: fileCardData.name,
+        });
+        // Download each chunk.
+        for (const chunkMsg of chunkMsgs) {
+            console.log(chunkMsg);
+            let chunkBytesWritten = 0;
+            while (chunkBytesWritten < chunkMsg.media.document.size) {
+                // Download the next (up to) `DOWNLOAD_PART_SIZE` bytes of the chunk file.
+                const chunkPart = await client.invoke(new Api.upload.GetFile({
+                    location: getFileInfo(chunkMsg.media).location,
+                    offset: chunkBytesWritten,
+                    limit: DOWNLOAD_PART_SIZE,
+                    precise: false,
+                    cdnSupported: false,
+                }));
+                chunkBytesWritten += chunkPart.bytes.length;
+
+                // Write the chunk part to the decryption buffer.
+                decryptionBuffer.set(chunkPart.bytes, aesBlockBytesWritten);
+                aesBlockBytesWritten += chunkPart.bytes.length;
+
+                // If the decryption buffer is full, decrypt.
+                if (aesBlockBytesWritten === decryptionBuffer.length) {
+                    const decryptedData = new Uint8Array(await window.crypto.subtle.decrypt(
+                        {
+                            name: "AES-CTR",
+                            counter: decryptionCounter,
+                            length: 64 // Bit length of the counter block.
+                        },
+                        aesKey,
+                        decryptionBuffer
+                    ));
+                    decryptionCounter = Encryption.incrementCounter(decryptionCounter);
+                    aesBlockBytesWritten = 0;
+
+                    // gzip-decompress the decrypted data.
+                    decompressionStreamController?.enqueue(decryptedData);
+                    let decompressedData = new Uint8Array(0);
+                    let bytesRead = 0;
+                    while (bytesRead < decryptionBuffer.length) {
+                        const { value } = await decompressedDataStreamReader.read();
+                        if (!value) {
+                            continue;
+                        }
+                        const newDecompressedData = new Uint8Array(decompressedData.length + value.length);
+                        newDecompressedData.set(decompressedData);
+                        newDecompressedData.set(value, decompressedData.length);
+                        decompressedData = newDecompressedData;
+                        bytesRead += value.length;
+                    }
+
+                    // Send the decompressed data to the service worker.
+                    serviceWorkerRegistration.active?.postMessage({
+                        type: "PROCESSED_DATA",
+                        data: decompressedData,
+                    }, [decompressedData.buffer]);
+                }
+            }
+        }
+            
+        // If there is any data left in the decryption buffer, process it.
+        if (aesBlockBytesWritten > 0) {
+            // Decrypt the remaining data.
+            const decryptedData = new Uint8Array(await window.crypto.subtle.decrypt(
+                {
+                    name: "AES-CTR",
+                    counter: decryptionCounter,
+                    length: 64 // Bit length of the counter block.
+                },
+                aesKey,
+                decryptionBuffer.subarray(0, aesBlockBytesWritten)
+            ));
+
+            // gzip-decompress the decrypted data.
+            decompressionStreamController?.enqueue(decryptedData);
+            decompressionStreamController?.close();
+            let decompressedData = new Uint8Array(0);
+            let value, done;
+            try {
+                while ({ value, done } = await decompressedDataStreamReader.read(), !done) {
+                    const newDecompressedData = new Uint8Array(decompressedData.length + value.length);
+                    newDecompressedData.set(decompressedData);
+                    newDecompressedData.set(value, decompressedData.length);
+                    decompressedData = newDecompressedData;
+                }
+            } catch (e) {
+                if (e instanceof TypeError) {
+                    alert("Incorrect decryption password entered. Aborting download.");
+                } else {
+                    console.error(e);
+                }
+            }
+
+            // Send the decompressed data to the service worker.
+            serviceWorkerRegistration.active?.postMessage({
+                type: "PROCESSED_DATA",
+                data: decompressedData,
+            }, [decompressedData.buffer]);
+        } else {
+            decompressionStreamController?.close();
+        }
+
+        // Notify the service worker that data transmission is complete.
+        serviceWorkerRegistration.active?.postMessage({
+            type: "DOWNLOAD_COMPLETE",
+        });
+    }
+
+    const sanitizedUfid = encodeURIComponent(fileCardData.ufid);
+    const responsePromise = fetch("/download-file?ufid=" + sanitizedUfid);
+
+    const response = await responsePromise;
+    if (!response.ok) {
+        console.error("Failed to download file.");
+        alert("Failed to download file.");
+        return;
+    }
+
+    const serviceWorkerRegistration = await navigator.serviceWorker.ready;
+    if (serviceWorkerRegistration.active) {
+        await downloadFile(serviceWorkerRegistration);
+        alert("Download complete."); // TODO: Remove.
+    } else {
+        console.error("Service worker is not active.");
+        alert("Service worker is not active. Cannot proceed with the download.");
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileCardData.name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
 }
 
 export async function fileLookup(client: TelegramClient, config: Config.Config) {
-    const query = prompt("Search query (filename or UFID):");
+    const query = window.prompt("Search query (filename or UFID):");
     if (query === null) {
         return;
     }
@@ -341,6 +519,7 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
                         partBytesWritten
                     );
                     partBytesWritten += bytesToCopy;
+                    encryptedDataBytesProcessed += bytesToCopy;
                     if (partBytesWritten === UPLOAD_PART_SIZE) {
                         // partBuffer is full. Send as much as will fit in this chunk.
                         const remainingChunkSpace = config.chunkSize - chunkBytesWritten;
@@ -623,8 +802,7 @@ export async function init(config: Config.Config): Promise<TelegramClient> {
             }
             return code;
         },
-        onError: (error) => console.error(error),
+        onError: (error: any) => console.error(error),
     });
     console.log("You are now logged in!");
     return client;
-}
