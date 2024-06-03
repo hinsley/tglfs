@@ -58,7 +58,7 @@ async function init() {
     });
     const receiveFileButton = document.getElementById("receiveFileButton") as HTMLButtonElement;
     receiveFileButton.addEventListener("click", async () => {
-        console.log("TODO: Implement file receiving.");
+        await Telegram.fileReceive(client, config);
     });
     const renameFileButton = document.getElementById("renameFileButton") as HTMLButtonElement;
     renameFileButton.addEventListener("click", async () => {

@@ -180,7 +180,6 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
         });
         // Download each chunk.
         for (const chunkMsg of chunkMsgs) {
-            console.log(chunkMsg);
             let chunkBytesWritten = 0;
             while (chunkBytesWritten < chunkMsg.media.document.size) {
                 // Download the next (up to) `DOWNLOAD_PART_SIZE` bytes of the chunk file.
@@ -332,6 +331,7 @@ export async function fileLookup(client: TelegramClient, config: Config.Config) 
         fileCards.push(fileCardData);
 
         const humanReadableFileSize = humanReadableSize(fileCardData.size);
+        // TODO: DRY-ify datetime formatting.
         const date = new Date(msg.date * 1000);
         const formattedDate = date.toLocaleString("en-US", {
             year: "numeric",
@@ -364,6 +364,95 @@ export async function fileLookup(client: TelegramClient, config: Config.Config) 
     }
     const UFID = fileCards[selection - 1].ufid;
     await navigator.clipboard.writeText(UFID);
+}
+
+export async function fileReceive(client: TelegramClient, config: Config.Config) {
+    const source = prompt("Enter sender or receipt location:")?.trim();
+    if (!source) {
+        alert("No sender or receipt location provided. Operation cancelled.");
+        return;
+    }
+    const msgs = await client.getMessages(source, {
+        search: "tglfs:file",
+    });
+    let response = `Available files from ${source}:`;
+    const fileCards: FileCardData[] = [];
+    for (const msg of msgs) {
+        if (!msg.message.startsWith("tglfs:file")) {
+            continue; // Not a file card message.
+        }
+        const fileCardData: FileCardData = JSON.parse(msg.message.substring(msg.message.indexOf("{")));
+        fileCards.push(fileCardData);
+
+        const humanReadableFileSize = humanReadableSize(fileCardData.size);
+        // TODO: DRY-ify datetime formatting.
+        const date = new Date(msg.date * 1000);
+        const formattedDate = date.toLocaleString("en-US", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false
+        }).replace(",", ""); // Remove the comma between date and time.
+        response += `\n\nFile ${fileCards.length}\nName: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`;
+    }
+    if (fileCards.length == 0) {
+        alert(`No files found at ${source}.`);
+        return;
+    }
+    response += `\n\nChoose a file (1-${fileCards.length}) to copy UFID to clipboard:`;
+    const selectionString = prompt(response);
+    let selection = NaN; // Necessary to initialize to NaN for TypeScript not to complain.
+    if (selectionString !== null && selectionString.trim() !== "") {
+        selection = parseInt(selectionString, 10);
+        if (isNaN(selection) || selection < 1 || selection > fileCards.length) {
+            alert("Invalid selection. Aborting.");
+            return;
+        }
+        selection--; // Adjust to 0-based index.
+    }
+    let result;
+    try {
+        let newChunkIds: number[] = [];
+        // // Forward file card message to Saved Messages.
+        // result = await client.invoke(new Api.messages.ForwardMessages({
+        //     fromPeer: source,
+        //     toPeer: "me",
+        //     id: [msgs[0].id],
+        // }));
+        // Forward chunk messages to Saved Messages in batches.
+        await (async () => {
+            for (let i = 0; i < fileCards[selection].chunks.length; i += BATCH_LIMIT) {
+                try {
+                    for (let j = i; j < Math.min(i + BATCH_LIMIT, fileCards[selection].chunks.length); j++) {
+                        result = await client.invoke(new Api.messages.ForwardMessages({
+                            fromPeer: source,
+                            toPeer: "me",
+                            id: [fileCards[selection].chunks[j]]
+                        }));
+                        newChunkIds.push(result.updates[0].id);
+                    }
+                } catch (error: any) {
+                    alert("Failed to receive some chunks:" + error.message);
+                    return;
+                }
+                await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
+            }
+        })();
+        // Send updated file card to Saved Messages.
+        fileCards[selection].chunks = newChunkIds;
+        result = await client.sendMessage("me", { message: `tglfs:file\n${JSON.stringify(fileCards[selection])}` });
+    } catch (error: any) {
+        alert("Failed to receive file:" + error.message);
+        return;
+    }
+    if (result) {
+        alert(`File successfully received from ${source}.`);
+    } else {
+        alert("Failed to receive file.");
+    }
 }
 
 export async function fileRename(client: TelegramClient, config: Config.Config) {
@@ -415,7 +504,6 @@ export async function fileRename(client: TelegramClient, config: Config.Config) 
 }
 
 export async function fileSend(client: TelegramClient, config: Config.Config) {
-    // TODO: Add batch size for the number of chunks that can be sent at a time.
     const fileUfid = prompt("Enter UFID of file to send:");
     if (!fileUfid || fileUfid.trim() === "") {
         alert("No UFID provided. Operation cancelled.");
@@ -453,31 +541,30 @@ export async function fileSend(client: TelegramClient, config: Config.Config) {
 
     let result;
     try {
-        // Forward file card message.
-        result = await client.invoke(new Api.messages.ForwardMessages({
-            fromPeer: "me",
-            toPeer: fileRecipient,
-            id: [msgs[0].id],// ...fileCardData.chunks],
-            silent: false,
-        }));
+        let newChunkIds: number[] = [];
         // Forward chunk messages in batches.
         await (async () => {
             for (let i = 0; i < fileCardData.chunks.length; i += BATCH_LIMIT) {
-                const batch = fileCardData.chunks.slice(i, i + BATCH_LIMIT);
                 try {
-                    result = await client.invoke(new Api.messages.ForwardMessages({
-                        fromPeer: "me",
-                        toPeer: fileRecipient,
-                        id: batch,
-                        silent: true,
-                    }));
+                    for (let j = i; j < Math.min(i + BATCH_LIMIT, fileCardData.chunks.length); j++) {
+                        result = await client.invoke(new Api.messages.ForwardMessages({
+                            fromPeer: "me",
+                            toPeer: fileRecipient,
+                            id: [fileCardData.chunks[j]],
+                            silent: true,
+                        }));
+                        newChunkIds.push(result.updates[0].id);
+                    }
                 } catch (error: any) {
-                    alert("Failed to forward some chunks: " + error.message);
+                    alert("Failed to forward some chunks:" + error.message);
                     return;
                 }
                 await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
             }
         })();
+        // Send updated file card to recipient.
+        fileCardData.chunks = newChunkIds;
+        result = await client.sendMessage(fileRecipient, { message: `tglfs:file\n${JSON.stringify(fileCardData)}` });
     } catch (error: any) {
         alert("Failed to send file: " + error.message);
         return;
