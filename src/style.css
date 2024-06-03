@@ -31,7 +31,8 @@ h1#title {
     -moz-user-select: none;
     color: #24a1de;
 }
-div#login, div#controls {
+div#login,
+div#controls {
     width: 100%;
     max-width: 330px;
     padding: 15px;
@@ -58,25 +59,30 @@ div#controls button {
     background-color: #fff;
     color: #24a1de;
 }
-div#controls button:hover, div#controls button:active {
+div#controls button:hover,
+div#controls button:active {
     background-color: #24a1de;
     color: #fff;
 }
-div#login input#apiId, div#controls button#uploadFileButton {
-  border-bottom: 0;
-  border-bottom-right-radius: 0;
-  border-bottom-left-radius: 0;
+div#login input#apiId,
+div#controls button#uploadFileButton {
+    border-bottom: 0;
+    border-bottom-right-radius: 0;
+    border-bottom-left-radius: 0;
 }
-div#login input#apiHash, div#controls button.middleButton {
-  border-bottom: 0;
-  border-radius: 0;
+div#login input#apiHash,
+div#controls button.middleButton {
+    border-bottom: 0;
+    border-radius: 0;
 }
-div#login input#phone, div#controls button#downloadFileButton {
+div#login input#phone,
+div#controls button#downloadFileButton {
     margin-top: -1px;
     margin-bottom: 10px;
     border-top-left-radius: 0;
     border-top-right-radius: 0;
 }
-div#login .form-control:focus, div#controls button:hover {
+div#login .form-control:focus,
+div#controls button:hover {
     z-index: 2;
 }

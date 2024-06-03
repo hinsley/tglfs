@@ -22,7 +22,8 @@
         "telegram": "^2.21.2"
     },
     "scripts": {
-        "run": "npx parcel src/index.html",
-        "format": "prettier --write ."
+        "build": "npx parcel build src/index.html",
+        "format": "prettier --write .",
+        "run": "npx parcel src/index.html"
     }
 }

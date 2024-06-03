@@ -3,19 +3,16 @@
  * @module encryption
  */
 
-export const ENCRYPTION_CHUNK_SIZE = 1 * 1024 * 1024; // 32 MB.
+export const ENCRYPTION_CHUNK_SIZE = 1 * 1024 * 1024 // 32 MB.
 
-export async function deriveAESKeyFromPassword(
-    password: string,
-    salt: Uint8Array
-): Promise<CryptoKey> {
+export async function deriveAESKeyFromPassword(password: string, salt: Uint8Array): Promise<CryptoKey> {
     const keyMaterial = await window.crypto.subtle.importKey(
         "raw",
         new TextEncoder().encode(password),
         { name: "PBKDF2" },
         false,
-        ["deriveKey"]
-    );
+        ["deriveKey"],
+    )
 
     return window.crypto.subtle.deriveKey(
         {
@@ -27,17 +24,17 @@ export async function deriveAESKeyFromPassword(
         keyMaterial,
         { name: "AES-CTR", length: 256 },
         false,
-        ["encrypt", "decrypt"]
-    );
+        ["encrypt", "decrypt"],
+    )
 }
 
 export function incrementCounter(counter: Uint8Array): Uint8Array {
-    const newCounter = new Uint8Array(counter.length);
-    let carry = 1;
+    const newCounter = new Uint8Array(counter.length)
+    let carry = 1
     for (let i = counter.length - 1; i >= 0; i--) {
-        const sum = counter[i] + carry;
-        newCounter[i] = sum & 0xff;
-        carry = sum >> 8;
+        const sum = counter[i] + carry
+        newCounter[i] = sum & 0xff
+        carry = sum >> 8
     }
-    return newCounter;
+    return newCounter
 }
