@@ -55,17 +55,23 @@ div#login button#loginButton {
     background-color: #24a1de;
     border-color: #24a1de;
 }
+div#controls label#uploadFileLabel,
 div#controls button {
     background-color: #fff;
     color: #24a1de;
 }
+div#controls label#uploadFileLabel:hover,
+div#controls label#uploadFileLabel:active,
 div#controls button:hover,
 div#controls button:active {
     background-color: #24a1de;
     color: #fff;
 }
+div#controls input#uploadFileInput {
+    display: none;
+}
 div#login input#apiId,
-div#controls button#uploadFileButton {
+div#controls label#uploadFileLabel {
     border-bottom: 0;
     border-bottom-right-radius: 0;
     border-bottom-left-radius: 0;

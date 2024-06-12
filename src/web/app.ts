@@ -40,8 +40,8 @@ async function init() {
     if (controlsDiv) {
         controlsDiv.removeAttribute("hidden")
     }
-    const uploadFileButton = document.getElementById("uploadFileButton") as HTMLButtonElement
-    uploadFileButton.addEventListener("click", async () => {
+    const uploadFileInput = document.getElementById("uploadFileInput") as HTMLInputElement
+    uploadFileInput.addEventListener("change", async () => {
         await Telegram.fileUpload(client, config)
     })
     const fileLookupButton = document.getElementById("fileLookupButton") as HTMLButtonElement

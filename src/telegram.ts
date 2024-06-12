@@ -690,8 +690,13 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
         )
     }
 
-    const [fileHandle] = await (window as any).showOpenFilePicker()
-    const file = await fileHandle.getFile()
+    const uploadFileInput = document.getElementById("uploadFileInput") as HTMLInputElement
+    const selectedFiles = uploadFileInput.files
+    if (!selectedFiles || selectedFiles.length === 0) {
+        alert("No file selected. Aborting.")
+        return
+    }
+    const file = selectedFiles[0]
     console.log(`Selected file: ${file.name}`)
 
     let password = prompt("(Optional) Encryption password:")
