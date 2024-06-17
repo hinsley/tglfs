@@ -23,8 +23,8 @@
   "description": "Telegram large file storage",
   "screenshots": [
     {
-        "src": "./screenshots/android_ui.png",
-        "type": "image/png",
+        "src": "./screenshots/android_ui.jpg",
+        "type": "image/jpeg",
         "sizes": "895x1280",
         "platform": "android"
     }
