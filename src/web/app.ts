@@ -1,6 +1,6 @@
 import * as Telegram from "../telegram"
 
-async function init() {
+async function init(apiId?: string, apiHash?: string, phoneNumber?: string) {
     const apiIdElement = document.getElementById("apiId") as HTMLInputElement | null
     const apiHashElement = document.getElementById("apiHash") as HTMLInputElement | null
     const phoneElement = document.getElementById("phone") as HTMLInputElement | null
@@ -9,23 +9,27 @@ async function init() {
         throw new Error("Required input elements are missing.")
     }
 
-    if (apiIdElement.value.trim() === "" || apiHashElement.value.trim() === "" || phoneElement.value.trim() === "") {
+    const apiIdValue = apiId ?? apiIdElement.value
+    const apiHashValue = apiHash ?? apiHashElement.value
+    const phoneValue = phoneNumber ?? phoneElement.value
+
+    if (apiIdValue.trim() === "" || apiHashValue.trim() === "" || phoneValue.trim() === "") {
         throw new Error("Input fields cannot be empty.")
     }
 
     const config = {
-        apiId: Number(apiIdElement.value),
-        apiHash: apiHashElement.value,
+        apiId: Number(apiIdValue),
+        apiHash: apiHashValue,
         chunkSize: 1024 ** 3 * 2, // 2 GiB.
-        phone: phoneElement.value,
+        phone: phoneValue,
     }
 
     const client = await Telegram.init(config)
 
-    // const me = await client.getMe()
-    // if (me.premium) {
-    //     config.chunkSize = 1024 ** 3 * 4
-    // }
+    // Set login credential cookies.
+    document.cookie = `apiId=${apiIdValue}; path=/`
+    document.cookie = `apiHash=${apiHashValue}; path=/`
+    document.cookie = `phone=${phoneValue}; path=/`
 
     // Expose the client and config objects to the browser console
     ;(window as any).client = client
@@ -34,7 +38,7 @@ async function init() {
     // Set up UI
     const loginDiv = document.getElementById("login")
     if (loginDiv) {
-        loginDiv.remove()
+        loginDiv.setAttribute("hidden", "")
     }
     const controlsDiv = document.getElementById("controls")
     if (controlsDiv) {
@@ -87,4 +91,41 @@ async function init() {
 }
 
 const loginButton = document.getElementById("loginButton") as HTMLButtonElement
-loginButton.addEventListener("click", init)
+loginButton.addEventListener("click", () => {
+    init()
+})
+
+window.addEventListener("load", async () => {
+    function getCookie(name: string): string | null {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) {
+            const cookieValue = parts.pop()?.split(';').shift() || null;
+            return cookieValue ? decodeURIComponent(cookieValue) : null;
+        }
+        return null;
+    }
+
+    const apiId = getCookie("apiId");
+    const apiHash = getCookie("apiHash");
+    const phone = getCookie("phone");
+
+    // Check if login credentials are already stored as cookies.
+    if (apiId && apiHash && phone) {
+        (document.getElementById("apiId") as HTMLInputElement).value = apiId;
+        (document.getElementById("apiHash") as HTMLInputElement).value = apiHash;
+        (document.getElementById("phone") as HTMLInputElement).value = phone;
+        await init();
+    } else {
+        const loginDiv = document.getElementById("login")
+        if (loginDiv) {
+            loginDiv.removeAttribute("hidden")
+        }
+    }
+    // Remove splash screen once the page has loaded.
+    const splashDiv = document.getElementById("splash")
+    if (splashDiv) {
+        splashDiv.remove()
+    }
+})
+
