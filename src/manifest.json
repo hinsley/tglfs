@@ -1,0 +1,27 @@
+{
+  "short_name": "TGLFS",
+  "name": "Telegram Large File Storage",
+  "icons": [
+    {
+        "src": "./icons/TGLFS logo 192.png",
+        "type": "image/png",
+        "sizes": "192x192"
+    },
+    {
+        "src": "./icons/TGLFS logo 512.png",
+        "type": "image/png",
+        "sizes": "512x512"
+    }
+  ],
+  "id": "/",
+  "start_url": "/",
+  "background_color": "#ffffff",
+  "display": "standalone",
+  "scope": "/",
+  "theme_color": "#24a1de",
+  "shortcuts": [
+  ],
+  "description": "Telegram large file storage",
+  "screenshots": [
+  ]
+}
