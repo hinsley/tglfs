@@ -21,6 +21,13 @@
   "scope": "/",
   "theme_color": "#24a1de",
   "description": "Telegram large file storage",
+  "dir": "auto",
+  "lang": "en",
+  "categories": [
+    "photo",
+    "security",
+    "utilities"
+  ],
   "screenshots": [
     {
         "src": "./screenshots/android_ui.jpg",
@@ -35,5 +42,7 @@
         "platform": "play",
         "url": "https://play.google.com/store/apps/details?id=com.kratosle.unlim&hl=en_US"
     }
-  ]
+  ],
+  "prefer_related_applications": false
 }
+
