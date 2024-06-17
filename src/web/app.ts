@@ -27,9 +27,9 @@ async function init(apiId?: string, apiHash?: string, phoneNumber?: string) {
     const client = await Telegram.init(config)
 
     // Set login credential cookies.
-    document.cookie = `apiId=${apiIdValue}; path=/`
-    document.cookie = `apiHash=${apiHashValue}; path=/`
-    document.cookie = `phone=${phoneValue}; path=/`
+    document.cookie = `apiId=${encodeURIComponent(apiIdValue)}; path=/`
+    document.cookie = `apiHash=${encodeURIComponent(apiHashValue)}; path=/`
+    document.cookie = `phone=${encodeURIComponent(phoneValue)}; path=/`
 
     // Expose the client and config objects to the browser console
     ;(window as any).client = client
