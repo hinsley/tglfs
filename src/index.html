@@ -16,6 +16,11 @@
         <script type="module" src="web/app.ts"></script>
     </head>
     <body class="text-center">
+        <script type="module">
+            if (typeof navigator.serviceWorker !== "undefined") {
+                navigator.serviceWorker.register(new URL("/src/offline-page-sw.js", import.meta.url))
+            }
+        </script>
         <div id="app">
             <div id="logo">🗂️</div>
             <h1 id="title" class="h3 mb-3 font-weight-normal">Telegram Large File Storage</h1>
