@@ -92,3 +92,11 @@ div#login .form-control:focus,
 div#controls button:hover {
     z-index: 2;
 }
+div#progressBarContainer {
+    margin-top: 16px;
+}
+div#progressBarContainer .progress {
+    margin-top: 8px;
+    height: 24px;
+}
+
