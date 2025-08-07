@@ -163,11 +163,15 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
     // Set up progress bar view.
     const progressBarText = document.getElementById("progressBarText")
     const progressBar = document.getElementById("progress")
+    const progressBytesText = document.getElementById("progressBytesText")
+    const progressTimeText = document.getElementById("progressTimeText")
     if (progressBarText && progressBar) {
         progressBarText.textContent = `Downloading ${fileCardData.name}`
         progressBar.style.width = "0%"
         progressBar.textContent = "0%"
         progressBar.setAttribute("aria-valuenow", "0")
+        if (progressBytesText) progressBytesText.textContent = `0 / ${fileCardData.size} B`
+        if (progressTimeText) progressTimeText.textContent = `Elapsed: 00:00:00 • Remaining: --:--:--`
     }
 
     try {
@@ -185,6 +189,7 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
         const decryptionBuffer = new Uint8Array(Encryption.ENCRYPTION_CHUNK_SIZE)
 
         let bytesProcessed = 0
+        const startTimeMs = Date.now()
         // For streaming UFID verification.
         const UFIDChunkSize = 64 * 1024 // 64 KiB.
         let ufidRolling = new Uint8Array(0)
@@ -192,6 +197,40 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
         const byteCounterStream = new TransformStream({
             async transform(chunk, controller) {
                 bytesProcessed += chunk.length
+                if (progressBar) {
+                    const progressPercentage = Math.round((bytesProcessed / fileCardData.size) * 100).toString()
+                    progressBar.style.width = `${progressPercentage}%`
+                    progressBar.textContent = `${progressPercentage}%`
+                    progressBar.setAttribute("aria-valuenow", progressPercentage)
+                }
+                if (progressBytesText) {
+                    const units = ["B", "KiB", "MiB", "GiB", "PiB"] as const
+                    const pickUnit = (n: number) => {
+                        let i = 0
+                        while (i < units.length - 1 && n >= 1024) {
+                            n = n / 1024
+                            i++
+                        }
+                        return { value: n, unit: units[i] }
+                    }
+                    const sofar = pickUnit(bytesProcessed)
+                    const total = pickUnit(fileCardData.size)
+                    progressBytesText.textContent = `${sofar.value.toFixed(sofar.unit === "B" ? 0 : 2)} ${sofar.unit} / ${total.value.toFixed(total.unit === "B" ? 0 : 2)} ${total.unit}`
+                }
+                if (progressTimeText) {
+                    const elapsedSec = Math.max(0, Math.floor((Date.now() - startTimeMs) / 1000))
+                    const rate = elapsedSec > 0 ? bytesProcessed / elapsedSec : 0
+                    const remainingBytes = Math.max(0, fileCardData.size - bytesProcessed)
+                    const etaSec = rate > 0 ? Math.ceil(remainingBytes / rate) : 0
+                    const fmt = (s: number) => {
+                        const h = Math.floor(s / 3600)
+                        const m = Math.floor((s % 3600) / 60)
+                        const sec = s % 60
+                        const pad = (n: number) => n.toString().padStart(2, "0")
+                        return `${pad(h)}:${pad(m)}:${pad(sec)}`
+                    }
+                    progressTimeText.textContent = `Elapsed: ${fmt(elapsedSec)} • Remaining: ${etaSec ? fmt(etaSec) : "--:--:--"}`
+                }
                 // Accumulate data and process in fixed 64 KiB blocks.
                 const combined = new Uint8Array(ufidPending.length + chunk.length)
                 combined.set(ufidPending, 0)
@@ -291,13 +330,7 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
                             [decompressedData.buffer],
                         )
                         
-                        // Update the progress bar.
-                        if (progressBar) {
-                            const progressPercentage = Math.round((bytesProcessed / fileCardData.size) * 100).toString()
-                            progressBar.style.width = `${progressPercentage}%`
-                            progressBar.textContent = `${progressPercentage}%`
-                            progressBar.setAttribute("aria-valuenow", progressPercentage)
-                        }
+                        // Progress UI is updated in byteCounterStream.
                     }
                 }
             }
@@ -349,13 +382,7 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
                     [decompressedData.buffer],
                 )
 
-                // Update the progress bar.
-                if (progressBar) {
-                    const progressPercentage = Math.round((bytesProcessed / fileCardData.size) * 100).toString()
-                    progressBar.style.width = `${progressPercentage}%`
-                    progressBar.textContent = `${progressPercentage}%`
-                    progressBar.setAttribute("aria-valuenow", progressPercentage)
-                }
+                // Progress UI is updated in byteCounterStream.
             } else {
                 decompressionStreamController?.close()
             }
@@ -477,11 +504,15 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
     // Set up progress bar view.
     const progressBarText = document.getElementById("progressBarText")
     const progressBar = document.getElementById("progress")
+    const progressBytesText = document.getElementById("progressBytesText")
+    const progressTimeText = document.getElementById("progressTimeText")
     if (progressBarText && progressBar) {
         progressBarText.textContent = `Downloading ${fileCardData.name}`
         progressBar.style.width = "0%"
         progressBar.textContent = "0%"
         progressBar.setAttribute("aria-valuenow", "0")
+        if (progressBytesText) progressBytesText.textContent = `0 / ${fileCardData.size} B`
+        if (progressTimeText) progressTimeText.textContent = `Elapsed: 00:00:00 • Remaining: --:--:--`
     }
 
     try {
@@ -499,10 +530,45 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
         const decryptionBuffer = new Uint8Array(Encryption.ENCRYPTION_CHUNK_SIZE)
 
         let bytesProcessed = 0
+        const startTimeMs = Date.now()
         const byteCounterStream = new TransformStream({
             transform(chunk, controller) {
                 bytesProcessed += chunk.length
                 controller.enqueue(chunk)
+                if (progressBar) {
+                    const progressPercentage = Math.round((bytesProcessed / fileCardData.size) * 100).toString()
+                    progressBar.style.width = `${progressPercentage}%`
+                    progressBar.textContent = `${progressPercentage}%`
+                    progressBar.setAttribute("aria-valuenow", progressPercentage)
+                }
+                if (progressBytesText) {
+                    const units = ["B", "KiB", "MiB", "GiB", "PiB"] as const
+                    const pickUnit = (n: number) => {
+                        let i = 0
+                        while (i < units.length - 1 && n >= 1024) {
+                            n = n / 1024
+                            i++
+                        }
+                        return { value: n, unit: units[i] }
+                    }
+                    const sofar = pickUnit(bytesProcessed)
+                    const total = pickUnit(fileCardData.size)
+                    progressBytesText.textContent = `${sofar.value.toFixed(sofar.unit === "B" ? 0 : 2)} ${sofar.unit} / ${total.value.toFixed(total.unit === "B" ? 0 : 2)} ${total.unit}`
+                }
+                if (progressTimeText) {
+                    const elapsedSec = Math.max(0, Math.floor((Date.now() - startTimeMs) / 1000))
+                    const rate = elapsedSec > 0 ? bytesProcessed / elapsedSec : 0
+                    const remainingBytes = Math.max(0, fileCardData.size - bytesProcessed)
+                    const etaSec = rate > 0 ? Math.ceil(remainingBytes / rate) : 0
+                    const fmt = (s: number) => {
+                        const h = Math.floor(s / 3600)
+                        const m = Math.floor((s % 3600) / 60)
+                        const sec = s % 60
+                        const pad = (n: number) => n.toString().padStart(2, "0")
+                        return `${pad(h)}:${pad(m)}:${pad(sec)}`
+                    }
+                    progressTimeText.textContent = `Elapsed: ${fmt(elapsedSec)} • Remaining: ${etaSec ? fmt(etaSec) : "--:--:--"}`
+                }
             },
         })
 
@@ -584,13 +650,7 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
                             [decompressedData.buffer],
                         )
                         
-                        // Update the progress bar.
-                        if (progressBar) {
-                            const progressPercentage = Math.round((bytesProcessed / fileCardData.size) * 100).toString()
-                            progressBar.style.width = `${progressPercentage}%`
-                            progressBar.textContent = `${progressPercentage}%`
-                            progressBar.setAttribute("aria-valuenow", progressPercentage)
-                        }
+                        // Progress UI is updated in byteCounterStream.
                     }
                 }
             }
@@ -641,13 +701,7 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
                     [decompressedData.buffer],
                 )
 
-                // Update the progress bar.
-                if (progressBar) {
-                    const progressPercentage = Math.round((bytesProcessed / fileCardData.size) * 100).toString()
-                    progressBar.style.width = `${progressPercentage}%`
-                    progressBar.textContent = `${progressPercentage}%`
-                    progressBar.setAttribute("aria-valuenow", progressPercentage)
-                }
+                // Progress UI is updated in byteCounterStream.
             } else {
                 decompressionStreamController?.close()
             }
@@ -1076,11 +1130,15 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
     // Set up progress bar view.
     const progressBarText = document.getElementById("progressBarText")
     const progressBar = document.getElementById("progress")
+    const progressBytesText = document.getElementById("progressBytesText")
+    const progressTimeText = document.getElementById("progressTimeText")
     if (progressBarText && progressBar) {
         progressBarText.textContent = `Uploading ${file.name}`
         progressBar.style.width = "0%"
         progressBar.textContent = "0%"
         progressBar.setAttribute("aria-valuenow", "0")
+        if (progressBytesText) progressBytesText.textContent = `0 / ${file.size} B`
+        if (progressTimeText) progressTimeText.textContent = `Elapsed: 00:00:00 • Remaining: --:--:--`
     }
 
     try {
@@ -1119,6 +1177,7 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
         const fileCardMessage = await client.sendMessage("me", { message: `tglfs:file\n${JSON.stringify(fileCardData)}` })
 
         let bytesProcessed = 0
+        const startTimeMs = Date.now()
         const byteCounterStream = new TransformStream({
             transform(chunk, controller) {
                 bytesProcessed += chunk.length;
@@ -1257,12 +1316,40 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
                     }
                 }
             }
-            // Update the progress bar.
+            // Update the progress UI.
             if (progressBar) {
-                let progress = Math.round(bytesProcessed / file.size * 100).toString()
+                const progress = Math.round((bytesProcessed / file.size) * 100).toString()
                 progressBar.style.width = `${progress}%`
                 progressBar.textContent = `${progress}%`
                 progressBar.setAttribute("aria-valuenow", progress)
+            }
+            if (progressBytesText) {
+                const units = ["B", "KiB", "MiB", "GiB", "PiB"] as const
+                const pickUnit = (n: number) => {
+                    let i = 0
+                    while (i < units.length - 1 && n >= 1024) {
+                        n = n / 1024
+                        i++
+                    }
+                    return { value: n, unit: units[i] }
+                }
+                const sofar = pickUnit(bytesProcessed)
+                const total = pickUnit(file.size)
+                progressBytesText.textContent = `${sofar.value.toFixed(sofar.unit === "B" ? 0 : 2)} ${sofar.unit} / ${total.value.toFixed(total.unit === "B" ? 0 : 2)} ${total.unit}`
+            }
+            if (progressTimeText) {
+                const elapsedSec = Math.max(0, Math.floor((Date.now() - startTimeMs) / 1000))
+                const rate = elapsedSec > 0 ? bytesProcessed / elapsedSec : 0
+                const remainingBytes = Math.max(0, file.size - bytesProcessed)
+                const etaSec = rate > 0 ? Math.ceil(remainingBytes / rate) : 0
+                const fmt = (s: number) => {
+                    const h = Math.floor(s / 3600)
+                    const m = Math.floor((s % 3600) / 60)
+                    const sec = s % 60
+                    const pad = (n: number) => n.toString().padStart(2, "0")
+                    return `${pad(h)}:${pad(m)}:${pad(sec)}`
+                }
+                progressTimeText.textContent = `Elapsed: ${fmt(elapsedSec)} • Remaining: ${etaSec ? fmt(etaSec) : "--:--:--"}`
             }
         }
         // Flush encryptionBuffer.
