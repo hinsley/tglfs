@@ -80,6 +80,10 @@ async function init(apiId?: string, apiHash?: string, phoneNumber?: string) {
                 downloadFileButton.addEventListener("click", async () => {
                     await Telegram.fileDownload(client, config)
                 })
+                const downloadFileLegacyButton = document.getElementById("downloadFileLegacyButton") as HTMLButtonElement
+                downloadFileLegacyButton.addEventListener("click", async () => {
+                    await Telegram.fileDownloadLegacy(client, config)
+                })
             })
             .catch(function (error) {
                 alert(

@@ -185,6 +185,320 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
         const decryptionBuffer = new Uint8Array(Encryption.ENCRYPTION_CHUNK_SIZE)
 
         let bytesProcessed = 0
+        // For streaming UFID verification.
+        const UFIDChunkSize = 64 * 1024 // 64 KiB.
+        let ufidRolling = new Uint8Array(0)
+        let ufidPending = new Uint8Array(0)
+        const byteCounterStream = new TransformStream({
+            async transform(chunk, controller) {
+                bytesProcessed += chunk.length
+                // Accumulate data and process in fixed 64 KiB blocks.
+                const combined = new Uint8Array(ufidPending.length + chunk.length)
+                combined.set(ufidPending, 0)
+                combined.set(chunk, ufidPending.length)
+                let offset = 0
+                while (offset + UFIDChunkSize <= combined.length) {
+                    const piece = combined.subarray(offset, offset + UFIDChunkSize)
+                    const toHash = new Uint8Array(ufidRolling.length + UFIDChunkSize)
+                    toHash.set(ufidRolling, 0)
+                    toHash.set(piece, ufidRolling.length)
+                    const hash = await window.crypto.subtle.digest("SHA-256", toHash.buffer)
+                    ufidRolling = new Uint8Array(hash)
+                    offset += UFIDChunkSize
+                }
+                // Save remainder for finalization.
+                ufidPending = combined.subarray(offset)
+                controller.enqueue(chunk)
+            },
+        })
+
+        let decompressionStreamController: ReadableStreamController<Uint8Array> | null = null
+        const decompressionReadableStream = new ReadableStream({
+            start(controller) {
+                decompressionStreamController = controller
+            },
+        })
+        const decompressionStream = new DecompressionStream("gzip")
+        const decompressedDataStream = decompressionReadableStream.pipeThrough(decompressionStream).pipeThrough(byteCounterStream)
+        const decompressedDataStreamReader = decompressedDataStream.getReader()
+
+        async function downloadFile(serviceWorkerRegistration: ServiceWorkerRegistration) {
+            // Inform the service worker of the file name.
+            serviceWorkerRegistration.active?.postMessage({
+                type: "SET_FILE_NAME",
+                fileName: fileCardData.name,
+            })
+            // Download each chunk.
+            for (const chunkMsg of chunkMsgs) {
+                let chunkBytesWritten = 0
+                while (chunkBytesWritten < chunkMsg.media.document.size) {
+                    // Download the next (up to) `DOWNLOAD_PART_SIZE` bytes of the chunk file.
+                    const chunkPart = await client.invoke(
+                        new Api.upload.GetFile({
+                            location: getFileInfo(chunkMsg.media).location,
+                            offset: chunkBytesWritten,
+                            limit: DOWNLOAD_PART_SIZE,
+                            precise: false,
+                            cdnSupported: false,
+                        }),
+                    )
+                    chunkBytesWritten += chunkPart.bytes.length
+
+                    // Write the chunk part to the decryption buffer.
+                    decryptionBuffer.set(chunkPart.bytes, aesBlockBytesWritten)
+                    aesBlockBytesWritten += chunkPart.bytes.length
+
+                    // If the decryption buffer is full, decrypt.
+                    if (aesBlockBytesWritten === decryptionBuffer.length) {
+                        const decryptedData = new Uint8Array(
+                            await window.crypto.subtle.decrypt(
+                                {
+                                    name: "AES-CTR",
+                                    counter: decryptionCounter,
+                                    length: 64, // Bit length of the counter block.
+                                },
+                                aesKey,
+                                decryptionBuffer,
+                            ),
+                        )
+                        // Advance counter by number of 16-byte blocks consumed in this call.
+                        const blocks = Math.ceil(decryptionBuffer.length / 16)
+                        decryptionCounter = Encryption.incrementCounter64By(decryptionCounter, blocks)
+                        aesBlockBytesWritten = 0
+
+                        // gzip-decompress the decrypted data.
+                        decompressionStreamController?.enqueue(decryptedData)
+                        let decompressedData = new Uint8Array(0)
+                        let bytesRead = 0
+                        while (bytesRead < decryptionBuffer.length) {
+                            const { value } = await decompressedDataStreamReader.read()
+                            if (!value) {
+                                continue
+                            }
+                            const newDecompressedData = new Uint8Array(decompressedData.length + value.length)
+                            newDecompressedData.set(decompressedData)
+                            newDecompressedData.set(value, decompressedData.length)
+                            decompressedData = newDecompressedData
+                            bytesRead += value.length
+                        }
+
+                        // Send the decompressed data to the service worker.
+                        serviceWorkerRegistration.active?.postMessage(
+                            {
+                                type: "PROCESSED_DATA",
+                                data: decompressedData,
+                            },
+                            [decompressedData.buffer],
+                        )
+                        
+                        // Update the progress bar.
+                        if (progressBar) {
+                            const progressPercentage = Math.round((bytesProcessed / fileCardData.size) * 100).toString()
+                            progressBar.style.width = `${progressPercentage}%`
+                            progressBar.textContent = `${progressPercentage}%`
+                            progressBar.setAttribute("aria-valuenow", progressPercentage)
+                        }
+                    }
+                }
+            }
+
+            // If there is any data left in the decryption buffer, process it.
+            if (aesBlockBytesWritten > 0) {
+                // Decrypt the remaining data.
+                const decryptedData = new Uint8Array(
+                    await window.crypto.subtle.decrypt(
+                        {
+                            name: "AES-CTR",
+                            counter: decryptionCounter,
+                            length: 64, // Bit length of the counter block.
+                        },
+                        aesKey,
+                        decryptionBuffer.subarray(0, aesBlockBytesWritten),
+                    ),
+                )
+                // Advance counter by exact number of 16-byte blocks from the trailing bytes.
+                const tailBlocks = Math.ceil(aesBlockBytesWritten / 16)
+                decryptionCounter = Encryption.incrementCounter64By(decryptionCounter, tailBlocks)
+
+                // gzip-decompress the decrypted data.
+                decompressionStreamController?.enqueue(decryptedData)
+                decompressionStreamController?.close()
+                let decompressedData = new Uint8Array(0)
+                let value, done
+                try {
+                    while ((({ value, done } = await decompressedDataStreamReader.read()), !done)) {
+                        const newDecompressedData = new Uint8Array(decompressedData.length + value.length)
+                        newDecompressedData.set(decompressedData)
+                        newDecompressedData.set(value, decompressedData.length)
+                        decompressedData = newDecompressedData
+                    }
+                } catch (e) {
+                    if (e instanceof TypeError) {
+                        alert("Incorrect decryption password entered. Aborting download.")
+                    } else {
+                        console.error(e)
+                    }
+                }
+
+                // Send the decompressed data to the service worker.
+                serviceWorkerRegistration.active?.postMessage(
+                    {
+                        type: "PROCESSED_DATA",
+                        data: decompressedData,
+                    },
+                    [decompressedData.buffer],
+                )
+
+                // Update the progress bar.
+                if (progressBar) {
+                    const progressPercentage = Math.round((bytesProcessed / fileCardData.size) * 100).toString()
+                    progressBar.style.width = `${progressPercentage}%`
+                    progressBar.textContent = `${progressPercentage}%`
+                    progressBar.setAttribute("aria-valuenow", progressPercentage)
+                }
+            } else {
+                decompressionStreamController?.close()
+            }
+
+            // Notify the service worker that data transmission is complete.
+            serviceWorkerRegistration.active?.postMessage({
+                type: "DOWNLOAD_COMPLETE",
+            })
+
+            // Finalize UFID with zero-padded remainder, then verify.
+            if (ufidPending.length > 0) {
+                const padded = new Uint8Array(UFIDChunkSize)
+                padded.set(ufidPending, 0)
+                const toHash = new Uint8Array(ufidRolling.length + UFIDChunkSize)
+                toHash.set(ufidRolling, 0)
+                toHash.set(padded, ufidRolling.length)
+                const hash = await window.crypto.subtle.digest("SHA-256", toHash.buffer)
+                ufidRolling = new Uint8Array(hash)
+                ufidPending = new Uint8Array(0)
+            }
+            const computedUfid = Array.from(ufidRolling)
+                .map((b) => b.toString(16).padStart(2, "0"))
+                .join("")
+            if (computedUfid !== fileCardData.ufid) {
+                alert("UFID mismatch. The downloaded file may be corrupted or the wrong password was used.")
+            }
+        }
+
+        const sanitizedUfid = encodeURIComponent(fileCardData.ufid)
+        const responsePromise = fetch("/download-file?ufid=" + sanitizedUfid)
+
+        const response = await responsePromise
+        if (!response.ok) {
+            console.error("Failed to download file.")
+            alert("Failed to download file.")
+            return
+        }
+
+        const serviceWorkerRegistration = await navigator.serviceWorker.ready
+        if (serviceWorkerRegistration.active) {
+            await downloadFile(serviceWorkerRegistration)
+            alert("Download complete.") // TODO: Remove.
+        } else {
+            console.error("Service worker is not active.")
+            alert("Service worker is not active. Cannot proceed with the download.")
+        }
+
+        const blob = await response.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement("a")
+        a.href = url
+        a.download = fileCardData.name
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+    } catch (error) {
+        console.error(error)
+    } finally {
+        // Hide progress bar and return control panel.
+        controlsDiv?.removeAttribute("hidden")
+        progressDiv?.setAttribute("hidden", "")
+    }
+}
+
+// TODO: Remove the legacy download pipeline after all existing files have been ported to the new scheme.
+export async function fileDownloadLegacy(client: TelegramClient, config: Config.Config) {
+    // TODO: Implement file validation via UFID comparison.
+    const fileUfid = prompt("Enter UFID of file to download (legacy):")
+    if (!fileUfid || fileUfid.trim() === "") {
+        alert("No UFID provided. Operation cancelled.")
+        return
+    }
+    const msgs = await client.getMessages("me", {
+        search: 'tglfs:file "ufid":"' + fileUfid.trim() + '"',
+    })
+    if (msgs.length === 0) {
+        alert("File not found.")
+        return
+    }
+
+    const fileCardData: FileCardData = JSON.parse(msgs[0].message.substring(msgs[0].message.indexOf("{")))
+    // TODO: Verify that uploadComplete field is set to `true`.
+
+    const humanReadableFileSize = humanReadableSize(fileCardData.size)
+    const date = new Date(msgs[0].date * 1000)
+    const formattedDate = date
+        .toLocaleString("en-US", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
+        })
+        .replace(",", "") // Remove the comma between date and time.
+
+    const fileInfo = `Name: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`
+
+    const confirmation = confirm(`Download file (legacy pipeline)?\n\n${fileInfo}`)
+    if (!confirmation) {
+        alert("Operation cancelled.")
+        return
+    }
+
+    const password = prompt("(Optional) Decryption password:")
+    if (password === null) {
+        alert("Operation cancelled.")
+        return
+    }
+
+    // Hide control panel and show progress bar.
+    const controlsDiv = document.getElementById("controls")
+    const progressDiv = document.getElementById("progressBarContainer")
+    controlsDiv?.setAttribute("hidden", "")
+    progressDiv?.removeAttribute("hidden")
+
+    // Set up progress bar view.
+    const progressBarText = document.getElementById("progressBarText")
+    const progressBar = document.getElementById("progress")
+    if (progressBarText && progressBar) {
+        progressBarText.textContent = `Downloading ${fileCardData.name}`
+        progressBar.style.width = "0%"
+        progressBar.textContent = "0%"
+        progressBar.setAttribute("aria-valuenow", "0")
+    }
+
+    try {
+        // Request chunk messages by their IDs in the file card.
+        const chunkMsgs: Api.messages.Messages = await client.getMessages("me", { ids: fileCardData.chunks })
+
+        const IVBytes = base64ToBytes(fileCardData.IV)
+        // TODO: DRY-ify the salt & counter byte size. Should be
+        // module-level constants.
+        const salt = IVBytes.subarray(0, 16)
+        const aesKey = await Encryption.deriveAESKeyFromPassword(password, salt)
+        let decryptionCounter = IVBytes.slice(16)
+
+        let aesBlockBytesWritten = 0
+        const decryptionBuffer = new Uint8Array(Encryption.ENCRYPTION_CHUNK_SIZE)
+
+        let bytesProcessed = 0
         const byteCounterStream = new TransformStream({
             transform(chunk, controller) {
                 bytesProcessed += chunk.length
@@ -241,6 +555,7 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
                                 decryptionBuffer,
                             ),
                         )
+                        // Legacy behavior: increment the counter by 1 per 1 MiB block.
                         decryptionCounter = Encryption.incrementCounter(decryptionCounter)
                         aesBlockBytesWritten = 0
 
@@ -294,6 +609,8 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
                         decryptionBuffer.subarray(0, aesBlockBytesWritten),
                     ),
                 )
+                // Legacy behavior: increment the counter by 1 per trailing block set.
+                decryptionCounter = Encryption.incrementCounter(decryptionCounter)
 
                 // gzip-decompress the decrypted data.
                 decompressionStreamController?.enqueue(decryptedData)
@@ -849,9 +1166,10 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
                             encryptionBuffer,
                         ),
                     )
-                    // Reset the encryption buffer and increment AES-CTR encryption counter.
+                    // Reset the encryption buffer and advance AES-CTR counter by blocks processed.
                     aesBlockBytesWritten = 0
-                    encryptionCounter = Encryption.incrementCounter(encryptionCounter)
+                    const blocks = Math.ceil(encryptionBuffer.length / 16)
+                    encryptionCounter = Encryption.incrementCounter64By(encryptionCounter, blocks)
                     // Write the encrypted data to partBuffer in a loop.
                     let encryptedDataBytesProcessed = 0
                     while (encryptedDataBytesProcessed < encryptedData.length) {
@@ -960,6 +1278,8 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
                     encryptionBuffer.subarray(0, aesBlockBytesWritten),
                 ),
             )
+            const tailBlocks = Math.ceil(aesBlockBytesWritten / 16)
+            encryptionCounter = Encryption.incrementCounter64By(encryptionCounter, tailBlocks)
             let encryptedDataBytesProcessed = 0
             while (encryptedDataBytesProcessed < encryptedData.length) {
                 const remainingPartBufferSpace = partBuffer.length - partBytesWritten
