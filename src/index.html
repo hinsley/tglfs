@@ -60,6 +60,9 @@
                 <button id="downloadFileLegacyButton" class="btn btn-lg btn-outline-secondary btn-block w-100" style="margin-top: 8px;">
                     Download (Legacy)
                 </button>
+                <button id="fileBrowserButton" class="btn btn-lg btn-outline-primary btn-block w-100" style="margin-top: 8px;">
+                    File Browser
+                </button>
             </div>
             <div id="progressBarContainer" hidden>
                 <div id="progressBarText"></div>
@@ -68,6 +71,70 @@
                 </div>
                 <div id="progressBytesText" class="text-muted">0 / 0 bytes</div>
                 <div id="progressTimeText" class="text-muted">Elapsed: 00:00:00 • Remaining: --:--:--</div>
+            </div>
+            <div id="fileBrowser" hidden>
+                <div class="fx-header">
+                    <div class="d-flex gap-2 align-items-center mb-2">
+                        <button id="browserHomeButton" class="btn btn-secondary">Home</button>
+                        <button id="browserActionUpload" class="btn btn-primary">Upload</button>
+                        <button id="browserActionReceive" class="btn btn-primary">Receive</button>
+                        <div class="ms-auto d-flex gap-2 browser-actions">
+                            <button id="browserActionDownload" class="btn btn-primary" disabled>Download</button>
+                            <button id="browserActionRename" class="btn btn-secondary" disabled>Rename</button>
+                            <button id="browserActionDelete" class="btn btn-danger" disabled>Delete</button>
+                            <button id="browserActionSend" class="btn btn-primary" disabled>Send</button>
+                            <button id="browserActionUnsend" class="btn btn-danger">Unsend</button>
+                        </div>
+                        <div class="ms-2 dropdown browser-actions-dropdown">
+                            <button id="browserActionsBtn" class="btn btn-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" disabled>
+                                Actions
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-end">
+                                <li><a class="dropdown-item" href="#" id="actionDownloadItem">Download</a></li>
+                                <li><a class="dropdown-item" href="#" id="actionRenameItem">Rename</a></li>
+                                <li><a class="dropdown-item text-danger" href="#" id="actionDeleteItem">Delete</a></li>
+                                <li><hr class="dropdown-divider" /></li>
+                                <li><a class="dropdown-item" href="#" id="actionSendItem">Send</a></li>
+                                <li><a class="dropdown-item text-danger" href="#" id="actionUnsendItem">Unsend</a></li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="d-flex gap-2 align-items-center">
+                        <label for="browserSortSelect" class="form-label m-0">Sort by</label>
+                        <select id="browserSortSelect" class="form-select" style="max-width: 180px;">
+                            <option value="date_desc">Date (newest)</option>
+                            <option value="date_asc">Date (oldest)</option>
+                            <option value="name_asc">Name (A–Z)</option>
+                            <option value="name_desc">Name (Z–A)</option>
+                            <option value="size_desc">Size (largest)</option>
+                            <option value="size_asc">Size (smallest)</option>
+                        </select>
+                        <input id="browserSearchInput" class="form-control ms-auto" style="max-width: 480px;" placeholder="Search name or UFID" />
+                    </div>
+                </div>
+                <div id="browserContent" class="browser-content">
+                    <div class="table-responsive">
+                        
+                        <table id="browserTable" class="table table-hover align-middle fade-in">
+                            <thead>
+                                <tr>
+                                    <th class="name">Name</th>
+                                    <th class="size">Size</th>
+                                    <th class="ufid">UFID</th>
+                                    <th class="date">Date</th>
+                                    <th class="status">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                    <div id="browserCards" class="fade-in d-lg-none"></div>
+                    <div class="d-flex justify-content-between" style="margin-top: 8px;">
+                        <button id="browserPrevPage" class="btn btn-secondary">Previous</button>
+                        <div id="browserPageInfo" class="text-muted"></div>
+                        <button id="browserNextPage" class="btn btn-secondary">Next</button>
+                    </div>
+                </div>
             </div>
             <div id="donation" class="text-muted" style="margin-top: 64px">
                 Support development! XMR donation address:<br /><code style="word-wrap: break-word; user-select: text"

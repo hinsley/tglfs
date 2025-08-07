@@ -18,6 +18,12 @@ body {
     background-color: #fff;
 }
 
+/* When the file browser is visible, anchor content to the top so the logo remains unobscured. */
+body.file-browser-active {
+    -webkit-box-align: start;
+    align-items: flex-start;
+}
+
 div#logo {
     font-size: 64px;
     margin-bottom: 16px;
@@ -102,4 +108,211 @@ div#progressBarContainer .progress {
 
 div#offline {
     margin-top: 16px;
+}
+
+/* File Browser (scoped) */
+#fileBrowser {
+    width: 100%;
+    max-width: 960px;
+    padding: 12px;
+    margin: 0 auto;
+}
+
+:root {
+    --fx-bg: rgba(255, 255, 255, 0.7);
+    --fx-border: rgba(0, 0, 0, 0.08);
+    --fx-shadow: none;
+    --fx-radius: 16px;
+    --fx-radius-sm: 10px;
+    --fx-accent: #24a1de;
+    --fx-text-muted: #6b7280;
+}
+@media (prefers-color-scheme: dark) {
+    :root {
+        --fx-bg: rgba(34, 34, 36, 0.35);
+        --fx-border: rgba(255, 255, 255, 0.06);
+        --fx-shadow: none;
+        --fx-accent: #4fb7ea;
+        --fx-text-muted: #9ca3af;
+    }
+}
+
+#fileBrowser .fx-header {
+    position: sticky;
+    top: calc(env(safe-area-inset-top) + 0px);
+    z-index: 2;
+    backdrop-filter: blur(20px) saturate(160%);
+    -webkit-backdrop-filter: blur(20px) saturate(160%);
+    background: transparent;
+    border: 1px solid var(--fx-border);
+    border-radius: var(--fx-radius);
+    box-shadow: none;
+    padding: 10px;
+    margin-bottom: 12px;
+}
+@media (prefers-color-scheme: dark) {
+    #fileBrowser .fx-header {
+        background: transparent;
+    }
+}
+
+/* Scrollable content area so the header/logo remain visible. */
+#fileBrowser .browser-content {
+    max-height: calc(100vh - 480px);
+    overflow: auto;
+    padding-bottom: 6px;
+}
+
+#browserTable {
+    overflow: hidden;
+    border-radius: var(--fx-radius);
+    box-shadow: none;
+}
+#browserTable thead th {
+    position: sticky;
+    top: 0;
+    background: rgba(255,255,255,0.6);
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+}
+@media (prefers-color-scheme: dark) {
+    #browserTable thead th {
+        background: rgba(34,34,36,0.35);
+    }
+}
+#browserTable tbody tr {
+    transition: background-color 160ms ease;
+}
+#browserTable tbody tr:hover {
+    background-color: rgba(36, 161, 222, 0.08);
+}
+
+/* UFID truncation and narrow column. */
+#browserTable td.ufid, #browserTable th.ufid {
+    max-width: 160px;
+    width: 160px;
+}
+#browserTable td.ufid code {
+    display: inline-block;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+}
+#browserTable td.ufid code::after {
+    content: " \1F4CB"; /* clipboard icon */
+    opacity: 0.8;
+}
+
+/* Row selection. */
+#browserTable tbody tr.selected {
+    background-color: rgba(36, 161, 222, 0.22);
+}
+
+@media (max-width: 640px) {
+    #browserTable { display: none; }
+    #browserCards .file-card {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: rgba(255,255,255,0.85);
+        border: 1px solid var(--fx-border);
+        border-radius: var(--fx-radius);
+        box-shadow: none;
+        padding: 12px;
+        margin-bottom: 10px;
+        transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+    #browserCards .file-card:active { transform: scale(0.997); }
+    #browserCards .file-card .title { font-weight: 600; }
+    #browserCards .file-card .meta { color: var(--fx-text-muted); font-size: 0.9rem; overflow: hidden; }
+    #browserCards .file-card .meta code {
+        display: inline-block;
+        max-width: 80%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    #browserCards .file-card .actions { margin-left: auto; display: flex; gap: 6px; }
+    #browserCards .icon-btn {
+        border: 1px solid var(--fx-border);
+        background: transparent;
+        border-radius: var(--fx-radius-sm);
+        padding: 8px;
+    }
+}
+
+.pill {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: 0.8rem;
+    border-radius: 999px;
+    border: 1px solid var(--fx-border);
+}
+.pill.complete { color: #16a34a; border-color: rgba(22,163,74,.25); }
+.pill.incomplete { color: #b45309; border-color: rgba(180,83,9,.25); }
+
+.fade-in { animation: fadein 180ms ease both; }
+@keyframes fadein { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) {
+    .fade-in, #browserTable tbody tr { animation: none; transition: none; }
+}
+
+/* Ensure top logo is always visible by reserving space above file browser content. */
+body > #app { padding-bottom: 0; }
+#fileBrowser { margin-top: 8px; }
+@media (max-height: 640px) {
+    #fileBrowser .browser-content { max-height: calc(100vh - 360px); }
+}
+/* Make all header buttons have no background by default; only on hover. */
+#fileBrowser .btn { /* use default app button look */ }
+
+/* Selection visibility improvements */
+#browserTable tbody tr {
+    position: relative;
+}
+#browserTable tbody tr.selected {
+    background-color: rgba(36, 161, 222, 0.22);
+    outline: 2px solid rgba(36, 161, 222, 0.6);
+    outline-offset: -2px;
+}
+#browserCards .file-card.selected {
+    background: rgba(36, 161, 222, 0.2);
+    outline: 2px solid rgba(36, 161, 222, 0.6);
+}
+
+/* Mobile: collapse per-file actions into a dropdown. */
+@media (max-width: 480px) {
+  /* Hide desktop actions, show dropdown. */
+  .browser-actions { display: none !important; }
+  .browser-actions-dropdown { display: inline-block !important; }
+  #fileBrowser { max-width: 420px; }
+  #fileBrowser .fx-header { padding: 8px; }
+  #fileBrowser .fx-header .d-flex { gap: 6px; }
+  #browserSearchInput { max-width: 100% !important; }
+  #fileBrowser .browser-content { max-height: calc(100vh - 400px); }
+}
+
+/* Default: show desktop actions, hide dropdown. */
+.browser-actions-dropdown { display: none; }
+
+#fileBrowser .table-responsive { overflow-x: hidden; }
+#browserTable { table-layout: fixed; width: 100%; }
+#browserTable thead th.name, #browserTable tbody td.name { width: 44%; }
+#browserTable thead th.size, #browserTable tbody td.size { width: 10%; }
+#browserTable thead th.ufid, #browserTable tbody td.ufid { width: 20%; }
+#browserTable thead th.date, #browserTable tbody td.date { width: 16%; }
+#browserTable thead th.status, #browserTable tbody td.status { width: 10%; }
+
+/* Ensure long names wrap gracefully instead of forcing horizontal scroll. */
+#browserTable td.name { word-break: break-word; overflow-wrap: anywhere; }
+
+/* Keep UFID truncated within its percent column. */
+#browserTable td.ufid code { max-width: 100%; }
+
+/* Global hard width cap on mobile */
+@media (max-width: 480px) {
+  #app { max-width: 360px !important; width: 100%; margin-left: auto; margin-right: auto; }
+  #app * { max-width: 360px !important; }
 }

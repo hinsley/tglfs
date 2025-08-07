@@ -1,4 +1,5 @@
 import * as Telegram from "../telegram"
+import { initFileBrowser } from "./browser"
 
 async function init(apiId?: string, apiHash?: string, phoneNumber?: string) {
     const apiIdElement = document.getElementById("apiId") as HTMLInputElement | null
@@ -44,6 +45,14 @@ async function init(apiId?: string, apiHash?: string, phoneNumber?: string) {
     if (controlsDiv) {
         controlsDiv.removeAttribute("hidden")
     }
+    const fileBrowserDiv = document.getElementById("fileBrowser")
+
+    // Remove splash once we are logged in and UI is ready.
+    const splashDivAtInit = document.getElementById("splash")
+    if (splashDivAtInit) {
+        splashDivAtInit.remove()
+    }
+
     const uploadFileInput = document.getElementById("uploadFileInput") as HTMLInputElement
     uploadFileInput.addEventListener("change", async () => {
         await Telegram.fileUpload(client, config)
@@ -92,6 +101,21 @@ async function init(apiId?: string, apiHash?: string, phoneNumber?: string) {
                 console.error("ServiceWorker registration failed: ", error)
             })
     }
+
+    const fileBrowserButton = document.getElementById("fileBrowserButton") as HTMLButtonElement
+    const browserBackButton = document.getElementById("browserBackButton") as HTMLButtonElement
+    fileBrowserButton.addEventListener("click", async () => {
+        // Show browser, hide controls.
+        controlsDiv?.setAttribute("hidden", "")
+        fileBrowserDiv?.removeAttribute("hidden")
+        document.body.classList.add("file-browser-active")
+        await initFileBrowser(client, config)
+    })
+    browserBackButton.addEventListener("click", () => {
+        fileBrowserDiv?.setAttribute("hidden", "")
+        controlsDiv?.removeAttribute("hidden")
+        document.body.classList.remove("file-browser-active")
+    })
 }
 
 const loginButton = document.getElementById("loginButton") as HTMLButtonElement
@@ -126,7 +150,7 @@ window.addEventListener("load", async () => {
             loginDiv.removeAttribute("hidden")
         }
     }
-    // Remove splash screen once the page has loaded.
+    // Remove splash screen once the page has loaded (fallback).
     const splashDiv = document.getElementById("splash")
     if (splashDiv) {
         splashDiv.remove()
