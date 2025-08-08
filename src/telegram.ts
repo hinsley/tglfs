@@ -12,6 +12,7 @@ import { getFileInfo } from "telegram/Utils"
 import * as Config from "./config"
 import * as Encryption from "./web/encryption"
 import * as FileProcessing from "./web/fileProcessing"
+import * as Archive from "./web/archive"
 import { FileCardData } from "./types/models"
 
 // https://core.telegram.org/api/files
@@ -605,11 +606,7 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
                     if (aesBlockBytesWritten === decryptionBuffer.length) {
                         const decryptedData = new Uint8Array(
                             await window.crypto.subtle.decrypt(
-                                {
-                                    name: "AES-CTR",
-                                    counter: decryptionCounter,
-                                    length: 64, // Bit length of the counter block.
-                                },
+                                { name: "AES-CTR", counter: decryptionCounter, length: 64 },
                                 aesKey,
                                 decryptionBuffer,
                             ),
@@ -636,10 +633,7 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
 
                         // Send the decompressed data to the service worker.
                         serviceWorkerRegistration.active?.postMessage(
-                            {
-                                type: "PROCESSED_DATA",
-                                data: decompressedData,
-                            },
+                            { type: "PROCESSED_DATA", data: decompressedData },
                             [decompressedData.buffer],
                         )
                         
@@ -653,11 +647,7 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
                 // Decrypt the remaining data.
                 const decryptedData = new Uint8Array(
                     await window.crypto.subtle.decrypt(
-                        {
-                            name: "AES-CTR",
-                            counter: decryptionCounter,
-                            length: 64, // Bit length of the counter block.
-                        },
+                        { name: "AES-CTR", counter: decryptionCounter, length: 64 },
                         aesKey,
                         decryptionBuffer.subarray(0, aesBlockBytesWritten),
                     ),
@@ -687,10 +677,7 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
 
                 // Send the decompressed data to the service worker.
                 serviceWorkerRegistration.active?.postMessage(
-                    {
-                        type: "PROCESSED_DATA",
-                        data: decompressedData,
-                    },
+                    { type: "PROCESSED_DATA", data: decompressedData },
                     [decompressedData.buffer],
                 )
 
@@ -1106,8 +1093,10 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
         alert("No file selected. Aborting.")
         return
     }
-    const file = selectedFiles[0]
-    console.log(`Selected file: ${file.name}`)
+    const files = Array.from(selectedFiles)
+    const single = files.length === 1
+    const file = files[0]
+    console.log(single ? `Selected file: ${file.name}` : `Selected ${files.length} files for archive upload.`)
 
     let password = prompt("(Optional) Encryption password:")
     if (password === null) {
@@ -1125,12 +1114,28 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
     const progressBar = document.getElementById("progress")
     const progressBytesText = document.getElementById("progressBytesText")
     const progressTimeText = document.getElementById("progressTimeText")
+    let displayName: string
+    let totalBytes: number
+    let inputStream: ReadableStream<Uint8Array>
+    let ufidStream: ReadableStream<Uint8Array> | null = null
+    if (single) {
+        displayName = file.name
+        totalBytes = file.size
+        inputStream = file.stream()
+    } else {
+        displayName = Archive.defaultArchiveName()
+        totalBytes = Archive.computeTarSize(files)
+        const tarStream = Archive.createTarStream(files)
+        const teed = tarStream.tee()
+        ufidStream = teed[0]
+        inputStream = teed[1]
+    }
     if (progressBarText && progressBar) {
-        progressBarText.textContent = `Uploading ${file.name}`
+        progressBarText.textContent = `Uploading ${displayName}`
         progressBar.style.width = "0%"
         progressBar.textContent = "0%"
         progressBar.setAttribute("aria-valuenow", "0")
-        if (progressBytesText) progressBytesText.textContent = `0 / ${file.size} B`
+        if (progressBytesText) progressBytesText.textContent = `0 / ${totalBytes} B`
         if (progressTimeText) progressTimeText.textContent = `Elapsed: 00:00:00 • Remaining: --:--:--`
     }
 
@@ -1146,7 +1151,7 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
         let encryptionCounter = new Uint8Array(initialCounter)
 
         console.log("Calculating UFID...")
-        const UFID = await FileProcessing.UFID(file)
+        const UFID = single ? await FileProcessing.UFID(file) : await FileProcessing.UFIDFromStream(ufidStream!)
         console.log(`UFID: ${UFID}`)
 
         const existingMsgs = await client.getMessages("me", {
@@ -1160,9 +1165,9 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
         }
 
         let fileCardData: FileCardData = {
-            name: file.name,
+            name: displayName,
             ufid: UFID,
-            size: file.size,
+            size: totalBytes,
             uploadComplete: false,
             chunks: [],
             IV: IV,
@@ -1178,7 +1183,7 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
             },
         })
 
-        const fileStream = file.stream().pipeThrough(byteCounterStream)
+        const fileStream = inputStream.pipeThrough(byteCounterStream)
         const compressedStream = fileStream.pipeThrough(new CompressionStream("gzip"))
         const reader = compressedStream.getReader()
 
@@ -1311,7 +1316,7 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
             }
             // Update the progress UI.
             if (progressBar) {
-                const progress = Math.round((bytesProcessed / file.size) * 100).toString()
+                const progress = Math.round((bytesProcessed / totalBytes) * 100).toString()
                 progressBar.style.width = `${progress}%`
                 progressBar.textContent = `${progress}%`
                 progressBar.setAttribute("aria-valuenow", progress)
@@ -1327,13 +1332,13 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
                     return { value: n, unit: units[i] }
                 }
                 const sofar = pickUnit(bytesProcessed)
-                const total = pickUnit(file.size)
+                const total = pickUnit(totalBytes)
                 progressBytesText.textContent = `${sofar.value.toFixed(sofar.unit === "B" ? 0 : 2)} ${sofar.unit} / ${total.value.toFixed(total.unit === "B" ? 0 : 2)} ${total.unit}`
             }
             if (progressTimeText) {
                 const elapsedSec = Math.max(0, Math.floor((Date.now() - startTimeMs) / 1000))
                 const rate = elapsedSec > 0 ? bytesProcessed / elapsedSec : 0
-                const remainingBytes = Math.max(0, file.size - bytesProcessed)
+                const remainingBytes = Math.max(0, totalBytes - bytesProcessed)
                 const etaSec = rate > 0 ? Math.ceil(remainingBytes / rate) : 0
                 const fmt = (s: number) => {
                     const h = Math.floor(s / 3600)

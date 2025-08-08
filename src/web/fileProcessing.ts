@@ -50,7 +50,7 @@ export async function prepChunk(
 
     while ((({ done, value } = await reader.read()), !done && bytesWritten < chunkSize)) {
         const remainingSpace = chunkSize - bytesWritten
-        const chunkToWrite = value.slice(0, remainingSpace)
+        const chunkToWrite = (value ?? new Uint8Array()).slice(0, remainingSpace)
 
         // TODO: Consider moving to Encryption module.
         const encryptedChunk = await window.crypto.subtle.encrypt(
@@ -97,4 +97,44 @@ export async function UFID(file: File): Promise<string> {
         .map((byte) => byte.toString(16).padStart(2, "0"))
         .join("")
     return UFIDString
+}
+
+export async function UFIDFromStream(stream: ReadableStream<Uint8Array>): Promise<string> {
+    const UFIDChunkSize = 64 * 1024 // 64 KiB.
+    const reader = stream.getReader()
+    let rolling = new Uint8Array(0)
+    let pending = new Uint8Array(0)
+    while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        if (!value || value.length === 0) continue
+        // Append to pending.
+        const combined = new Uint8Array(pending.length + value.length)
+        combined.set(pending, 0)
+        combined.set(value, pending.length)
+        let offset = 0
+        while (offset + UFIDChunkSize <= combined.length) {
+            const piece = combined.subarray(offset, offset + UFIDChunkSize)
+            const toHash = new Uint8Array(rolling.length + UFIDChunkSize)
+            toHash.set(rolling, 0)
+            toHash.set(piece, rolling.length)
+            const digest = await window.crypto.subtle.digest("SHA-256", toHash.buffer)
+            rolling = new Uint8Array(digest)
+            offset += UFIDChunkSize
+        }
+        pending = combined.subarray(offset)
+    }
+    if (pending.length > 0) {
+        const padded = new Uint8Array(UFIDChunkSize)
+        padded.set(pending, 0)
+        const toHash = new Uint8Array(rolling.length + UFIDChunkSize)
+        toHash.set(rolling, 0)
+        toHash.set(padded, rolling.length)
+        const digest = await window.crypto.subtle.digest("SHA-256", toHash.buffer)
+        rolling = new Uint8Array(digest)
+        pending = new Uint8Array(0)
+    }
+    return Array.from(rolling)
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("")
 }
