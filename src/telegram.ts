@@ -148,10 +148,15 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
         return
     }
 
-    // Hide control panel and show progress bar.
+    // Hide UI and show progress bar.
     const controlsDiv = document.getElementById("controls")
+    const browserDiv = document.getElementById("fileBrowser")
     const progressDiv = document.getElementById("progressBarContainer")
-    controlsDiv?.setAttribute("hidden", "")
+    const controlsWasVisible = !!controlsDiv && !controlsDiv.hasAttribute("hidden")
+    const browserWasVisible = !!browserDiv && !browserDiv.hasAttribute("hidden")
+    if (controlsDiv) controlsDiv.setAttribute("hidden", "")
+    if (browserDiv) browserDiv.setAttribute("hidden", "")
+    document.body.classList.remove("file-browser-active")
     progressDiv?.removeAttribute("hidden")
 
     // Set up progress bar view.
@@ -436,9 +441,19 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
     } catch (error) {
         console.error(error)
     } finally {
-        // Hide progress bar and return control panel.
-        controlsDiv?.removeAttribute("hidden")
+        // Restore previous UI.
         progressDiv?.setAttribute("hidden", "")
+        if (browserWasVisible) {
+            browserDiv?.removeAttribute("hidden")
+            document.body.classList.add("file-browser-active")
+        } else if (controlsWasVisible) {
+            controlsDiv?.removeAttribute("hidden")
+            document.body.classList.remove("file-browser-active")
+        } else {
+            // Default to showing controls.
+            controlsDiv?.removeAttribute("hidden")
+            document.body.classList.remove("file-browser-active")
+        }
     }
 }
 
@@ -489,10 +504,15 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
         return
     }
 
-    // Hide control panel and show progress bar.
+    // Hide UI and show progress bar.
     const controlsDiv = document.getElementById("controls")
+    const browserDiv = document.getElementById("fileBrowser")
     const progressDiv = document.getElementById("progressBarContainer")
-    controlsDiv?.setAttribute("hidden", "")
+    const controlsWasVisible = !!controlsDiv && !controlsDiv.hasAttribute("hidden")
+    const browserWasVisible = !!browserDiv && !browserDiv.hasAttribute("hidden")
+    if (controlsDiv) controlsDiv.setAttribute("hidden", "")
+    if (browserDiv) browserDiv.setAttribute("hidden", "")
+    document.body.classList.remove("file-browser-active")
     progressDiv?.removeAttribute("hidden")
 
     // Set up progress bar view.
@@ -723,9 +743,19 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
     } catch (error) {
         console.error(error)
     } finally {
-        // Hide progress bar and return control panel.
-        controlsDiv?.removeAttribute("hidden")
+        // Restore previous UI.
         progressDiv?.setAttribute("hidden", "")
+        if (browserWasVisible) {
+            browserDiv?.removeAttribute("hidden")
+            document.body.classList.add("file-browser-active")
+        } else if (controlsWasVisible) {
+            controlsDiv?.removeAttribute("hidden")
+            document.body.classList.remove("file-browser-active")
+        } else {
+            // Default to showing controls.
+            controlsDiv?.removeAttribute("hidden")
+            document.body.classList.remove("file-browser-active")
+        }
     }
 }
 
@@ -1103,10 +1133,15 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
         return
     }
     
-    // Hide control panel and show progress bar.
+    // Hide UI and show progress bar.
     const controlsDiv = document.getElementById("controls")
+    const browserDiv = document.getElementById("fileBrowser")
     const progressDiv = document.getElementById("progressBarContainer")
-    controlsDiv?.setAttribute("hidden", "")
+    const controlsWasVisible = !!controlsDiv && !controlsDiv.hasAttribute("hidden")
+    const browserWasVisible = !!browserDiv && !browserDiv.hasAttribute("hidden")
+    if (controlsDiv) controlsDiv.setAttribute("hidden", "")
+    if (browserDiv) browserDiv.setAttribute("hidden", "")
+    document.body.classList.remove("file-browser-active")
     progressDiv?.removeAttribute("hidden")
     
     // Set up progress bar view.
@@ -1554,9 +1589,19 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
     } catch (error) {
         console.error(error)
     } finally {
-        // Hide progress bar and return control panel.
-        controlsDiv?.removeAttribute("hidden")
+        // Restore previous UI.
         progressDiv?.setAttribute("hidden", "")
+        if (browserWasVisible) {
+            browserDiv?.removeAttribute("hidden")
+            document.body.classList.add("file-browser-active")
+        } else if (controlsWasVisible) {
+            controlsDiv?.removeAttribute("hidden")
+            document.body.classList.remove("file-browser-active")
+        } else {
+            // Default to showing controls.
+            controlsDiv?.removeAttribute("hidden")
+            document.body.classList.remove("file-browser-active")
+        }
     }
 }
 
@@ -1654,6 +1699,7 @@ export async function downloadFileCard(
     const browserWasVisible = !!browserDiv && !browserDiv.hasAttribute("hidden")
     if (controlsDiv) controlsDiv.setAttribute("hidden", "")
     if (browserDiv) browserDiv.setAttribute("hidden", "")
+    document.body.classList.remove("file-browser-active")
     progressDiv?.removeAttribute("hidden")
 
     const progressBarText = document.getElementById("progressBarText")
@@ -1880,11 +1926,14 @@ export async function downloadFileCard(
         progressDiv?.setAttribute("hidden", "")
         if (browserWasVisible) {
             browserDiv?.removeAttribute("hidden")
+            document.body.classList.add("file-browser-active")
         } else if (controlsWasVisible) {
             controlsDiv?.removeAttribute("hidden")
+            document.body.classList.remove("file-browser-active")
         } else {
             // Default to showing controls.
             controlsDiv?.removeAttribute("hidden")
+            document.body.classList.remove("file-browser-active")
         }
     }
 }
