@@ -210,6 +210,14 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         renderTable(client, config, items)
     }
 
+    // Allow other modules to request a refresh when the browser is visible (e.g., after upload completes).
+    window.addEventListener("tglfs:refresh-browser", async () => {
+        const browserDiv = document.getElementById("fileBrowser")
+        if (browserDiv && !browserDiv.hasAttribute("hidden")) {
+            await doRefresh()
+        }
+    })
+
     searchInput.addEventListener("keydown", async (e) => {
         if (e.key === "Enter") {
             state.query = (searchInput.value || "").trim()

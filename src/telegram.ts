@@ -1586,6 +1586,9 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
         alert(`File upload complete:\n\n${fileInfo}\n\nCopying UFID to clipboard.`)
 
         await navigator.clipboard.writeText(fileCardData.ufid)
+
+        // Notify the file browser (if visible) to refresh its listing.
+        window.dispatchEvent(new Event("tglfs:refresh-browser"))
     } catch (error) {
         console.error(error)
     } finally {
@@ -1598,7 +1601,6 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
             controlsDiv?.removeAttribute("hidden")
             document.body.classList.remove("file-browser-active")
         } else {
-            // Default to showing controls.
             controlsDiv?.removeAttribute("hidden")
             document.body.classList.remove("file-browser-active")
         }
