@@ -16,6 +16,10 @@ Feel free to run your own copy of the software locally so that you can verify th
 
 ## Getting started
 
+## Dependencies
+
+- All dependencies are managed via NPM and installed automatically. You do not need to manually install `telethon` or any Python encryption packages. This project uses the JavaScript `telegram` package (GramJS) and browser WebCrypto for encryption.
+
 Install dependencies:
 
 ```sh
