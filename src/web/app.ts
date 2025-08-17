@@ -8,10 +8,14 @@ async function init(phoneNumber?: string) {
         throw new Error("Required input elements are missing.")
     }
 
-    const apiIdFromEnv = (process as any).env.TELEGRAM_API_ID
-    const apiHashFromEnv = (process as any).env.TELEGRAM_API_HASH
+    const apiIdFromEnv = (process as any).env.TELEGRAM_API_ID ?? (globalThis as any).TELEGRAM_API_ID
+    const apiHashFromEnv = (process as any).env.TELEGRAM_API_HASH ?? (globalThis as any).TELEGRAM_API_HASH
 
     if (!apiIdFromEnv || !apiHashFromEnv) {
+        console.error(
+            "Missing TELEGRAM_API_ID or TELEGRAM_API_HASH. These must be provided at build time for the static client (e.g., set in Vercel Production env) or exposed on globalThis.",
+            { TELEGRAM_API_ID: (globalThis as any)?.TELEGRAM_API_ID, TELEGRAM_API_HASH: (globalThis as any)?.TELEGRAM_API_HASH },
+        )
         alert("Server misconfiguration: missing TELEGRAM_API_ID or TELEGRAM_API_HASH.")
         throw new Error("Missing TELEGRAM_API_ID or TELEGRAM_API_HASH environment variables.")
     }
