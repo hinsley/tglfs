@@ -86,12 +86,7 @@ div#controls button.middleButton {
     border-bottom: 0;
     border-radius: 0;
 }
-div#controls button#downloadFileButton {
-    margin-top: -1px;
-    margin-bottom: 10px;
-    border-top-left-radius: 0;
-    border-top-right-radius: 0;
-}
+
 div#login .form-control:focus,
 div#controls button:hover {
     z-index: 2;

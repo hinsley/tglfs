@@ -264,13 +264,10 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         if (uploadInput) uploadInput.click()
     })
     actionReceive.addEventListener("click", async () => {
-        // Reuse existing flow via original button to keep prompts intact.
-        const btn = document.getElementById("receiveFileButton") as HTMLButtonElement | null
-        if (btn) btn.click()
+        await (await import("../telegram")).fileReceive(client, config)
     })
     actionUnsend.addEventListener("click", async () => {
-        const btn = document.getElementById("unsendFileButton") as HTMLButtonElement | null
-        if (btn) btn.click()
+        await (await import("../telegram")).fileUnsend(client, config)
     })
 
     actionDownload.addEventListener("click", async () => {
@@ -340,9 +337,8 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         alert("File sent.")
     })
     actionUnsendItem.addEventListener("click", async (e) => {
-        e.preventDefault()
-        const btn = document.getElementById("unsendFileButton") as HTMLButtonElement | null
-        if (btn) btn.click()
+        e.preventDefault();
+        await (await import("../telegram")).fileUnsend(client, config)
     })
 
     const items = await loadFirstPage(client)

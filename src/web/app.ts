@@ -54,31 +54,6 @@ async function init(phoneNumber?: string) {
     uploadFileInput?.addEventListener("change", async () => {
         await Telegram.fileUpload(client, config)
     })
-    const fileLookupButton = document.getElementById("fileLookupButton") as HTMLButtonElement
-    fileLookupButton.addEventListener("click", async () => {
-        await Telegram.fileLookup(client, config)
-    })
-    const sendFileButton = document.getElementById("sendFileButton") as HTMLButtonElement
-    sendFileButton.addEventListener("click", async () => {
-        await Telegram.fileSend(client, config)
-    })
-    const unsendFileButton = document.getElementById("unsendFileButton") as HTMLButtonElement
-    unsendFileButton.addEventListener("click", async () => {
-        await Telegram.fileUnsend(client, config)
-    })
-    const receiveFileButton = document.getElementById("receiveFileButton") as HTMLButtonElement
-    receiveFileButton.addEventListener("click", async () => {
-        await Telegram.fileReceive(client, config)
-    })
-    const renameFileButton = document.getElementById("renameFileButton") as HTMLButtonElement
-    renameFileButton.addEventListener("click", async () => {
-        await Telegram.fileRename(client, config)
-    })
-    const deleteFileButton = document.getElementById("deleteFileButton") as HTMLButtonElement
-    deleteFileButton.addEventListener("click", async () => {
-        await Telegram.fileDelete(client, config)
-    })
-    const downloadFileButton = document.getElementById("downloadFileButton") as HTMLButtonElement
     if ("serviceWorker" in navigator) {
         await navigator.serviceWorker
             .register(new URL("/src/service-worker.js", import.meta.url), { type: "module" })
