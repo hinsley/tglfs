@@ -1,26 +1,30 @@
 import * as Telegram from "../telegram"
 import { initFileBrowser } from "./browser"
 
-async function init(apiId?: string, apiHash?: string, phoneNumber?: string) {
-    const apiIdElement = document.getElementById("apiId") as HTMLInputElement | null
-    const apiHashElement = document.getElementById("apiHash") as HTMLInputElement | null
+async function init(phoneNumber?: string) {
     const phoneElement = document.getElementById("phone") as HTMLInputElement | null
 
-    if (!apiIdElement || !apiHashElement || !phoneElement) {
+    if (!phoneElement) {
         throw new Error("Required input elements are missing.")
     }
 
-    const apiIdValue = apiId ?? apiIdElement.value
-    const apiHashValue = apiHash ?? apiHashElement.value
+    const apiIdFromEnv = (process as any).env.TELEGRAM_API_ID
+    const apiHashFromEnv = (process as any).env.TELEGRAM_API_HASH
+
+    if (!apiIdFromEnv || !apiHashFromEnv) {
+        alert("Server misconfiguration: missing TELEGRAM_API_ID or TELEGRAM_API_HASH.")
+        throw new Error("Missing TELEGRAM_API_ID or TELEGRAM_API_HASH environment variables.")
+    }
+
     const phoneValue = phoneNumber ?? phoneElement.value
 
-    if (apiIdValue.trim() === "" || apiHashValue.trim() === "" || phoneValue.trim() === "") {
+    if (phoneValue.trim() === "") {
         throw new Error("Input fields cannot be empty.")
     }
 
     const config = {
-        apiId: Number(apiIdValue),
-        apiHash: apiHashValue,
+        apiId: Number(apiIdFromEnv),
+        apiHash: String(apiHashFromEnv),
         chunkSize: 1024 ** 3 * 2, // 2 GiB.
         phone: phoneValue,
     }
@@ -28,8 +32,6 @@ async function init(apiId?: string, apiHash?: string, phoneNumber?: string) {
     const client = await Telegram.init(config)
 
     // Set login credential cookies.
-    document.cookie = `apiId=${encodeURIComponent(apiIdValue)}; path=/`
-    document.cookie = `apiHash=${encodeURIComponent(apiHashValue)}; path=/`
     document.cookie = `phone=${encodeURIComponent(phoneValue)}; path=/`
 
     // Expose the client and config objects to the browser console
@@ -134,14 +136,10 @@ window.addEventListener("load", async () => {
         return null;
     }
 
-    const apiId = getCookie("apiId");
-    const apiHash = getCookie("apiHash");
     const phone = getCookie("phone");
 
     // Check if login credentials are already stored as cookies.
-    if (apiId && apiHash && phone) {
-        (document.getElementById("apiId") as HTMLInputElement).value = apiId;
-        (document.getElementById("apiHash") as HTMLInputElement).value = apiHash;
+    if (phone) {
         (document.getElementById("phone") as HTMLInputElement).value = phone;
         await init();
     } else {
