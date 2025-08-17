@@ -314,3 +314,15 @@ body > #app { padding-bottom: 0; }
   #app { max-width: 360px !important; width: 100%; margin-left: auto; margin-right: auto; }
   #app * { max-width: 360px !important; }
 }
+
+div#controls button#fileBrowserButton {
+    border-bottom: 0;
+    border-bottom-right-radius: 0;
+    border-bottom-left-radius: 0;
+}
+div#controls button#downloadFileLegacyButton {
+    margin-top: -1px;
+    margin-bottom: 10px;
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+}

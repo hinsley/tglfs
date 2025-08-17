@@ -257,6 +257,7 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         const browserDiv = document.getElementById("fileBrowser")
         browserDiv?.setAttribute("hidden", "")
         controlsDiv?.removeAttribute("hidden")
+        document.body.classList.remove("file-browser-active")
     })
     actionUpload.addEventListener("click", () => {
         const uploadInput = document.getElementById("uploadFileInput") as HTMLInputElement | null
