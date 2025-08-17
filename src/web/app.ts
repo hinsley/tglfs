@@ -105,7 +105,7 @@ async function init(phoneNumber?: string) {
     }
 
     const fileBrowserButton = document.getElementById("fileBrowserButton") as HTMLButtonElement
-    const browserBackButton = document.getElementById("browserBackButton") as HTMLButtonElement
+    const browserHomeButton = document.getElementById("browserHomeButton") as HTMLButtonElement
     fileBrowserButton.addEventListener("click", async () => {
         // Show browser, hide controls.
         controlsDiv?.setAttribute("hidden", "")
@@ -113,7 +113,7 @@ async function init(phoneNumber?: string) {
         document.body.classList.add("file-browser-active")
         await initFileBrowser(client, config)
     })
-    browserBackButton.addEventListener("click", () => {
+    browserHomeButton.addEventListener("click", () => {
         fileBrowserDiv?.setAttribute("hidden", "")
         controlsDiv?.removeAttribute("hidden")
         document.body.classList.remove("file-browser-active")
