@@ -76,18 +76,15 @@ div#controls button:active {
 div#controls input#uploadFileInput {
     display: none;
 }
-div#login input#apiId,
 div#controls label#uploadFileLabel {
     border-bottom: 0;
     border-bottom-right-radius: 0;
     border-bottom-left-radius: 0;
 }
-div#login input#apiHash,
 div#controls button.middleButton {
     border-bottom: 0;
     border-radius: 0;
 }
-div#login input#phone,
 div#controls button#downloadFileButton {
     margin-top: -1px;
     margin-bottom: 10px;
