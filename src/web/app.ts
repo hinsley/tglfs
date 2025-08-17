@@ -50,47 +50,13 @@ async function init(phoneNumber?: string) {
         splashDivAtInit.remove()
     }
 
-    const uploadFileInput = document.getElementById("uploadFileInput") as HTMLInputElement
-    uploadFileInput.addEventListener("change", async () => {
+    const uploadFileInput = document.getElementById("uploadFileInput") as HTMLInputElement | null
+    uploadFileInput?.addEventListener("change", async () => {
         await Telegram.fileUpload(client, config)
     })
-    const fileLookupButton = document.getElementById("fileLookupButton") as HTMLButtonElement
-    fileLookupButton.addEventListener("click", async () => {
-        await Telegram.fileLookup(client, config)
-    })
-    const sendFileButton = document.getElementById("sendFileButton") as HTMLButtonElement
-    sendFileButton.addEventListener("click", async () => {
-        await Telegram.fileSend(client, config)
-    })
-    const unsendFileButton = document.getElementById("unsendFileButton") as HTMLButtonElement
-    unsendFileButton.addEventListener("click", async () => {
-        await Telegram.fileUnsend(client, config)
-    })
-    const receiveFileButton = document.getElementById("receiveFileButton") as HTMLButtonElement
-    receiveFileButton.addEventListener("click", async () => {
-        await Telegram.fileReceive(client, config)
-    })
-    const renameFileButton = document.getElementById("renameFileButton") as HTMLButtonElement
-    renameFileButton.addEventListener("click", async () => {
-        await Telegram.fileRename(client, config)
-    })
-    const deleteFileButton = document.getElementById("deleteFileButton") as HTMLButtonElement
-    deleteFileButton.addEventListener("click", async () => {
-        await Telegram.fileDelete(client, config)
-    })
-    const downloadFileButton = document.getElementById("downloadFileButton") as HTMLButtonElement
     if ("serviceWorker" in navigator) {
         await navigator.serviceWorker
             .register(new URL("/src/service-worker.js", import.meta.url), { type: "module" })
-            .then(function (registration) {
-                downloadFileButton.addEventListener("click", async () => {
-                    await Telegram.fileDownload(client, config)
-                })
-                const downloadFileLegacyButton = document.getElementById("downloadFileLegacyButton") as HTMLButtonElement
-                downloadFileLegacyButton.addEventListener("click", async () => {
-                    await Telegram.fileDownloadLegacy(client, config)
-                })
-            })
             .catch(function (error) {
                 alert(
                     "Failed to register ServiceWorker.\nYou will not be able to download files.\nSee developer console for details.",
@@ -99,19 +65,19 @@ async function init(phoneNumber?: string) {
             })
     }
 
-    const fileBrowserButton = document.getElementById("fileBrowserButton") as HTMLButtonElement
-    const browserBackButton = document.getElementById("browserBackButton") as HTMLButtonElement
-    fileBrowserButton.addEventListener("click", async () => {
+    const downloadFileLegacyButton = document.getElementById("downloadFileLegacyButton") as HTMLButtonElement | null
+    downloadFileLegacyButton?.addEventListener("click", async () => {
+        await Telegram.fileDownloadLegacy(client, config)
+    })
+
+    const fileBrowserButton = document.getElementById("fileBrowserButton") as HTMLButtonElement | null
+    const browserBackButton = null as unknown as HTMLButtonElement | null
+    fileBrowserButton?.addEventListener("click", async () => {
         // Show browser, hide controls.
         controlsDiv?.setAttribute("hidden", "")
         fileBrowserDiv?.removeAttribute("hidden")
         document.body.classList.add("file-browser-active")
         await initFileBrowser(client, config)
-    })
-    browserBackButton.addEventListener("click", () => {
-        fileBrowserDiv?.setAttribute("hidden", "")
-        controlsDiv?.removeAttribute("hidden")
-        document.body.classList.remove("file-browser-active")
     })
 }
 
