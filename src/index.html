@@ -1,94 +1,83 @@
 <!doctype html>
 <html lang="en">
-    <head>
-        <meta charset="utf-8" />
-        <title>TGLFS</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <link
-            href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-            rel="stylesheet"
-            integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
-            crossorigin="anonymous"
-        />
-        <link href="./style.css" rel="stylesheet" />
-        <link rel="icon" href="./icons/TGLFS logo 192.png" sizes="192x192" type="image/png" />
-        <link rel="manifest" href="./manifest.json" />
-        <script type="module" src="web/app.ts"></script>
-    </head>
-    <body class="text-center">
-        <div id="app">
-            <div id="logo">🗂️</div>
-            <h1 id="title" class="h3 mb-3 font-weight-normal">Telegram Large File Storage</h1>
-            <div id="splash">Loading...</div>
-            <div id="login" hidden>
-                <form id="loginForm" autocomplete="on" onsubmit="event.preventDefault();">
-                    <input type="tel" id="phone" class="form-control" name="phone" placeholder="Phone Number" />
-                    <button id="loginButton" type="submit" class="btn btn-lg btn-primary btn-block w-100">Sign In</button>
-                </form>
+
+<head>
+    <meta charset="utf-8" />
+    <title>TGLFS</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
+        integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous" />
+    <link href="./style.css" rel="stylesheet" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="icon" href="./icons/TGLFS logo 192.png" sizes="192x192" type="image/png" />
+    <link rel="manifest" href="./manifest.json" />
+    <script type="module" src="web/app.ts"></script>
+</head>
+
+<body class="text-center">
+    <div id="app">
+        <div id="logo">🗂️</div>
+        <h1 id="title" class="h3 mb-3 font-weight-normal">Telegram Large File Storage</h1>
+        <div id="splash">Loading...</div>
+        <div id="login" hidden>
+            <form id="loginForm" autocomplete="on" onsubmit="event.preventDefault();">
+                <input type="tel" id="phone" class="form-control" name="phone" placeholder="Phone Number" />
+                <button id="loginButton" type="submit" class="btn btn-lg btn-primary btn-block w-100">Sign In</button>
+            </form>
+        </div>
+        <div id="controls" class="button-group" hidden>
+            <input type="file" id="uploadFileInput" multiple style="display: none !important;" />
+            <button id="fileBrowserButton" class="btn btn-lg btn-outline-primary btn-block w-100">
+                File Browser
+            </button>
+            <button id="downloadFileLegacyButton" class="btn btn-lg btn-outline-primary btn-block w-100">
+                Download (Legacy)
+            </button>
+        </div>
+        <div id="progressBarContainer" hidden>
+            <div id="progressBarText"></div>
+            <div id="progressBar" class="progress text-center">
+                <div id="progress" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar"
+                    style="width: 25%;" aria-valuenow="25" aria-valuemin="0" aria-valuemax="100">25%</div>
             </div>
-            <div id="controls" class="button-group" hidden>
-                <input type="file" id="uploadFileInput" multiple />
-                <button id="fileBrowserButton" class="btn btn-lg btn-outline-primary btn-block w-100">
-                    File Browser
-                </button>
-                <button id="downloadFileLegacyButton" class="btn btn-lg btn-outline-primary btn-block w-100">
-                    Download (Legacy)
-                </button>
-            </div>
-            <div id="progressBarContainer" hidden>
-                <div id="progressBarText"></div>
-                <div id="progressBar" class="progress text-center">
-                    <div id="progress" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 25%;" aria-valuenow="25" aria-valuemin="0" aria-valuemax="100">25%</div>
-                </div>
-                <div id="progressBytesText" class="text-muted">0 / 0 bytes</div>
-                <div id="progressTimeText" class="text-muted">Elapsed: 00:00:00 • Remaining: --:--:--</div>
-            </div>
-            <div id="fileBrowser" hidden>
-                <div class="fx-header">
-                    <div class="d-flex gap-2 align-items-center mb-2">
-                        <button id="browserHomeButton" class="btn btn-secondary">Home</button>
-                        <button id="browserActionUpload" class="btn btn-primary">Upload</button>
-                        <button id="browserActionReceive" class="btn btn-primary">Receive</button>
-                        <div class="ms-auto d-flex gap-2 browser-actions">
-                            <button id="browserActionDownload" class="btn btn-primary" disabled>Download</button>
-                            <button id="browserActionRename" class="btn btn-secondary" disabled>Rename</button>
-                            <button id="browserActionDelete" class="btn btn-danger" disabled>Delete</button>
-                            <button id="browserActionSend" class="btn btn-primary" disabled>Send</button>
-                            <button id="browserActionUnsend" class="btn btn-danger">Unsend</button>
-                        </div>
-                        <div class="ms-2 dropdown browser-actions-dropdown">
-                            <button id="browserActionsBtn" class="btn btn-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" disabled>
-                                Actions
-                            </button>
-                            <ul class="dropdown-menu dropdown-menu-end">
-                                <li><a class="dropdown-item" href="#" id="actionDownloadItem">Download</a></li>
-                                <li><a class="dropdown-item" href="#" id="actionRenameItem">Rename</a></li>
-                                <li><a class="dropdown-item text-danger" href="#" id="actionDeleteItem">Delete</a></li>
-                                <li><hr class="dropdown-divider" /></li>
-                                <li><a class="dropdown-item" href="#" id="actionSendItem">Send</a></li>
-                                <li><a class="dropdown-item text-danger" href="#" id="actionUnsendItem">Unsend</a></li>
-                            </ul>
-                        </div>
+            <div id="progressBytesText" class="text-muted">0 / 0 bytes</div>
+            <div id="progressTimeText" class="text-muted">Elapsed: 00:00:00 • Remaining: --:--:--</div>
+        </div>
+        <div id="fileBrowser" hidden>
+            <div class="fx-header">
+                <div class="fx-header-row">
+                    <button id="browserHomeButton" class="btn btn-sm btn-outline-secondary fx-logo-button" aria-label="Home">
+                        <img src="./icons/TGLFS logo 192.png" alt="TGLFS" class="fx-logo-img" />
+                    </button>
+                    <div class="btn-group view-toggle" role="group">
+                        <button id="viewList" class="btn btn-sm btn-outline-secondary active" title="List">☰</button>
+                        <button id="viewGrid" class="btn btn-sm btn-outline-secondary" title="Grid">▦</button>
                     </div>
-                    <div class="d-flex gap-2 align-items-center">
-                        <label for="browserSortSelect" class="form-label m-0">Sort by</label>
-                        <select id="browserSortSelect" class="form-select" style="max-width: 180px;">
-                            <option value="date_desc">Date (newest)</option>
-                            <option value="date_asc">Date (oldest)</option>
-                            <option value="name_asc">Name (A–Z)</option>
-                            <option value="name_desc">Name (Z–A)</option>
-                            <option value="size_desc">Size (largest)</option>
-                            <option value="size_asc">Size (smallest)</option>
-                        </select>
-                        <input id="browserSearchInput" class="form-control ms-auto" style="max-width: 480px;" placeholder="Search name or UFID" />
+                    <input id="browserSearchInput" class="form-control form-control-sm fx-search"
+                        placeholder="Search..." />
+                    <select id="browserSortSelect" class="form-select form-select-sm fx-sort">
+                        <option value="date_desc">Newest</option>
+                        <option value="date_asc">Oldest</option>
+                        <option value="name_asc">A–Z</option>
+                        <option value="name_desc">Z–A</option>
+                        <option value="size_desc">Largest</option>
+                        <option value="size_asc">Smallest</option>
+                    </select>
+                    <div class="fx-actions">
+                        <button id="browserActionUpload" class="btn btn-sm btn-primary">+ Upload</button>
+                        <button id="browserActionReceive" class="btn btn-sm btn-outline-primary">Receive</button>
                     </div>
                 </div>
-                <div id="browserContent" class="browser-content">
+            </div>
+            <div id="browserContent" class="browser-content">
+                <div id="browserList">
                     <div class="table-responsive">
-                        
                         <table id="browserTable" class="table table-hover align-middle fade-in">
                             <thead>
                                 <tr>
+                                    <th class="select-cell"></th>
                                     <th class="name">Name</th>
                                     <th class="size">Size</th>
                                     <th class="ufid">UFID</th>
@@ -100,31 +89,98 @@
                         </table>
                     </div>
                     <div id="browserCards" class="fade-in d-lg-none"></div>
-                    <div class="d-flex justify-content-between" style="margin-top: 8px;">
-                        <button id="browserPrevPage" class="btn btn-secondary">Previous</button>
-                        <div id="browserPageInfo" class="text-muted"></div>
-                        <button id="browserNextPage" class="btn btn-secondary">Next</button>
-                    </div>
+                </div>
+                <div id="browserGrid" class="file-grid fade-in" hidden></div>
+                <div class="d-flex justify-content-between align-items-center" style="margin-top: 16px;">
+                    <button id="browserPrevPage" class="btn btn-secondary" title="Previous Page">←</button>
+                    <div id="browserPageInfo" class="text-muted"></div>
+                    <button id="browserNextPage" class="btn btn-secondary" title="Next Page">→</button>
                 </div>
             </div>
-            <div id="donation" class="text-muted" style="margin-top: 64px">
-                Support development! BTC donation address:<br /><code style="word-wrap: break-word; user-select: text"
-                    >bc1q5kqen6ygnrqxgtyqyfpgsefnuj20rrfp6tg3dm</code
-                >
+            <div class="fx-footer">
+                <!-- File actions (shown when files selected) -->
+                <div class="browser-actions" id="fileActionsBar" hidden>
+                    <div class="d-flex flex-wrap gap-2 align-items-center">
+                        <span id="selectionInfo" class="text-muted small"></span>
+                        <button id="deselectAllBtn" class="btn btn-sm btn-link text-muted p-0">Clear selection</button>
+                    </div>
+                    <div class="d-flex flex-wrap gap-1">
+                        <button id="browserActionPreview" class="btn btn-sm btn-secondary">Preview</button>
+                        <button id="browserActionDownload" class="btn btn-sm btn-primary">Download</button>
+                        <button id="browserActionRename" class="btn btn-sm btn-secondary">Rename</button>
+                        <button id="browserActionSend" class="btn btn-sm btn-secondary">Send</button>
+                        <button id="browserActionDelete" class="btn btn-sm btn-danger">Delete</button>
+                    </div>
+                </div>
+                <!-- Mobile dropdown for file actions -->
+                <div class="browser-actions-dropdown" id="fileActionsDropdown" hidden>
+                    <div class="d-flex gap-2 align-items-center justify-content-between">
+                        <button id="selectAllBtnMobile" class="btn btn-sm btn-outline-secondary">Select All</button>
+                        <div class="dropdown">
+                            <button id="browserActionsBtn" class="btn btn-sm btn-primary dropdown-toggle" type="button"
+                                data-bs-toggle="dropdown" aria-expanded="false">
+                                Actions
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-end">
+                                <li><a class="dropdown-item" href="#" id="actionPreviewItem">👁️ Preview</a></li>
+                                <li><a class="dropdown-item" href="#" id="actionDownloadItem">⬇️ Download</a></li>
+                                <li><a class="dropdown-item" href="#" id="actionRenameItem">✏️ Rename</a></li>
+                                <li><a class="dropdown-item" href="#" id="actionSendItem">📤 Send</a></li>
+                                <li>
+                                    <hr class="dropdown-divider" />
+                                </li>
+                                <li><a class="dropdown-item text-danger" href="#" id="actionDeleteItem">🗑️ Delete</a>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+                <!-- Hidden: Unsend button (only for received files) -->
+                <button id="browserActionUnsend" class="btn btn-danger" hidden>Unsend</button>
             </div>
         </div>
-        <script
-            src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-            integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
-            crossorigin="anonymous"
-        ></script>
-        <script type="module">
-            if (typeof navigator.serviceWorker !== "undefined") {
-                navigator.serviceWorker.register(new URL("/src/offline-page-sw.js", import.meta.url))
-                    .catch(err => {
-                        console.error("Failed to register service worker: ", err)
-                    })
-            }
-        </script>
-    </body>
+        <div id="ufidToast" class="ufid-toast" role="status" aria-live="polite" aria-hidden="true">
+            UFID copied to clipboard
+        </div>
+        <div id="previewModal" class="preview-modal" hidden>
+            <div class="preview-backdrop"></div>
+            <div class="preview-content">
+                <button class="preview-close" aria-label="Close">×</button>
+                <div id="previewLoading" class="preview-loading">
+                    <div class="spinner"></div>
+                    <p id="previewLoadingText">Downloading...</p>
+                    <div class="progress">
+                        <div id="previewProgress" class="progress-bar" style="width: 0%"></div>
+                    </div>
+                    <button id="previewCancel" class="btn btn-secondary">Cancel</button>
+                </div>
+                <div id="previewMediaContainer" hidden>
+                    <img id="previewImage" hidden />
+                    <video id="previewVideo" controls hidden></video>
+                    <audio id="previewAudio" controls hidden></audio>
+                </div>
+                <div class="preview-info">
+                    <h3 id="previewFileName"></h3>
+                    <p id="previewFileMeta"></p>
+                </div>
+            </div>
+        </div>
+        <div id="donation" class="text-muted" style="margin-top: 64px">
+            Support development! BTC donation address:<br /><code
+                style="word-wrap: break-word; user-select: text">bc1q5kqen6ygnrqxgtyqyfpgsefnuj20rrfp6tg3dm</code>
+        </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+        integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
+        crossorigin="anonymous"></script>
+    <script type="module">
+        if (typeof navigator.serviceWorker !== "undefined") {
+            navigator.serviceWorker.register(new URL("/src/offline-page-sw.js", import.meta.url))
+                .catch(err => {
+                    console.error("Failed to register service worker: ", err)
+                })
+        }
+    </script>
+</body>
+
 </html>

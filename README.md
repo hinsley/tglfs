@@ -1,6 +1,8 @@
-# tglfs
-
-Large file storage on Telegram
+<p align="center">
+  <img src="src/icons/TGLFS%20logo%20192.png" alt="TGLFS logo" width="96" height="96">
+</p>
+<h1 align="center">TGLFS</h1>
+<p align="center">Large file storage on Telegram</p>
 
 ## What is this?
 

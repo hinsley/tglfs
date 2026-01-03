@@ -78,6 +78,7 @@ async function init(phoneNumber?: string) {
         fileBrowserDiv?.removeAttribute("hidden")
         document.body.classList.add("file-browser-active")
         await initFileBrowser(client, config)
+        window.dispatchEvent(new Event("tglfs:refresh-browser"))
     })
 }
 
@@ -115,4 +116,3 @@ window.addEventListener("load", async () => {
         splashDiv.remove()
     }
 })
-
