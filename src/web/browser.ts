@@ -149,11 +149,6 @@ function attachSelectionHandlers(
         if (target?.closest("button, a")) return
         handleSelectionClick()
     })
-    const checkbox = root.querySelector<HTMLInputElement>("input[data-select]")
-    checkbox?.addEventListener("click", (e) => {
-        e.stopPropagation()
-        handleSelectionClick()
-    })
 }
 
 function renderList(items: Array<{ msgId: number; date: number; data: FileCardData }>) {
@@ -165,7 +160,6 @@ function renderList(items: Array<{ msgId: number; date: number; data: FileCardDa
             const tr = document.createElement("tr")
             tr.dataset.msgid = String(msgId)
             tr.innerHTML = `
-                <td class="select-cell"><input type="checkbox" class="list-select-checkbox" data-select data-msgid="${msgId}" /></td>
                 <td class="name"><span class="file-type-icon">${icon}</span>${data.name}</td>
                 <td class="size">${humanReadableSize(data.size)}</td>
                 <td class="ufid"><code title="Click to copy UFID" data-ufid>${data.ufid}</code></td>
@@ -191,7 +185,6 @@ function renderList(items: Array<{ msgId: number; date: number; data: FileCardDa
             card.className = "file-card"
             card.dataset.msgid = String(msgId)
             card.innerHTML = `
-                <input type="checkbox" class="list-select-checkbox" data-select data-msgid="${msgId}" />
                 <div class="flex-grow-1">
                     <div class="title"><span class="file-type-icon">${icon}</span>${data.name}</div>
                     <div class="meta">${humanReadableSize(data.size)} • ${formatDate(date)}</div>
@@ -223,7 +216,6 @@ function renderGrid(items: Array<{ msgId: number; date: number; data: FileCardDa
         item.className = "file-grid-item fade-in"
         item.dataset.msgid = String(msgId)
         item.innerHTML = `
-            <input type="checkbox" class="grid-select-checkbox" data-select data-msgid="${msgId}" />
             <div class="file-icon">${icon}</div>
             <div class="file-info">
                 <div class="file-name" title="${data.name}">${data.name}</div>
@@ -313,10 +305,6 @@ function updateSelectionDisplay() {
         const msgId = Number(node.dataset.msgid)
         node.classList.toggle("selected", selectedIds.has(msgId))
     })
-    document.querySelectorAll<HTMLInputElement>("input[data-select]").forEach((input) => {
-        const msgId = Number(input.dataset.msgid)
-        input.checked = selectedIds.has(msgId)
-    })
     updateActionStates()
 }
 
@@ -390,6 +378,10 @@ function updateActionStates() {
     if (deselectAllBtn) {
         deselectAllBtn.classList.toggle("action-hidden", selectedCount === 0)
     }
+    const deselectAllBtnMobile = document.getElementById("selectAllBtnMobile") as HTMLButtonElement | null
+    if (deselectAllBtnMobile) {
+        deselectAllBtnMobile.classList.toggle("action-hidden", selectedCount === 0)
+    }
 }
 
 async function loadFirstPage(client: any) {
@@ -432,6 +424,8 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     const actionSend = document.getElementById("browserActionSend") as HTMLButtonElement
     const actionUpload = document.getElementById("browserActionUpload") as HTMLButtonElement
     const actionReceive = document.getElementById("browserActionReceive") as HTMLButtonElement
+    const actionUploadItem = document.getElementById("browserActionUploadItem") as HTMLAnchorElement | null
+    const actionReceiveItem = document.getElementById("browserActionReceiveItem") as HTMLAnchorElement | null
     const actionUnsend = document.getElementById("browserActionUnsend") as HTMLButtonElement
     const homeButton = document.getElementById("browserHomeButton") as HTMLButtonElement
     const bulkDownload = document.getElementById("bulkDownload") as HTMLButtonElement | null
@@ -468,10 +462,33 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         }
     })
 
+    let searchTimer: number | undefined
+    const scheduleSearch = (immediate: boolean) => {
+        const nextQuery = (searchInput.value || "").trim()
+        if (!immediate && nextQuery === state.query) return
+        if (searchTimer !== undefined) {
+            window.clearTimeout(searchTimer)
+            searchTimer = undefined
+        }
+        const run = async () => {
+            state.query = nextQuery
+            await doRefresh()
+        }
+        if (immediate) {
+            void run()
+            return
+        }
+        searchTimer = window.setTimeout(() => {
+            void run()
+        }, 250)
+    }
+
+    searchInput.addEventListener("input", () => {
+        scheduleSearch(false)
+    })
     searchInput.addEventListener("keydown", async (e) => {
         if (e.key === "Enter") {
-            state.query = (searchInput.value || "").trim()
-            await doRefresh()
+            scheduleSearch(true)
         }
     })
 
@@ -518,6 +535,10 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     deselectAllBtn?.addEventListener("click", () => {
         clearSelection()
     })
+    const deselectAllBtnMobile = document.getElementById("selectAllBtnMobile") as HTMLButtonElement | null
+    deselectAllBtnMobile?.addEventListener("click", () => {
+        clearSelection()
+    })
 
     homeButton.addEventListener("click", () => {
         const controlsDiv = document.getElementById("controls")
@@ -532,6 +553,15 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         if (uploadInput) uploadInput.click()
     })
     actionReceive.addEventListener("click", async () => {
+        await (await import("../telegram")).fileReceive(client, config)
+    })
+    actionUploadItem?.addEventListener("click", (e) => {
+        e.preventDefault()
+        const uploadInput = document.getElementById("uploadFileInput") as HTMLInputElement | null
+        if (uploadInput) uploadInput.click()
+    })
+    actionReceiveItem?.addEventListener("click", async (e) => {
+        e.preventDefault()
         await (await import("../telegram")).fileReceive(client, config)
     })
     actionUnsend.addEventListener("click", async () => {

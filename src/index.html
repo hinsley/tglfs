@@ -66,8 +66,18 @@
                         <option value="size_asc">Smallest</option>
                     </select>
                     <div class="fx-actions">
-                        <button id="browserActionUpload" class="btn btn-sm btn-primary">+ Upload</button>
-                        <button id="browserActionReceive" class="btn btn-sm btn-outline-primary">Receive</button>
+                        <button id="browserActionUpload" class="btn btn-sm btn-primary fx-action-btn">+ Upload</button>
+                        <button id="browserActionReceive" class="btn btn-sm btn-outline-primary fx-action-btn">Receive</button>
+                        <div class="dropdown fx-actions-dropdown">
+                            <button id="browserQuickActionsBtn" class="btn btn-sm btn-primary dropdown-toggle" type="button"
+                                data-bs-toggle="dropdown" aria-expanded="false">
+                                Actions
+                            </button>
+                            <ul class="dropdown-menu dropdown-menu-end">
+                                <li><a class="dropdown-item" href="#" id="browserActionUploadItem">+ Upload</a></li>
+                                <li><a class="dropdown-item" href="#" id="browserActionReceiveItem">Receive</a></li>
+                            </ul>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -77,7 +87,6 @@
                         <table id="browserTable" class="table table-hover align-middle fade-in">
                             <thead>
                                 <tr>
-                                    <th class="select-cell"></th>
                                     <th class="name">Name</th>
                                     <th class="size">Size</th>
                                     <th class="ufid">UFID</th>
@@ -115,7 +124,7 @@
                 <!-- Mobile dropdown for file actions -->
                 <div class="browser-actions-dropdown" id="fileActionsDropdown" hidden>
                     <div class="d-flex gap-2 align-items-center justify-content-between">
-                        <button id="selectAllBtnMobile" class="btn btn-sm btn-outline-secondary">Select All</button>
+                        <button id="selectAllBtnMobile" class="btn btn-sm btn-outline-secondary">Clear selection</button>
                         <div class="dropdown">
                             <button id="browserActionsBtn" class="btn btn-sm btn-primary dropdown-toggle" type="button"
                                 data-bs-toggle="dropdown" aria-expanded="false">
