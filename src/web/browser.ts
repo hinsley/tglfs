@@ -135,6 +135,28 @@ function getVisibleItems() {
     return state.pages[state.currentPage] ?? []
 }
 
+function applyGridMarquee(item: HTMLElement) {
+    const nameEl = item.querySelector<HTMLElement>(".file-name")
+    const textEl = item.querySelector<HTMLElement>(".file-name-text")
+    const scrollEl = item.querySelector<HTMLElement>(".file-name-scroll")
+    if (!nameEl || !textEl || !scrollEl) return
+    requestAnimationFrame(() => {
+        nameEl.classList.remove("is-marquee")
+        nameEl.style.removeProperty("--marquee-distance")
+        nameEl.style.removeProperty("--marquee-duration")
+        const overflow = scrollEl.scrollWidth - textEl.clientWidth
+        if (overflow > 8) {
+            const gap = 24
+            const distance = overflow + gap
+            const duration = Math.max(6, distance / 24)
+            nameEl.classList.add("is-marquee")
+            nameEl.style.setProperty("--marquee-distance", `${distance}px`)
+            nameEl.style.setProperty("--marquee-duration", `${duration}s`)
+            nameEl.style.setProperty("--marquee-gap", `${gap}px`)
+        }
+    })
+}
+
 function attachSelectionHandlers(
     root: HTMLElement,
     entry: { msgId: number; date: number; data: FileCardData },
@@ -218,7 +240,9 @@ function renderGrid(items: Array<{ msgId: number; date: number; data: FileCardDa
         item.innerHTML = `
             <div class="file-icon">${icon}</div>
             <div class="file-info">
-                <div class="file-name" title="${data.name}">${data.name}</div>
+                <div class="file-name" title="${data.name}">
+                    <span class="file-name-text"><span class="file-name-scroll">${data.name}</span></span>
+                </div>
                 <div class="file-meta">
                     <span>${humanReadableSize(data.size)}</span>
                     <span class="dot-separator">•</span>
@@ -227,6 +251,7 @@ function renderGrid(items: Array<{ msgId: number; date: number; data: FileCardDa
             </div>`
         grid.appendChild(item)
         attachSelectionHandlers(item, { msgId, date, data }, index)
+        applyGridMarquee(item)
     }
 }
 
@@ -255,6 +280,11 @@ function applyViewMode() {
         gridView?.removeAttribute("hidden")
         listButton?.classList.remove("active")
         gridButton?.classList.add("active")
+        requestAnimationFrame(() => {
+            document.querySelectorAll<HTMLElement>(".file-grid-item").forEach((item) => {
+                applyGridMarquee(item)
+            })
+        })
     } else {
         gridView?.setAttribute("hidden", "")
         listView?.removeAttribute("hidden")
