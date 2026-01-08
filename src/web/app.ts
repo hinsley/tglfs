@@ -1,6 +1,39 @@
 import * as Telegram from "../telegram"
 import { initFileBrowser } from "./browser"
 
+let activeClient: any = null
+let activeConfig: any = null
+let pendingShareFiles: File[] | null = null
+
+async function maybeUploadSharedFiles() {
+    if (!pendingShareFiles || !activeClient || !activeConfig) {
+        return
+    }
+    const files = pendingShareFiles
+    pendingShareFiles = null
+    await Telegram.fileUpload(activeClient, activeConfig, files)
+}
+
+function queueShareFiles(files: File[]) {
+    if (!files.length) {
+        return
+    }
+    pendingShareFiles = files
+    void maybeUploadSharedFiles()
+}
+
+if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", (event) => {
+        const data = event.data
+        if (!data || data.type !== "SHARE_TARGET_FILES") {
+            return
+        }
+        const rawFiles = Array.isArray(data.files) ? data.files : []
+        const files = rawFiles.filter((entry: unknown) => entry instanceof File) as File[]
+        queueShareFiles(files)
+    })
+}
+
 async function init(phoneNumber?: string) {
     const phoneElement = document.getElementById("phone") as HTMLInputElement | null
 
@@ -25,6 +58,8 @@ async function init(phoneNumber?: string) {
     }
 
     const client = await Telegram.init(config)
+    activeClient = client
+    activeConfig = config
 
     // Set login credential cookies.
     document.cookie = `phone=${encodeURIComponent(phoneValue)}; path=/`
@@ -54,17 +89,6 @@ async function init(phoneNumber?: string) {
     uploadFileInput?.addEventListener("change", async () => {
         await Telegram.fileUpload(client, config)
     })
-    if ("serviceWorker" in navigator) {
-        await navigator.serviceWorker
-            .register(new URL("/src/service-worker.js", import.meta.url), { type: "module" })
-            .catch(function (error) {
-                alert(
-                    "Failed to register ServiceWorker.\nYou will not be able to download files.\nSee developer console for details.",
-                )
-                console.error("ServiceWorker registration failed: ", error)
-            })
-    }
-
     const downloadFileLegacyButton = document.getElementById("downloadFileLegacyButton") as HTMLButtonElement | null
     downloadFileLegacyButton?.addEventListener("click", async () => {
         await Telegram.fileDownloadLegacy(client, config)
@@ -80,6 +104,8 @@ async function init(phoneNumber?: string) {
         await initFileBrowser(client, config)
         window.dispatchEvent(new Event("tglfs:refresh-browser"))
     })
+
+    await maybeUploadSharedFiles()
 }
 
 const loginButton = document.getElementById("loginButton") as HTMLButtonElement
@@ -88,6 +114,17 @@ loginButton.addEventListener("click", () => {
 })
 
 window.addEventListener("load", async () => {
+    if ("serviceWorker" in navigator) {
+        await navigator.serviceWorker
+            .register(new URL("/src/service-worker.js", import.meta.url), { type: "module" })
+            .catch(function (error) {
+                alert(
+                    "Failed to register ServiceWorker.\nYou will not be able to download files.\nSee developer console for details.",
+                )
+                console.error("ServiceWorker registration failed: ", error)
+            })
+    }
+
     function getCookie(name: string): string | null {
         const value = `; ${document.cookie}`;
         const parts = value.split(`; ${name}=`);

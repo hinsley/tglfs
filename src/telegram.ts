@@ -1109,7 +1109,7 @@ export async function fileUnsend(client: TelegramClient, config: Config.Config) 
     }
 }
 
-export async function fileUpload(client: TelegramClient, config: Config.Config) {
+export async function fileUpload(client: TelegramClient, config: Config.Config, sharedFiles?: File[]) {
     // TODO: Implement upload resumption.
     if (config.chunkSize < UPLOAD_PART_SIZE) {
         throw new Error(
@@ -1117,13 +1117,18 @@ export async function fileUpload(client: TelegramClient, config: Config.Config) 
         )
     }
 
-    const uploadFileInput = document.getElementById("uploadFileInput") as HTMLInputElement
-    const selectedFiles = uploadFileInput.files
-    if (!selectedFiles || selectedFiles.length === 0) {
-        alert("No file selected. Aborting.")
-        return
+    let files: File[] | null = null
+    if (sharedFiles && sharedFiles.length > 0) {
+        files = sharedFiles
+    } else {
+        const uploadFileInput = document.getElementById("uploadFileInput") as HTMLInputElement | null
+        const selectedFiles = uploadFileInput?.files
+        if (!selectedFiles || selectedFiles.length === 0) {
+            alert("No file selected. Aborting.")
+            return
+        }
+        files = Array.from(selectedFiles)
     }
-    const files = Array.from(selectedFiles)
     const single = files.length === 1
     const file = files[0]
     console.log(single ? `Selected file: ${file.name}` : `Selected ${files.length} files for archive upload.`)
