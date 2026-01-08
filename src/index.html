@@ -22,10 +22,49 @@
         <h1 id="title" class="h3 mb-3 font-weight-normal">Telegram Large File Storage</h1>
         <div id="splash">Loading...</div>
         <div id="login" hidden>
-            <form id="loginForm" autocomplete="on" onsubmit="event.preventDefault();">
-                <input type="tel" id="phone" class="form-control" name="phone" placeholder="Phone Number" />
-                <button id="loginButton" type="submit" class="btn btn-lg btn-primary btn-block w-100">Sign In</button>
-            </form>
+            <div class="login-card">
+                <div class="login-header">
+                    <div class="login-kicker">Secure Login</div>
+                    <h2 class="login-title">Sign in to TGLFS</h2>
+                    <p class="login-subtitle">Use your Telegram account to access your files.</p>
+                </div>
+                <div id="loginStepIndicator" class="login-step-indicator">Step 1 of 3</div>
+                <div id="loginStatus" class="login-status" role="status" aria-live="polite" hidden>
+                    <span class="spinner" aria-hidden="true"></span>
+                    <span id="loginStatusText"></span>
+                </div>
+                <div id="loginError" class="login-error" role="alert" aria-live="assertive" hidden></div>
+                <form id="loginPhoneForm" class="login-step" autocomplete="on">
+                    <label class="form-label" for="phone">Phone number</label>
+                    <input type="tel" id="phone" class="form-control" name="phone" placeholder="+1 555 555 5555"
+                        autocomplete="tel" inputmode="tel" />
+                    <button id="loginButton" type="submit" class="btn btn-lg btn-primary btn-block w-100">Send code</button>
+                    <p class="login-hint">We will send a login code via Telegram.</p>
+                </form>
+                <form id="loginCodeForm" class="login-step" autocomplete="one-time-code" hidden>
+                    <label class="form-label" for="loginCode">Login code</label>
+                    <input type="text" id="loginCode" class="form-control" placeholder="12345" inputmode="numeric"
+                        autocomplete="one-time-code" />
+                    <div class="login-action-row">
+                        <button id="loginCodeSubmit" type="submit" class="btn btn-primary w-100">Verify code</button>
+                        <button id="loginPasteCode" type="button" class="btn btn-outline-secondary w-100">Paste code</button>
+                    </div>
+                    <div class="login-link-row">
+                        <a id="loginOpenTelegram" class="btn btn-link" href="tg://">Open Telegram</a>
+                        <button id="loginChangePhone" type="button" class="btn btn-link">Change phone</button>
+                    </div>
+                    <p class="login-hint">Codes usually arrive within a few seconds.</p>
+                </form>
+                <form id="loginPasswordForm" class="login-step" hidden>
+                    <label class="form-label" for="loginPassword">Telegram password</label>
+                    <input type="password" id="loginPassword" class="form-control" autocomplete="current-password" />
+                    <button id="loginPasswordSubmit" type="submit" class="btn btn-primary w-100">Continue</button>
+                    <div class="login-link-row">
+                        <button id="loginResetLogin" type="button" class="btn btn-link">Use a different number</button>
+                    </div>
+                    <p class="login-hint">This is your Telegram two-step verification password.</p>
+                </form>
+            </div>
         </div>
         <div id="controls" class="button-group" hidden>
             <input type="file" id="uploadFileInput" multiple style="display: none !important;" />

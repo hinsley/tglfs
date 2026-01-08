@@ -69,7 +69,13 @@ h1#title {
     color: #24a1de;
 }
 
-div#login,
+div#login {
+    width: 100%;
+    max-width: 420px;
+    padding: 15px;
+    margin: 0 auto;
+}
+
 div#controls {
     width: 100%;
     max-width: 330px;
@@ -84,18 +90,148 @@ div#donation {
     margin: 0 auto;
 }
 
+div#login .login-card {
+    background: #ffffff;
+    border-radius: 20px;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    box-shadow: var(--fx-shadow);
+    padding: 24px;
+    text-align: left;
+}
+
+div#login .login-header {
+    margin-bottom: 16px;
+}
+
+div#login .login-kicker {
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: #64748b;
+}
+
+div#login .login-title {
+    margin: 6px 0 8px;
+    font-size: 22px;
+    color: #0f172a;
+}
+
+div#login .login-subtitle {
+    margin: 0;
+    font-size: 14px;
+    color: #64748b;
+}
+
+div#login .login-step-indicator {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: #e2e8f0;
+    color: #475569;
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 12px;
+}
+
+div#login .login-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: #f1f5f9;
+    color: #0f172a;
+    font-size: 14px;
+    margin-bottom: 12px;
+}
+
+div#login .login-status .spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(36, 161, 222, 0.2);
+    border-top-color: var(--fx-accent);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+div#login .login-status[data-spinner="off"] .spinner {
+    display: none;
+}
+
+div#login .login-error {
+    background: #fee2e2;
+    border: 1px solid #fecaca;
+    color: #991b1b;
+    font-size: 13px;
+    border-radius: 12px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+}
+
+div#login .login-step {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
 div#login input.form-control {
     position: relative;
     box-sizing: border-box;
     height: auto;
-    padding: 10px;
+    padding: 10px 12px;
     font-size: 16px;
-    margin-bottom: 8px;
+    border-radius: 12px;
+}
+
+div#login .login-action-row {
+    display: grid;
+    gap: 8px;
+}
+
+div#login .login-link-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+}
+
+div#login .login-link-row .btn-link {
+    padding: 0;
+    font-size: 13px;
+    color: var(--fx-accent);
+}
+
+div#login .login-hint {
+    margin: 0;
+    font-size: 12px;
+    color: #64748b;
 }
 
 div#login button#loginButton {
     background-color: #24a1de;
     border-color: #24a1de;
+}
+
+div#login .btn-primary {
+    background-color: #24a1de;
+    border-color: #24a1de;
+}
+
+div#login .btn-primary:hover,
+div#login .btn-primary:focus {
+    background-color: #1d8ec4;
+    border-color: #1d8ec4;
+}
+
+div#login .btn-outline-secondary {
+    border-color: #cbd5e1;
+}
+
+@media (min-width: 540px) {
+    div#login .login-action-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 }
 
 div#controls label#uploadFileLabel,

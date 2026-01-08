@@ -18,6 +18,27 @@ type SharedFileRecord = {
     blob?: Blob
 }
 
+let loginAttempt = 0
+
+type LoginStep = "phone" | "code" | "password"
+
+type Deferred<T> = {
+    promise: Promise<T>
+    resolve: (value: T) => void
+    reject: (reason?: unknown) => void
+}
+
+const LOGIN_CANCELLED = "LOGIN_CANCELLED"
+
+function createDeferred<T>(): Deferred<T> {
+    let resolve!: (value: T) => void
+    let reject!: (reason?: unknown) => void
+    const promise = new Promise<T>((innerResolve, innerReject) => {
+        resolve = innerResolve
+        reject = innerReject
+    })
+    return { promise, resolve, reject }
+}
 async function maybeUploadSharedFiles() {
     if (!pendingShareFiles || !activeClient || !activeConfig) {
         return
@@ -135,41 +156,353 @@ if ("serviceWorker" in navigator) {
     })
 }
 
-async function init(phoneNumber?: string) {
-    const phoneElement = document.getElementById("phone") as HTMLInputElement | null
+type AuthErrorInfo = {
+    message: string
+    step?: LoginStep
+    suppress?: boolean
+}
 
-    if (!phoneElement) {
-        throw new Error("Required input elements are missing.")
+function getErrorText(error: unknown): string {
+    if (typeof error === "string") {
+        return error
+    }
+    if (error && typeof error === "object") {
+        const errorObj = error as { message?: string; errorMessage?: string; error?: string }
+        return [errorObj.errorMessage, errorObj.message, errorObj.error].filter(Boolean).join(" ")
+    }
+    return String(error)
+}
+
+function parseAuthError(error: unknown): AuthErrorInfo {
+    const raw = getErrorText(error)
+    const normalized = raw.toUpperCase()
+
+    if (normalized.includes(LOGIN_CANCELLED)) {
+        return { message: "", step: "phone", suppress: true }
+    }
+    if (normalized.includes("PHONE_NUMBER_INVALID")) {
+        return { message: "That phone number does not look right.", step: "phone" }
+    }
+    if (normalized.includes("PHONE_CODE_INVALID")) {
+        return { message: "That code is incorrect. Try again.", step: "code" }
+    }
+    if (normalized.includes("PHONE_CODE_EXPIRED")) {
+        return { message: "That code expired. Request a new one and try again.", step: "code" }
+    }
+    if (normalized.includes("PASSWORD_HASH_INVALID")) {
+        return { message: "Incorrect password. Try again.", step: "password" }
+    }
+    if (normalized.includes("FLOOD_WAIT")) {
+        return { message: "Too many attempts. Please wait a bit and try again.", step: "phone" }
+    }
+    if (normalized.includes("NETWORK") || normalized.includes("CONNECTION") || normalized.includes("TIMEOUT")) {
+        return { message: "Could not reach Telegram. Check your connection and try again.", step: "phone" }
     }
 
-    const apiIdFromEnv = 20227969
-    const apiHashFromEnv = "3fc5e726fcc1160a81704958b2243109"
+    return { message: "Login failed. Please try again.", step: "phone" }
+}
 
-    const phoneValue = phoneNumber ?? phoneElement.value
+type LoginElements = {
+    loginDiv: HTMLDivElement
+    loginStatus: HTMLDivElement
+    loginStatusText: HTMLSpanElement
+    loginError: HTMLDivElement
+    loginStepIndicator: HTMLDivElement
+    loginPhoneForm: HTMLFormElement
+    loginCodeForm: HTMLFormElement
+    loginPasswordForm: HTMLFormElement
+    phoneInput: HTMLInputElement
+    loginButton: HTMLButtonElement
+    loginCodeInput: HTMLInputElement
+    loginCodeSubmit: HTMLButtonElement
+    loginPasteCode: HTMLButtonElement
+    loginOpenTelegram: HTMLAnchorElement
+    loginChangePhone: HTMLButtonElement
+    loginPasswordInput: HTMLInputElement
+    loginPasswordSubmit: HTMLButtonElement
+    loginResetLogin: HTMLButtonElement
+}
 
-    if (phoneValue.trim() === "") {
-        throw new Error("Input fields cannot be empty.")
+function getLoginElements(): LoginElements {
+    const loginDiv = document.getElementById("login") as HTMLDivElement | null
+    const loginStatus = document.getElementById("loginStatus") as HTMLDivElement | null
+    const loginStatusText = document.getElementById("loginStatusText") as HTMLSpanElement | null
+    const loginError = document.getElementById("loginError") as HTMLDivElement | null
+    const loginStepIndicator = document.getElementById("loginStepIndicator") as HTMLDivElement | null
+    const loginPhoneForm = document.getElementById("loginPhoneForm") as HTMLFormElement | null
+    const loginCodeForm = document.getElementById("loginCodeForm") as HTMLFormElement | null
+    const loginPasswordForm = document.getElementById("loginPasswordForm") as HTMLFormElement | null
+    const phoneInput = document.getElementById("phone") as HTMLInputElement | null
+    const loginButton = document.getElementById("loginButton") as HTMLButtonElement | null
+    const loginCodeInput = document.getElementById("loginCode") as HTMLInputElement | null
+    const loginCodeSubmit = document.getElementById("loginCodeSubmit") as HTMLButtonElement | null
+    const loginPasteCode = document.getElementById("loginPasteCode") as HTMLButtonElement | null
+    const loginOpenTelegram = document.getElementById("loginOpenTelegram") as HTMLAnchorElement | null
+    const loginChangePhone = document.getElementById("loginChangePhone") as HTMLButtonElement | null
+    const loginPasswordInput = document.getElementById("loginPassword") as HTMLInputElement | null
+    const loginPasswordSubmit = document.getElementById("loginPasswordSubmit") as HTMLButtonElement | null
+    const loginResetLogin = document.getElementById("loginResetLogin") as HTMLButtonElement | null
+
+    if (
+        !loginDiv ||
+        !loginStatus ||
+        !loginStatusText ||
+        !loginError ||
+        !loginStepIndicator ||
+        !loginPhoneForm ||
+        !loginCodeForm ||
+        !loginPasswordForm ||
+        !phoneInput ||
+        !loginButton ||
+        !loginCodeInput ||
+        !loginCodeSubmit ||
+        !loginPasteCode ||
+        !loginOpenTelegram ||
+        !loginChangePhone ||
+        !loginPasswordInput ||
+        !loginPasswordSubmit ||
+        !loginResetLogin
+    ) {
+        throw new Error("Required login elements are missing.")
     }
 
-    const config = {
-        apiId: Number(apiIdFromEnv),
-        apiHash: String(apiHashFromEnv),
-        chunkSize: 1024 ** 3 * 2, // 2 GiB.
-        phone: phoneValue,
+    return {
+        loginDiv,
+        loginStatus,
+        loginStatusText,
+        loginError,
+        loginStepIndicator,
+        loginPhoneForm,
+        loginCodeForm,
+        loginPasswordForm,
+        phoneInput,
+        loginButton,
+        loginCodeInput,
+        loginCodeSubmit,
+        loginPasteCode,
+        loginOpenTelegram,
+        loginChangePhone,
+        loginPasswordInput,
+        loginPasswordSubmit,
+        loginResetLogin,
+    }
+}
+
+type LoginUi = {
+    elements: LoginElements
+    setVisible: (visible: boolean) => void
+    setStatus: (message: string, showSpinner?: boolean) => void
+    clearStatus: () => void
+    showError: (message: string) => void
+    clearError: () => void
+    setStep: (step: LoginStep) => void
+    getStep: () => LoginStep
+    setBusy: (busy: boolean) => void
+    isBusy: () => boolean
+    setPhoneValue: (value: string) => void
+    getPhoneValue: () => string
+    waitForCode: () => Promise<string>
+    waitForPassword: () => Promise<string>
+    resolveCode: (code: string) => void
+    resolvePassword: (password: string) => void
+    cancelPending: (reason: string) => void
+}
+
+function createLoginUi(): LoginUi {
+    const elements = getLoginElements()
+    const state = {
+        step: "phone" as LoginStep,
+        busy: false,
+        codeDeferred: null as Deferred<string> | null,
+        passwordDeferred: null as Deferred<string> | null,
     }
 
-    const client = await Telegram.init(config)
+    const stepLabels: Record<LoginStep, string> = {
+        phone: "Step 1 of 3",
+        code: "Step 2 of 3",
+        password: "Step 3 of 3",
+    }
+
+    function syncInputState() {
+        const phoneActive = state.step === "phone"
+        const codeActive = state.step === "code"
+        const passwordActive = state.step === "password"
+
+        elements.phoneInput.disabled = state.busy || !phoneActive
+        elements.loginButton.disabled = state.busy || !phoneActive
+
+        elements.loginCodeInput.disabled = state.busy || !codeActive
+        elements.loginCodeSubmit.disabled = state.busy || !codeActive
+        elements.loginPasteCode.disabled = state.busy || !codeActive
+        elements.loginChangePhone.disabled = state.busy || !codeActive
+
+        elements.loginPasswordInput.disabled = state.busy || !passwordActive
+        elements.loginPasswordSubmit.disabled = state.busy || !passwordActive
+        elements.loginResetLogin.disabled = state.busy || !passwordActive
+
+        elements.loginOpenTelegram.setAttribute("aria-disabled", (!codeActive).toString())
+        elements.loginOpenTelegram.tabIndex = codeActive ? 0 : -1
+    }
+
+    function setStep(step: LoginStep) {
+        state.step = step
+        elements.loginPhoneForm.hidden = step !== "phone"
+        elements.loginCodeForm.hidden = step !== "code"
+        elements.loginPasswordForm.hidden = step !== "password"
+        elements.loginStepIndicator.textContent = stepLabels[step]
+        syncInputState()
+        clearError()
+
+        if (!state.busy) {
+            if (step === "phone") {
+                elements.phoneInput.focus()
+            } else if (step === "code") {
+                elements.loginCodeInput.focus()
+            } else if (step === "password") {
+                elements.loginPasswordInput.focus()
+            }
+        }
+    }
+
+    function setVisible(visible: boolean) {
+        if (visible) {
+            elements.loginDiv.removeAttribute("hidden")
+        } else {
+            elements.loginDiv.setAttribute("hidden", "")
+        }
+    }
+
+    function setStatus(message: string, showSpinner = true) {
+        elements.loginStatusText.textContent = message
+        elements.loginStatus.hidden = false
+        elements.loginStatus.dataset.spinner = showSpinner ? "on" : "off"
+    }
+
+    function clearStatus() {
+        elements.loginStatus.hidden = true
+        elements.loginStatusText.textContent = ""
+        elements.loginStatus.dataset.spinner = "off"
+    }
+
+    function showError(message: string) {
+        elements.loginError.textContent = message
+        elements.loginError.hidden = false
+    }
+
+    function clearError() {
+        elements.loginError.hidden = true
+        elements.loginError.textContent = ""
+    }
+
+    function setBusy(busy: boolean) {
+        state.busy = busy
+        syncInputState()
+    }
+
+    function setPhoneValue(value: string) {
+        elements.phoneInput.value = value
+    }
+
+    function getPhoneValue(): string {
+        return elements.phoneInput.value
+    }
+
+    function waitForCode(): Promise<string> {
+        if (state.codeDeferred) {
+            state.codeDeferred.reject(new Error(LOGIN_CANCELLED))
+        }
+        state.codeDeferred = createDeferred<string>()
+        return state.codeDeferred.promise
+    }
+
+    function waitForPassword(): Promise<string> {
+        if (state.passwordDeferred) {
+            state.passwordDeferred.reject(new Error(LOGIN_CANCELLED))
+        }
+        state.passwordDeferred = createDeferred<string>()
+        return state.passwordDeferred.promise
+    }
+
+    function resolveCode(code: string) {
+        if (state.codeDeferred) {
+            state.codeDeferred.resolve(code)
+            state.codeDeferred = null
+        }
+    }
+
+    function resolvePassword(password: string) {
+        if (state.passwordDeferred) {
+            state.passwordDeferred.resolve(password)
+            state.passwordDeferred = null
+        }
+    }
+
+    function cancelPending(reason: string) {
+        if (state.codeDeferred) {
+            state.codeDeferred.reject(new Error(reason))
+            state.codeDeferred = null
+        }
+        if (state.passwordDeferred) {
+            state.passwordDeferred.reject(new Error(reason))
+            state.passwordDeferred = null
+        }
+    }
+
+    return {
+        elements,
+        setVisible,
+        setStatus,
+        clearStatus,
+        showError,
+        clearError,
+        setStep,
+        getStep: () => state.step,
+        setBusy,
+        isBusy: () => state.busy,
+        setPhoneValue,
+        getPhoneValue,
+        waitForCode,
+        waitForPassword,
+        resolveCode,
+        resolvePassword,
+        cancelPending,
+    }
+}
+
+const loginUi = createLoginUi()
+
+function sanitizeCode(rawCode: string): string {
+    return rawCode.replace(/\D/g, "").slice(0, 6)
+}
+
+function submitForm(form: HTMLFormElement) {
+    if (typeof form.requestSubmit === "function") {
+        form.requestSubmit()
+    } else {
+        form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }))
+    }
+}
+
+function cancelLoginFlow() {
+    loginAttempt += 1
+    loginUi.cancelPending(LOGIN_CANCELLED)
+    loginUi.setBusy(false)
+    loginUi.clearStatus()
+    loginUi.clearError()
+    loginUi.elements.loginCodeInput.value = ""
+    loginUi.elements.loginPasswordInput.value = ""
+    loginUi.setStep("phone")
+}
+
+async function finalizeLogin(client: any, config: any, phoneValue: string) {
     activeClient = client
     activeConfig = config
 
-    // Set login credential cookies.
     document.cookie = `phone=${encodeURIComponent(phoneValue)}; path=/`
 
-    // Expose the client and config objects to the browser console
     ;(window as any).client = client
     ;(window as any).config = config
 
-    // Set up UI
     const loginDiv = document.getElementById("login")
     if (loginDiv) {
         loginDiv.setAttribute("hidden", "")
@@ -180,7 +513,6 @@ async function init(phoneNumber?: string) {
     }
     const fileBrowserDiv = document.getElementById("fileBrowser")
 
-    // Remove splash once we are logged in and UI is ready.
     const splashDivAtInit = document.getElementById("splash")
     if (splashDivAtInit) {
         splashDivAtInit.remove()
@@ -198,7 +530,6 @@ async function init(phoneNumber?: string) {
     const fileBrowserButton = document.getElementById("fileBrowserButton") as HTMLButtonElement | null
     const browserBackButton = null as unknown as HTMLButtonElement | null
     fileBrowserButton?.addEventListener("click", async () => {
-        // Show browser, hide controls.
         controlsDiv?.setAttribute("hidden", "")
         fileBrowserDiv?.removeAttribute("hidden")
         document.body.classList.add("file-browser-active")
@@ -209,10 +540,207 @@ async function init(phoneNumber?: string) {
     await maybeUploadSharedFiles()
 }
 
-const loginButton = document.getElementById("loginButton") as HTMLButtonElement
-loginButton.addEventListener("click", () => {
-    init()
-})
+async function startLogin(phoneNumber: string, options: { auto?: boolean } = {}) {
+    const phoneValue = phoneNumber.trim()
+    if (phoneValue === "") {
+        loginUi.showError("Enter a phone number to continue.")
+        return
+    }
+
+    const attemptId = ++loginAttempt
+
+    loginUi.setVisible(true)
+    loginUi.setStep("phone")
+    loginUi.setPhoneValue(phoneValue)
+    loginUi.clearError()
+    loginUi.setBusy(true)
+    loginUi.setStatus(
+        options.auto
+            ? "Signing you in with your saved number..."
+            : "Sending login code... this can take 10-20 seconds.",
+        true,
+    )
+
+    const apiIdFromEnv = 20227969
+    const apiHashFromEnv = "3fc5e726fcc1160a81704958b2243109"
+
+    const config = {
+        apiId: Number(apiIdFromEnv),
+        apiHash: String(apiHashFromEnv),
+        chunkSize: 1024 ** 3 * 2,
+        phone: phoneValue,
+    }
+
+    try {
+        const client = await Telegram.init(config, {
+            getPhoneCode: async () => {
+                if (attemptId !== loginAttempt) {
+                    throw new Error(LOGIN_CANCELLED)
+                }
+                loginUi.setStep("code")
+                loginUi.elements.loginCodeInput.value = ""
+                loginUi.setStatus("Check Telegram for your login code.", false)
+                loginUi.setBusy(false)
+                return await loginUi.waitForCode()
+            },
+            getPassword: async () => {
+                if (attemptId !== loginAttempt) {
+                    throw new Error(LOGIN_CANCELLED)
+                }
+                loginUi.setStep("password")
+                loginUi.elements.loginPasswordInput.value = ""
+                loginUi.setStatus("Enter your Telegram password to continue.", false)
+                loginUi.setBusy(false)
+                return await loginUi.waitForPassword()
+            },
+            onError: (error: unknown) => {
+                if (attemptId !== loginAttempt) {
+                    return
+                }
+                const info = parseAuthError(error)
+                loginUi.clearStatus()
+                if (info.step) {
+                    loginUi.setStep(info.step)
+                }
+                if (!info.suppress) {
+                    loginUi.showError(info.message)
+                }
+                loginUi.setBusy(false)
+            },
+        })
+
+        if (attemptId !== loginAttempt) {
+            return
+        }
+
+        loginUi.setStatus("Signed in. Preparing your workspace...", true)
+        loginUi.setBusy(true)
+        await finalizeLogin(client, config, phoneValue)
+    } catch (error) {
+        if (attemptId !== loginAttempt) {
+            return
+        }
+        const info = parseAuthError(error)
+        loginUi.clearStatus()
+        if (info.step) {
+            loginUi.setStep(info.step)
+        }
+        if (!info.suppress) {
+            loginUi.showError(info.message)
+        }
+        loginUi.setBusy(false)
+    }
+}
+
+function wireLoginHandlers() {
+    const { elements } = loginUi
+    let codeSubmitTimer: number | null = null
+
+    elements.loginPhoneForm.addEventListener("submit", (event) => {
+        event.preventDefault()
+        startLogin(elements.phoneInput.value)
+    })
+
+    elements.loginCodeForm.addEventListener("submit", (event) => {
+        event.preventDefault()
+        if (loginUi.isBusy()) {
+            return
+        }
+        const sanitized = sanitizeCode(elements.loginCodeInput.value)
+        elements.loginCodeInput.value = sanitized
+        if (sanitized.length < 5) {
+            loginUi.showError("Enter the full login code.")
+            return
+        }
+        if (codeSubmitTimer) {
+            window.clearTimeout(codeSubmitTimer)
+            codeSubmitTimer = null
+        }
+        loginUi.clearError()
+        loginUi.setStatus("Verifying code...", true)
+        loginUi.setBusy(true)
+        loginUi.resolveCode(sanitized)
+    })
+
+    elements.loginCodeInput.addEventListener("input", () => {
+        const sanitized = sanitizeCode(elements.loginCodeInput.value)
+        if (elements.loginCodeInput.value !== sanitized) {
+            elements.loginCodeInput.value = sanitized
+        }
+        if (sanitized.length >= 5 && !loginUi.isBusy()) {
+            if (codeSubmitTimer) {
+                window.clearTimeout(codeSubmitTimer)
+            }
+            codeSubmitTimer = window.setTimeout(() => {
+                if (!loginUi.isBusy() && loginUi.getStep() === "code") {
+                    submitForm(elements.loginCodeForm)
+                }
+                codeSubmitTimer = null
+            }, 250)
+        }
+    })
+
+    elements.loginPasteCode.addEventListener("click", async () => {
+        if (loginUi.isBusy()) {
+            return
+        }
+        try {
+            const text = await navigator.clipboard.readText()
+            const sanitized = sanitizeCode(text)
+            if (!sanitized) {
+                loginUi.showError("Clipboard does not contain a login code.")
+                return
+            }
+            elements.loginCodeInput.value = sanitized
+            if (codeSubmitTimer) {
+                window.clearTimeout(codeSubmitTimer)
+                codeSubmitTimer = null
+            }
+            if (sanitized.length >= 5) {
+                submitForm(elements.loginCodeForm)
+            }
+        } catch (error) {
+            console.error("Failed to read clipboard", error)
+            loginUi.showError("Unable to read clipboard. Paste the code manually.")
+        }
+    })
+
+    elements.loginChangePhone.addEventListener("click", () => {
+        cancelLoginFlow()
+    })
+
+    elements.loginResetLogin.addEventListener("click", () => {
+        cancelLoginFlow()
+    })
+
+    elements.loginOpenTelegram.addEventListener("click", (event) => {
+        if (loginUi.getStep() !== "code") {
+            event.preventDefault()
+        }
+    })
+
+    elements.loginPasswordForm.addEventListener("submit", (event) => {
+        event.preventDefault()
+        if (loginUi.isBusy()) {
+            return
+        }
+        const password = elements.loginPasswordInput.value.trim()
+        if (!password) {
+            loginUi.showError("Enter your Telegram password.")
+            return
+        }
+        loginUi.clearError()
+        loginUi.setStatus("Verifying password...", true)
+        loginUi.setBusy(true)
+        loginUi.resolvePassword(password)
+    })
+
+    elements.phoneInput.addEventListener("input", () => loginUi.clearError())
+    elements.loginCodeInput.addEventListener("input", () => loginUi.clearError())
+    elements.loginPasswordInput.addEventListener("input", () => loginUi.clearError())
+}
+
+wireLoginHandlers()
 
 window.addEventListener("load", async () => {
     if ("serviceWorker" in navigator) {
@@ -245,28 +773,26 @@ window.addEventListener("load", async () => {
     }
 
     function getCookie(name: string): string | null {
-        const value = `; ${document.cookie}`;
-        const parts = value.split(`; ${name}=`);
+        const value = `; ${document.cookie}`
+        const parts = value.split(`; ${name}=`)
         if (parts.length === 2) {
-            const cookieValue = parts.pop()?.split(';').shift() || null;
-            return cookieValue ? decodeURIComponent(cookieValue) : null;
+            const cookieValue = parts.pop()?.split(";").shift() || null
+            return cookieValue ? decodeURIComponent(cookieValue) : null
         }
-        return null;
+        return null
     }
 
-    const phone = getCookie("phone");
+    const phone = getCookie("phone")
 
-    // Check if login credentials are already stored as cookies.
+    loginUi.setVisible(true)
+
     if (phone) {
-        (document.getElementById("phone") as HTMLInputElement).value = phone;
-        await init();
+        loginUi.setPhoneValue(phone)
+        void startLogin(phone, { auto: true })
     } else {
-        const loginDiv = document.getElementById("login")
-        if (loginDiv) {
-            loginDiv.removeAttribute("hidden")
-        }
+        loginUi.setStep("phone")
     }
-    // Remove splash screen once the page has loaded (fallback).
+
     const splashDiv = document.getElementById("splash")
     if (splashDiv) {
         splashDiv.remove()

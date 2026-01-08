@@ -1945,7 +1945,13 @@ export async function downloadFileCard(
     }
 }
 
-export async function init(config: Config.Config): Promise<TelegramClient> {
+export type AuthHandlers = {
+    getPhoneCode?: () => Promise<string>
+    getPassword?: () => Promise<string>
+    onError?: (error: unknown) => void
+}
+
+export async function init(config: Config.Config, authHandlers: AuthHandlers = {}): Promise<TelegramClient> {
     console.log("Starting up...")
     // Load previous session from a session string.
     const storeSession = new StoreSession("./tglfs.session")
@@ -1955,6 +1961,13 @@ export async function init(config: Config.Config): Promise<TelegramClient> {
     await client.start({
         phoneNumber: config.phone,
         password: async () => {
+            if (authHandlers.getPassword) {
+                const pwd = await authHandlers.getPassword()
+                if (!pwd) {
+                    throw new Error("No password provided.")
+                }
+                return pwd
+            }
             const pwd = prompt("Enter your password: ")
             if (!pwd) {
                 throw new Error("No password provided.")
@@ -1962,13 +1975,23 @@ export async function init(config: Config.Config): Promise<TelegramClient> {
             return pwd
         },
         phoneCode: async () => {
+            if (authHandlers.getPhoneCode) {
+                const code = await authHandlers.getPhoneCode()
+                if (!code) {
+                    throw new Error("No code provided.")
+                }
+                return code
+            }
             const code = prompt("Enter the code you received: ")
             if (!code) {
                 throw new Error("No code provided.")
             }
             return code
         },
-        onError: (error: any) => console.error(error),
+        onError: (error: any) => {
+            authHandlers.onError?.(error)
+            console.error(error)
+        },
     })
     console.log("You are now logged in!")
     return client
