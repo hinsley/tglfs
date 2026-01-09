@@ -1,5 +1,8 @@
-import * as Telegram from "../telegram"
-import { initFileBrowser } from "./browser"
+type TelegramModule = typeof import("../telegram")
+type BrowserModule = typeof import("./browser")
+
+let telegramModulePromise: Promise<TelegramModule> | null = null
+let browserModulePromise: Promise<BrowserModule> | null = null
 
 let activeClient: any = null
 let activeConfig: any = null
@@ -40,12 +43,28 @@ function createDeferred<T>(): Deferred<T> {
     })
     return { promise, resolve, reject }
 }
+
+async function getTelegramModule(): Promise<TelegramModule> {
+    if (!telegramModulePromise) {
+        telegramModulePromise = import("../telegram")
+    }
+    return telegramModulePromise
+}
+
+async function getBrowserModule(): Promise<BrowserModule> {
+    if (!browserModulePromise) {
+        browserModulePromise = import("./browser")
+    }
+    return browserModulePromise
+}
+
 async function maybeUploadSharedFiles() {
     if (!pendingShareFiles || !activeClient || !activeConfig) {
         return
     }
     const files = pendingShareFiles
     pendingShareFiles = null
+    const Telegram = await getTelegramModule()
     await Telegram.fileUpload(activeClient, activeConfig, files)
 }
 
@@ -581,6 +600,7 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
             if (!activeClient || !activeConfig) {
                 return
             }
+            const Telegram = await getTelegramModule()
             await Telegram.fileUpload(activeClient, activeConfig)
         })
         const downloadFileLegacyButton = document.getElementById("downloadFileLegacyButton") as HTMLButtonElement | null
@@ -588,6 +608,7 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
             if (!activeClient || !activeConfig) {
                 return
             }
+            const Telegram = await getTelegramModule()
             await Telegram.fileDownloadLegacy(activeClient, activeConfig)
         })
 
@@ -599,6 +620,7 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
             controlsDiv?.setAttribute("hidden", "")
             fileBrowserDiv?.removeAttribute("hidden")
             document.body.classList.add("file-browser-active")
+            const { initFileBrowser } = await getBrowserModule()
             await initFileBrowser(activeClient, activeConfig)
             window.dispatchEvent(new Event("tglfs:refresh-browser"))
         })
@@ -645,6 +667,7 @@ async function startLogin(phoneNumber: string, options: { auto?: boolean } = {})
     }
 
     try {
+        const Telegram = await getTelegramModule()
         const client = await Telegram.init(config, {
             getPhoneCode: async () => {
                 if (attemptId !== loginAttempt) {
