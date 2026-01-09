@@ -96,14 +96,16 @@ async function requestShareTargetFiles() {
     if (!("serviceWorker" in navigator)) {
         return
     }
-    if (!window.location.search.includes("share-target=1")) {
-        return
-    }
+    const shareTargetLaunch = window.location.search.includes("share-target=1")
     try {
+        const registration = await navigator.serviceWorker.ready
+        if (!shareTargetLaunch) {
+            registration.active?.postMessage({ type: "REQUEST_SHARE_TARGET" })
+            return
+        }
         if (shareTargetPollTimer !== null) {
             return
         }
-        const registration = await navigator.serviceWorker.ready
         shareTargetPollAttempts = 0
         const poll = () => {
             if (shareTargetReceived) {
@@ -833,6 +835,11 @@ window.addEventListener("load", async () => {
                         registration.waiting.postMessage({ type: "SKIP_WAITING" })
                     }
                 })
+            })
+            navigator.serviceWorker.addEventListener("controllerchange", () => {
+                if (!shareTargetReceived) {
+                    void requestShareTargetFiles()
+                }
             })
         } catch (error) {
             alert(

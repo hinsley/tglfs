@@ -9,13 +9,21 @@ const SHARE_KEY = "pending"
 let fileName
 let downloadStreamController = null
 
-function toShareRecords(files) {
-    return files.map((file) => ({
-        name: file.name || "shared-file",
-        type: file.type || "application/octet-stream",
-        lastModified: file.lastModified || Date.now(),
-        blob: file.slice(0, file.size, file.type),
-    }))
+function toShareRecords(entries) {
+    return entries
+        .filter((entry) => entry instanceof Blob)
+        .map((entry) => {
+            const name =
+                typeof entry.name === "string" && entry.name.trim().length > 0 ? entry.name : "shared-file"
+            const type = entry.type || "application/octet-stream"
+            const lastModified = typeof entry.lastModified === "number" ? entry.lastModified : Date.now()
+            return {
+                name,
+                type,
+                lastModified,
+                blob: entry.slice(0, entry.size, type),
+            }
+        })
 }
 
 function openShareDb() {
@@ -110,8 +118,8 @@ async function deliverShareTarget(records) {
 
 async function handleShareTarget(request) {
     const formData = await request.formData()
-    const files = formData.getAll("files").filter((entry) => entry instanceof File)
-    const records = toShareRecords(files)
+    const entries = formData.getAll("files")
+    const records = toShareRecords(entries)
     await storeShareRecords(records)
     await deliverShareTarget(records)
 }
