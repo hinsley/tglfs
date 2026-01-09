@@ -3,6 +3,7 @@ const SHARE_TARGET_REDIRECT_URL = "/?share-target=1"
 const OFFLINE_CACHE = "pwabuilder-page"
 const OFFLINE_URL = "/offline.html"
 const SHARE_DB_NAME = "tglfs-share-target"
+const SHARE_DB_VERSION = 2
 const SHARE_STORE = "shares"
 const SHARE_KEY = "pending"
 
@@ -28,9 +29,11 @@ function toShareRecords(entries) {
 
 function openShareDb() {
     return new Promise((resolve, reject) => {
-        const request = indexedDB.open(SHARE_DB_NAME, 1)
+        const request = indexedDB.open(SHARE_DB_NAME, SHARE_DB_VERSION)
         request.onupgradeneeded = () => {
-            request.result.createObjectStore(SHARE_STORE)
+            if (!request.result.objectStoreNames.contains(SHARE_STORE)) {
+                request.result.createObjectStore(SHARE_STORE)
+            }
         }
         request.onsuccess = () => resolve(request.result)
         request.onerror = () => reject(request.error)
@@ -118,7 +121,7 @@ async function deliverShareTarget(records) {
 
 async function handleShareTarget(request) {
     const formData = await request.formData()
-    const entries = formData.getAll("files")
+    const entries = Array.from(formData.values())
     const records = toShareRecords(entries)
     await storeShareRecords(records)
     await deliverShareTarget(records)
