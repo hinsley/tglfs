@@ -5,6 +5,11 @@ let activeClient: any = null
 let activeConfig: any = null
 let pendingShareFiles: File[] | null = null
 let shareTargetReceived = false
+let shareTargetPollAttempts = 0
+let shareTargetPollTimer: number | null = null
+
+const SHARE_TARGET_POLL_INTERVAL_MS = 400
+const SHARE_TARGET_MAX_ATTEMPTS = 15
 
 type SharedFileRecord = {
     name?: string
@@ -73,12 +78,28 @@ async function requestShareTargetFiles() {
         return
     }
     try {
-        await new Promise((resolve) => setTimeout(resolve, 150))
-        if (shareTargetReceived) {
+        if (shareTargetPollTimer !== null) {
             return
         }
         const registration = await navigator.serviceWorker.ready
-        registration.active?.postMessage({ type: "REQUEST_SHARE_TARGET" })
+        shareTargetPollAttempts = 0
+        const poll = () => {
+            if (shareTargetReceived) {
+                if (shareTargetPollTimer !== null) {
+                    window.clearTimeout(shareTargetPollTimer)
+                    shareTargetPollTimer = null
+                }
+                return
+            }
+            if (shareTargetPollAttempts >= SHARE_TARGET_MAX_ATTEMPTS) {
+                shareTargetPollTimer = null
+                return
+            }
+            shareTargetPollAttempts += 1
+            registration.active?.postMessage({ type: "REQUEST_SHARE_TARGET" })
+            shareTargetPollTimer = window.setTimeout(poll, SHARE_TARGET_POLL_INTERVAL_MS)
+        }
+        shareTargetPollTimer = window.setTimeout(poll, 200)
     } catch (error) {
         console.warn("Failed to request share target files:", error)
     }
@@ -104,6 +125,10 @@ if ("serviceWorker" in navigator) {
         }
         const files = normalizeSharedFiles(data.files)
         shareTargetReceived = true
+        if (shareTargetPollTimer !== null) {
+            window.clearTimeout(shareTargetPollTimer)
+            shareTargetPollTimer = null
+        }
         queueShareFiles(files)
         clearShareTargetQuery()
         void acknowledgeShareTarget()
@@ -191,14 +216,31 @@ loginButton.addEventListener("click", () => {
 
 window.addEventListener("load", async () => {
     if ("serviceWorker" in navigator) {
-        await navigator.serviceWorker
-            .register(new URL("../service-worker.js", import.meta.url), { type: "module" })
-            .catch(function (error) {
-                alert(
-                    "Failed to register ServiceWorker.\nYou will not be able to download files.\nSee developer console for details.",
-                )
-                console.error("ServiceWorker registration failed: ", error)
+        try {
+            const registration = await navigator.serviceWorker.register(
+                new URL("../service-worker.js", import.meta.url),
+                { type: "module", updateViaCache: "none" },
+            )
+            if (registration.waiting) {
+                registration.waiting.postMessage({ type: "SKIP_WAITING" })
+            }
+            registration.addEventListener("updatefound", () => {
+                const installing = registration.installing
+                if (!installing) {
+                    return
+                }
+                installing.addEventListener("statechange", () => {
+                    if (installing.state === "installed" && registration.waiting) {
+                        registration.waiting.postMessage({ type: "SKIP_WAITING" })
+                    }
+                })
             })
+        } catch (error) {
+            alert(
+                "Failed to register ServiceWorker.\nYou will not be able to download files.\nSee developer console for details.",
+            )
+            console.error("ServiceWorker registration failed: ", error)
+        }
         await requestShareTargetFiles()
     }
 

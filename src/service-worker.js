@@ -117,6 +117,7 @@ async function handleShareTarget(request) {
 }
 
 self.addEventListener("install", (event) => {
+    self.skipWaiting()
     event.waitUntil(
         caches.open(OFFLINE_CACHE).then((cache) => cache.add(OFFLINE_URL)),
     )
@@ -183,7 +184,7 @@ self.addEventListener("message", (event) => {
     if (data.type === "REQUEST_SHARE_TARGET") {
         event.waitUntil(
             (async () => {
-                const records = await loadShareRecords({ clear: true })
+                const records = await loadShareRecords()
                 if (!records.length) return
                 const source = event.source
                 if (source && "postMessage" in source) {
