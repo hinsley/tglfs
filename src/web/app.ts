@@ -4,6 +4,14 @@ import { initFileBrowser } from "./browser"
 let activeClient: any = null
 let activeConfig: any = null
 let pendingShareFiles: File[] | null = null
+let shareTargetReceived = false
+
+type SharedFileRecord = {
+    name?: string
+    type?: string
+    lastModified?: number
+    blob?: Blob
+}
 
 async function maybeUploadSharedFiles() {
     if (!pendingShareFiles || !activeClient || !activeConfig) {
@@ -14,12 +22,78 @@ async function maybeUploadSharedFiles() {
     await Telegram.fileUpload(activeClient, activeConfig, files)
 }
 
+function clearShareTargetQuery() {
+    if (!window.location.search.includes("share-target")) {
+        return
+    }
+    const url = new URL(window.location.href)
+    url.searchParams.delete("share-target")
+    window.history.replaceState({}, "", url.toString())
+}
+
 function queueShareFiles(files: File[]) {
     if (!files.length) {
         return
     }
-    pendingShareFiles = files
+    pendingShareFiles = pendingShareFiles ? pendingShareFiles.concat(files) : files
     void maybeUploadSharedFiles()
+}
+
+function normalizeSharedFiles(payload: unknown): File[] {
+    const entries = Array.isArray(payload) ? payload : []
+    const files: File[] = []
+    for (const entry of entries) {
+        if (entry instanceof File) {
+            files.push(entry)
+            continue
+        }
+        if (!entry || typeof entry !== "object") {
+            continue
+        }
+        const record = entry as SharedFileRecord
+        if (!(record.blob instanceof Blob)) {
+            continue
+        }
+        const name =
+            typeof record.name === "string" && record.name.trim().length > 0
+                ? record.name
+                : "shared-file"
+        const type = typeof record.type === "string" ? record.type : record.blob.type || ""
+        const lastModified = typeof record.lastModified === "number" ? record.lastModified : Date.now()
+        files.push(new File([record.blob], name, { type, lastModified }))
+    }
+    return files
+}
+
+async function requestShareTargetFiles() {
+    if (!("serviceWorker" in navigator)) {
+        return
+    }
+    if (!window.location.search.includes("share-target=1")) {
+        return
+    }
+    try {
+        await new Promise((resolve) => setTimeout(resolve, 150))
+        if (shareTargetReceived) {
+            return
+        }
+        const registration = await navigator.serviceWorker.ready
+        registration.active?.postMessage({ type: "REQUEST_SHARE_TARGET" })
+    } catch (error) {
+        console.warn("Failed to request share target files:", error)
+    }
+}
+
+async function acknowledgeShareTarget() {
+    if (!("serviceWorker" in navigator)) {
+        return
+    }
+    try {
+        const registration = await navigator.serviceWorker.ready
+        registration.active?.postMessage({ type: "SHARE_TARGET_RECEIVED" })
+    } catch (error) {
+        console.warn("Failed to acknowledge share target:", error)
+    }
 }
 
 if ("serviceWorker" in navigator) {
@@ -28,9 +102,11 @@ if ("serviceWorker" in navigator) {
         if (!data || data.type !== "SHARE_TARGET_FILES") {
             return
         }
-        const rawFiles = Array.isArray(data.files) ? data.files : []
-        const files = rawFiles.filter((entry: unknown) => entry instanceof File) as File[]
+        const files = normalizeSharedFiles(data.files)
+        shareTargetReceived = true
         queueShareFiles(files)
+        clearShareTargetQuery()
+        void acknowledgeShareTarget()
     })
 }
 
@@ -116,13 +192,14 @@ loginButton.addEventListener("click", () => {
 window.addEventListener("load", async () => {
     if ("serviceWorker" in navigator) {
         await navigator.serviceWorker
-            .register(new URL("/src/service-worker.js", import.meta.url), { type: "module" })
+            .register(new URL("../service-worker.js", import.meta.url), { type: "module" })
             .catch(function (error) {
                 alert(
                     "Failed to register ServiceWorker.\nYou will not be able to download files.\nSee developer console for details.",
                 )
                 console.error("ServiceWorker registration failed: ", error)
             })
+        await requestShareTargetFiles()
     }
 
     function getCookie(name: string): string | null {

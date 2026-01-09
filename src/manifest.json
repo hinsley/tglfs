@@ -46,7 +46,13 @@
         {
           "name": "files",
           "accept": [
-            "*/*"
+            "image/*",
+            "video/*",
+            "audio/*",
+            "application/pdf",
+            "application/zip",
+            "application/octet-stream",
+            "text/plain"
           ]
         }
       ]
