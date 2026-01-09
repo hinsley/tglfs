@@ -19,6 +19,7 @@ type SharedFileRecord = {
 }
 
 let loginAttempt = 0
+let controlsBound = false
 
 type LoginStep = "phone" | "code" | "password"
 
@@ -494,6 +495,60 @@ function cancelLoginFlow() {
     loginUi.setStep("phone")
 }
 
+function clearStoredSession() {
+    try {
+        if (typeof localStorage === "undefined") {
+            return
+        }
+        const sessionPrefix = "./tglfs.session:"
+        for (let i = localStorage.length - 1; i >= 0; i -= 1) {
+            const key = localStorage.key(i)
+            if (key && key.startsWith(sessionPrefix)) {
+                localStorage.removeItem(key)
+            }
+        }
+    } catch (error) {
+        console.warn("Failed to clear stored session", error)
+    }
+}
+
+async function logout() {
+    try {
+        await activeClient?.logOut?.()
+    } catch (error) {
+        console.warn("Failed to log out from Telegram", error)
+    }
+
+    try {
+        await activeClient?.disconnect?.()
+    } catch (error) {
+        console.warn("Failed to disconnect Telegram client", error)
+    }
+
+    activeClient = null
+    activeConfig = null
+    pendingShareFiles = null
+
+    document.cookie = "phone=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT"
+    clearStoredSession()
+
+    const controlsDiv = document.getElementById("controls")
+    if (controlsDiv) {
+        controlsDiv.setAttribute("hidden", "")
+    }
+    const fileBrowserDiv = document.getElementById("fileBrowser")
+    if (fileBrowserDiv) {
+        fileBrowserDiv.setAttribute("hidden", "")
+    }
+    document.body.classList.remove("file-browser-active")
+
+    cancelLoginFlow()
+    loginUi.setVisible(true)
+    loginUi.setPhoneValue("")
+    loginUi.setStatus("You have been logged out.", false)
+}
+
+
 async function finalizeLogin(client: any, config: any, phoneValue: string) {
     activeClient = client
     activeConfig = config
@@ -518,24 +573,40 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
         splashDivAtInit.remove()
     }
 
-    const uploadFileInput = document.getElementById("uploadFileInput") as HTMLInputElement | null
-    uploadFileInput?.addEventListener("change", async () => {
-        await Telegram.fileUpload(client, config)
-    })
-    const downloadFileLegacyButton = document.getElementById("downloadFileLegacyButton") as HTMLButtonElement | null
-    downloadFileLegacyButton?.addEventListener("click", async () => {
-        await Telegram.fileDownloadLegacy(client, config)
-    })
+    if (!controlsBound) {
+        const uploadFileInput = document.getElementById("uploadFileInput") as HTMLInputElement | null
+        uploadFileInput?.addEventListener("change", async () => {
+            if (!activeClient || !activeConfig) {
+                return
+            }
+            await Telegram.fileUpload(activeClient, activeConfig)
+        })
+        const downloadFileLegacyButton = document.getElementById("downloadFileLegacyButton") as HTMLButtonElement | null
+        downloadFileLegacyButton?.addEventListener("click", async () => {
+            if (!activeClient || !activeConfig) {
+                return
+            }
+            await Telegram.fileDownloadLegacy(activeClient, activeConfig)
+        })
 
-    const fileBrowserButton = document.getElementById("fileBrowserButton") as HTMLButtonElement | null
-    const browserBackButton = null as unknown as HTMLButtonElement | null
-    fileBrowserButton?.addEventListener("click", async () => {
-        controlsDiv?.setAttribute("hidden", "")
-        fileBrowserDiv?.removeAttribute("hidden")
-        document.body.classList.add("file-browser-active")
-        await initFileBrowser(client, config)
-        window.dispatchEvent(new Event("tglfs:refresh-browser"))
-    })
+        const fileBrowserButton = document.getElementById("fileBrowserButton") as HTMLButtonElement | null
+        fileBrowserButton?.addEventListener("click", async () => {
+            if (!activeClient || !activeConfig) {
+                return
+            }
+            controlsDiv?.setAttribute("hidden", "")
+            fileBrowserDiv?.removeAttribute("hidden")
+            document.body.classList.add("file-browser-active")
+            await initFileBrowser(activeClient, activeConfig)
+            window.dispatchEvent(new Event("tglfs:refresh-browser"))
+        })
+
+        const logoutButton = document.getElementById("logoutButton") as HTMLButtonElement | null
+        logoutButton?.addEventListener("click", async () => {
+            await logout()
+        })
+        controlsBound = true
+    }
 
     await maybeUploadSharedFiles()
 }
