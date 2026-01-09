@@ -127,7 +127,14 @@ async function handleShareTarget(request) {
 self.addEventListener("install", (event) => {
     self.skipWaiting()
     event.waitUntil(
-        caches.open(OFFLINE_CACHE).then((cache) => cache.add(OFFLINE_URL)),
+        (async () => {
+            try {
+                const cache = await caches.open(OFFLINE_CACHE)
+                await cache.add(OFFLINE_URL)
+            } catch (error) {
+                // Ignore offline cache failures so the SW can still install.
+            }
+        })(),
     )
 })
 
