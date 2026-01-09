@@ -1,15 +1,14 @@
 {
     "devDependencies": {
-        "@parcel/packager-raw-url": "^2.12.0",
-        "@parcel/transformer-webmanifest": "^2.12.0",
+        "@parcel/packager-raw-url": "^2.16.3",
+        "@parcel/transformer-webmanifest": "^2.16.3",
         "@types/wicg-file-system-access": "^2023.10.5",
         "assert": "^2.1.0",
         "constants-browserify": "^1.0.0",
-        "crypto-browserify": "^3.12.0",
+        "crypto-browserify": "^3.12.1",
         "events": "^3.3.0",
-        "npx": "^10.2.2",
         "os-browserify": "^0.3.0",
-        "parcel": "^2.12.0",
+        "parcel": "^2.16.3",
         "prettier": "^3.2.5",
         "process": "^0.11.10",
         "stream-browserify": "^3.0.0",
@@ -25,11 +24,16 @@
         "telegram": "^2.21.2"
     },
     "scripts": {
-        "build": "npx parcel build src/index.html",
+        "build": "parcel build src/index.html",
         "format": "prettier --write .",
-        "run": "npx parcel src/index.html"
+        "run": "parcel src/index.html"
     },
     "overrides": {
-        "term-size": "4.0.0"
+        "term-size": "4.0.0",
+        "cipher-base": "1.0.7",
+        "elliptic": "6.6.1",
+        "pbkdf2": "3.1.5",
+        "sha.js": "2.4.12",
+        "store2": "2.14.4"
     }
 }
