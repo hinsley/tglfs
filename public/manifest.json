@@ -3,12 +3,12 @@
   "name": "Telegram Large File Storage",
   "icons": [
     {
-        "src": "./icons/TGLFS logo 192.png",
+        "src": "/icons/TGLFS logo 192.png",
         "type": "image/png",
         "sizes": "192x192"
     },
     {
-        "src": "./icons/TGLFS logo 512.png",
+        "src": "/icons/TGLFS logo 512.png",
         "type": "image/png",
         "sizes": "512x512"
     }
@@ -30,7 +30,7 @@
   ],
   "screenshots": [
     {
-        "src": "./screenshots/android_ui.jpg",
+        "src": "/screenshots/android_ui.jpg",
         "type": "image/jpeg",
         "sizes": "895x1280",
         "platform": "android"

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="src/icons/TGLFS%20logo%20192.png" alt="TGLFS logo" width="96" height="96">
+  <img src="public/icons/TGLFS%20logo%20192.png" alt="TGLFS logo" width="96" height="96">
 </p>
 <h1 align="center">TGLFS</h1>
 <p align="center">Large file storage on Telegram</p>
@@ -34,7 +34,9 @@ Build the app:
 npm run build
 ```
 
-Run the app, either by navigating to `dist/index.html` in your browser, or running the command `npm run run` and navigating to `http://localhost:1234` in your browser.
+Run the app locally with `npm run dev` and navigate to `http://localhost:5173` in your browser.
+
+To preview the production build, run `npm run preview` after `npm run build`.
 
 Likely only Chrome, Edge, and Opera are currently supported.
 I have only tested on Chrome.

@@ -1,3 +1,5 @@
+import "./polyfills"
+
 type TelegramModule = typeof import("../telegram")
 type BrowserModule = typeof import("./browser")
 
@@ -842,7 +844,7 @@ window.addEventListener("load", async () => {
     if ("serviceWorker" in navigator) {
         try {
             const registration = await navigator.serviceWorker.register(
-                new URL("../service-worker.js", import.meta.url),
+                "/service-worker.js",
                 { type: "module", updateViaCache: "none" },
             )
             if (registration.waiting) {
