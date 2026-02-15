@@ -1170,14 +1170,64 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
         ufidStream = teed[0]
         inputStream = teed[1]
     }
-    if (progressBarText && progressBar) {
-        progressBarText.textContent = `Uploading ${displayName}`
-        progressBar.style.width = "0%"
-        progressBar.textContent = "0%"
-        progressBar.setAttribute("aria-valuenow", "0")
+    const progressUnits = ["B", "KiB", "MiB", "GiB", "PiB"] as const
+    const pickProgressUnit = (n: number) => {
+        let i = 0
+        let unitValue = n
+        while (i < progressUnits.length - 1 && unitValue >= 1024) {
+            unitValue = unitValue / 1024
+            i++
+        }
+        return { value: unitValue, unit: progressUnits[i] }
+    }
+    const progressFormatDuration = (s: number) => {
+        const h = Math.floor(s / 3600)
+        const m = Math.floor((s % 3600) / 60)
+        const sec = s % 60
+        const pad = (n: number) => n.toString().padStart(2, "0")
+        return `${pad(h)}:${pad(m)}:${pad(sec)}`
+    }
+    const setProgressPhase = (phaseText: string) => {
+        if (progressBarText) {
+            progressBarText.textContent = phaseText
+        }
+        if (progressBar) {
+            progressBar.style.width = "0%"
+            progressBar.textContent = "0%"
+            progressBar.setAttribute("aria-valuenow", "0")
+        }
         if (progressBytesText) progressBytesText.textContent = `0 / ${totalBytes} B`
         if (progressTimeText) progressTimeText.textContent = `Elapsed: 00:00:00 • Remaining: --:--:--`
     }
+    const updateProgressBar = (bytesProcessed: number, phaseStartMs: number, phaseText: string) => {
+        const progress = totalBytes > 0 ? Math.round((bytesProcessed / totalBytes) * 100) : 0
+        if (progressBar) {
+            progressBar.style.width = `${progress}%`
+            progressBar.textContent = `${progress}%`
+            progressBar.setAttribute("aria-valuenow", progress.toString())
+        }
+        if (progressBytesText) {
+            const sofar = pickProgressUnit(bytesProcessed)
+            const total = pickProgressUnit(totalBytes)
+            progressBytesText.textContent = `${sofar.value.toFixed(sofar.unit === "B" ? 0 : 2)} ${sofar.unit} / ${total.value.toFixed(total.unit === "B" ? 0 : 2)} ${total.unit}`
+        }
+        if (progressTimeText) {
+            const elapsedSec = Math.max(0, Math.floor((Date.now() - phaseStartMs) / 1000))
+            const rate = elapsedSec > 0 ? bytesProcessed / elapsedSec : 0
+            const remainingBytes = Math.max(0, totalBytes - bytesProcessed)
+            const etaSec = rate > 0 ? Math.ceil(remainingBytes / rate) : 0
+            progressTimeText.textContent = `Elapsed: ${progressFormatDuration(elapsedSec)} • Remaining: ${
+                etaSec ? progressFormatDuration(etaSec) : "--:--:--"
+            }`
+        }
+        if (progressBarText) {
+            progressBarText.textContent = phaseText
+        }
+    }
+
+    const ufidPhaseLabel = `Calculating UFID for ${displayName}`
+    const uploadPhaseLabel = `Uploading ${displayName}`
+    setProgressPhase(ufidPhaseLabel)
 
     try {
         const salt = window.crypto.getRandomValues(new Uint8Array(16))
@@ -1190,9 +1240,22 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
         const IV = bytesToBase64(IVBytes)
         let encryptionCounter = new Uint8Array(initialCounter)
 
-        console.log("Calculating UFID...")
-        const UFID = single ? await FileProcessing.UFID(file) : await FileProcessing.UFIDFromStream(ufidStream!)
-        console.log(`UFID: ${UFID}`)
+        const ufidStartMs = Date.now()
+        updateProgressBar(0, ufidStartMs, ufidPhaseLabel)
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        const onUfidProgress = (bytesProcessed: number) => {
+            updateProgressBar(bytesProcessed, ufidStartMs, ufidPhaseLabel)
+        }
+        console.log(`Starting UFID generation for ${displayName}`)
+        const UFID = single
+            ? await FileProcessing.UFID(file, onUfidProgress)
+            : await FileProcessing.UFIDFromStream(ufidStream!, onUfidProgress, totalBytes)
+        console.log(`UFID generated for ${displayName}: ${UFID}`)
+
+        setProgressPhase(uploadPhaseLabel)
+        console.log(`Upload begins for ${displayName}`)
+        const startTimeMs = Date.now()
+        let bytesProcessed = 0
 
         const existingMsgs = await client.getMessages("me", {
             search: `tglfs:file "ufid":"${UFID}"`,
@@ -1214,8 +1277,6 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
         }
         const fileCardMessage = await client.sendMessage("me", { message: `tglfs:file\n${JSON.stringify(fileCardData)}` })
 
-        let bytesProcessed = 0
-        const startTimeMs = Date.now()
         const byteCounterStream = new TransformStream({
             transform(chunk, controller) {
                 bytesProcessed += chunk.length;
@@ -1355,40 +1416,7 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
                 }
             }
             // Update the progress UI.
-            if (progressBar) {
-                const progress = Math.round((bytesProcessed / totalBytes) * 100).toString()
-                progressBar.style.width = `${progress}%`
-                progressBar.textContent = `${progress}%`
-                progressBar.setAttribute("aria-valuenow", progress)
-            }
-            if (progressBytesText) {
-                const units = ["B", "KiB", "MiB", "GiB", "PiB"] as const
-                const pickUnit = (n: number) => {
-                    let i = 0
-                    while (i < units.length - 1 && n >= 1024) {
-                        n = n / 1024
-                        i++
-                    }
-                    return { value: n, unit: units[i] }
-                }
-                const sofar = pickUnit(bytesProcessed)
-                const total = pickUnit(totalBytes)
-                progressBytesText.textContent = `${sofar.value.toFixed(sofar.unit === "B" ? 0 : 2)} ${sofar.unit} / ${total.value.toFixed(total.unit === "B" ? 0 : 2)} ${total.unit}`
-            }
-            if (progressTimeText) {
-                const elapsedSec = Math.max(0, Math.floor((Date.now() - startTimeMs) / 1000))
-                const rate = elapsedSec > 0 ? bytesProcessed / elapsedSec : 0
-                const remainingBytes = Math.max(0, totalBytes - bytesProcessed)
-                const etaSec = rate > 0 ? Math.ceil(remainingBytes / rate) : 0
-                const fmt = (s: number) => {
-                    const h = Math.floor(s / 3600)
-                    const m = Math.floor((s % 3600) / 60)
-                    const sec = s % 60
-                    const pad = (n: number) => n.toString().padStart(2, "0")
-                    return `${pad(h)}:${pad(m)}:${pad(sec)}`
-                }
-                progressTimeText.textContent = `Elapsed: ${fmt(elapsedSec)} • Remaining: ${etaSec ? fmt(etaSec) : "--:--:--"}`
-            }
+            updateProgressBar(bytesProcessed, startTimeMs, uploadPhaseLabel)
         }
         // Flush encryptionBuffer.
         if (aesBlockBytesWritten > 0) {

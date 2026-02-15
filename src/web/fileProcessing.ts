@@ -78,7 +78,9 @@ export async function decryptAndDecompressFile(fileName: string, key: Uint8Array
     const fileStream = await file.getFile()
 }
 
-export async function UFID(file: File): Promise<string> {
+export type UFIDProgressCallback = (bytesProcessed: number, totalBytes: number) => void
+
+export async function UFID(file: File, onProgress?: UFIDProgressCallback): Promise<string> {
     const UFIDChunkSize = 64 * 1024 // 64 KB.
     let UFIDArray = new Uint8Array([])
     let i
@@ -91,6 +93,10 @@ export async function UFID(file: File): Promise<string> {
         chunk.set(dataArray, UFIDArray.length)
         const UFIDBuffer = await window.crypto.subtle.digest("SHA-256", chunk)
         UFIDArray = new Uint8Array(UFIDBuffer)
+        if (onProgress) {
+            const bytesProcessed = Math.min(i + UFIDChunkSize, file.size)
+            onProgress(bytesProcessed, file.size)
+        }
     }
     // Convert UFID to a hexadecimal string.
     const UFIDString = Array.from(UFIDArray)
@@ -99,15 +105,25 @@ export async function UFID(file: File): Promise<string> {
     return UFIDString
 }
 
-export async function UFIDFromStream(stream: ReadableStream<Uint8Array>): Promise<string> {
+export async function UFIDFromStream(
+    stream: ReadableStream<Uint8Array>,
+    onProgress?: UFIDProgressCallback,
+    totalBytes?: number,
+): Promise<string> {
     const UFIDChunkSize = 64 * 1024 // 64 KiB.
     const reader = stream.getReader()
     let rolling = new Uint8Array(0)
     let pending = new Uint8Array(0)
+    let bytesProcessed = 0
+    const resolvedTotalBytes = totalBytes ?? 0
     while (true) {
         const { done, value } = await reader.read()
         if (done) break
         if (!value || value.length === 0) continue
+        bytesProcessed += value.length
+        if (onProgress) {
+            onProgress(bytesProcessed, resolvedTotalBytes)
+        }
         // Append to pending.
         const combined = new Uint8Array(pending.length + value.length)
         combined.set(pending, 0)
