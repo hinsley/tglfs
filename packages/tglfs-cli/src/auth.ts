@@ -6,6 +6,9 @@ import { isInteractiveSession, promptPassword, promptText, readTrimmedStdin } fr
 import { clearPersistedState, loadConfig, loadSessionString, saveConfig, saveSessionString, sessionExists, storePaths } from "./store.js"
 import type { PersistedConfig } from "./types.js"
 
+export const BUNDLED_TELEGRAM_API_ID = 20227969
+export const BUNDLED_TELEGRAM_API_HASH = "3fc5e726fcc1160a81704958b2243109"
+
 type LoginOptions = {
     apiId?: string
     apiHash?: string
@@ -119,17 +122,14 @@ export async function login(options: LoginOptions) {
     const existingConfig = await loadConfig()
 
     const apiId = normalizeApiId(
-        await resolveRequiredValue(
-            "Telegram API ID",
-            [options.apiId, process.env.TGLFS_API_ID, existingConfig?.apiId?.toString()],
-            async () => promptText("Telegram API ID", existingConfig?.apiId?.toString()),
-        ),
+        [options.apiId, process.env.TGLFS_API_ID, existingConfig?.apiId?.toString(), String(BUNDLED_TELEGRAM_API_ID)].find(
+            (value) => typeof value === "string" && value.trim() !== "",
+        ) ?? String(BUNDLED_TELEGRAM_API_ID),
     )
-    const apiHash = await resolveRequiredValue(
-        "Telegram API hash",
-        [options.apiHash, process.env.TGLFS_API_HASH, existingConfig?.apiHash],
-        async () => promptText("Telegram API hash", existingConfig?.apiHash),
-    )
+    const apiHash =
+        [options.apiHash, process.env.TGLFS_API_HASH, existingConfig?.apiHash, BUNDLED_TELEGRAM_API_HASH].find(
+            (value) => typeof value === "string" && value.trim() !== "",
+        ) ?? BUNDLED_TELEGRAM_API_HASH
     const phone = await resolveRequiredValue(
         "Telegram phone number",
         [options.phone, process.env.TGLFS_PHONE, existingConfig?.phone],

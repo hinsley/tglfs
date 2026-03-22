@@ -5,7 +5,15 @@ import process from "node:process"
 
 import { Command } from "commander"
 
-import { connectAuthorizedClient, login, logout, persistAndDisconnectClient, status } from "./auth.js"
+import {
+    BUNDLED_TELEGRAM_API_HASH,
+    BUNDLED_TELEGRAM_API_ID,
+    connectAuthorizedClient,
+    login,
+    logout,
+    persistAndDisconnectClient,
+    status,
+} from "./auth.js"
 import { defaultOutputPath, downloadFileCard } from "./download.js"
 import { CliError, EXIT_CODES, toCliError } from "./errors.js"
 import { isInteractiveSession, promptConfirm, promptPassword, promptSelect, promptText, readTrimmedStdin } from "./interactive.js"
@@ -150,7 +158,7 @@ async function main(argv: string[]) {
         .option("--json", "Output machine-readable JSON")
         .addHelpText(
             "after",
-            "\nEnvironment variables:\n  TGLFS_API_ID\n  TGLFS_API_HASH\n  TGLFS_PHONE\n  TGLFS_LOGIN_CODE\n  TGLFS_2FA_PASSWORD\n",
+            `\nDefaults:\n  API ID: ${BUNDLED_TELEGRAM_API_ID}\n  API hash: ${BUNDLED_TELEGRAM_API_HASH}\n\nEnvironment variables:\n  TGLFS_API_ID\n  TGLFS_API_HASH\n  TGLFS_PHONE\n  TGLFS_LOGIN_CODE\n  TGLFS_2FA_PASSWORD\n`,
         )
         .action(async (options) => {
             await runJsonAware(options, async () => {

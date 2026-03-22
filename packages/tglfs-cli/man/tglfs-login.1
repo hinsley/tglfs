@@ -6,6 +6,8 @@ tglfs-login \- authenticate with Telegram and persist a TGLFS session
 [\fIOPTIONS\fR]
 .SH DESCRIPTION
 Authenticates with Telegram as a user account and stores both TGLFS config and the Telegram session for later commands.
+.PP
+If no API ID or API hash is supplied, the CLI uses the same bundled Telegram app credentials as the web client. Explicit flags and environment variables still override those defaults.
 .SH OPTIONS
 .TP
 .B --api-id <id>

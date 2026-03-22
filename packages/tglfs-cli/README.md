@@ -37,6 +37,8 @@ Run `tglfs login` once to save:
 - your phone number
 - the resulting Telegram session
 
+If you do not supply an API ID or API hash, the CLI defaults to the same bundled Telegram app credentials the web client currently uses. You can still override them with flags or environment variables.
+
 The CLI stores config and session files in OS-standard app directories. Use `tglfs status` to inspect the current state.
 
 ## Download Flow
@@ -65,6 +67,8 @@ Login:
 - `TGLFS_PHONE`
 - `TGLFS_LOGIN_CODE`
 - `TGLFS_2FA_PASSWORD`
+
+If `TGLFS_API_ID` and `TGLFS_API_HASH` are unset, `tglfs login` falls back to the bundled web-client credentials.
 
 Download:
 
