@@ -18,6 +18,7 @@ import { defaultOutputPath, downloadFileCard } from "./download.js"
 import { CliError, EXIT_CODES, toCliError } from "./errors.js"
 import { isInteractiveSession, promptConfirm, promptPassword, promptSelect, promptText, readTrimmedStdin } from "./interactive.js"
 import { printJson } from "./json.js"
+import { createByteProgressReporter } from "./progress.js"
 import { getFileCardByUfid } from "./protocol.js"
 import { storePaths } from "./store.js"
 
@@ -216,11 +217,14 @@ async function main(argv: string[]) {
         .option("--json", "Output machine-readable JSON")
         .addHelpText(
             "after",
-            "\nIf the file uses a decryption password, provide it with --password, --password-env, --password-stdin, or interactively on a TTY.\n",
+            "\nIf the file uses a decryption password, provide it with --password, --password-env, --password-stdin, or interactively on a TTY.\nTTY runs show a progress bar; --json stays quiet for automation.\n",
         )
         .action(async (ufid: string, options) => {
             await runJsonAware(options, async () => {
                 const { client, session } = await connectAuthorizedClient()
+                let progress:
+                    | ReturnType<typeof createByteProgressReporter>
+                    | undefined
                 try {
                     const record = await getFileCardByUfid(client, ufid)
                     const outputPath = options.output ? String(options.output) : defaultOutputPath(record.data.name)
@@ -241,13 +245,22 @@ async function main(argv: string[]) {
                     }
 
                     const password = await resolveDownloadPassword(options)
+                    progress = options.json
+                        ? undefined
+                        : createByteProgressReporter({
+                              label: "Downloading",
+                              totalBytes: record.data.size,
+                          })
+                    progress?.update(0)
                     const result = await downloadFileCard(
                         client,
                         record.data,
                         password,
                         outputPath,
                         Boolean(options.force),
+                        ({ bytesWritten }) => progress?.update(bytesWritten),
                     )
+                    progress?.complete()
                     await persistAndDisconnectClient(client, session)
 
                     return {
@@ -255,6 +268,7 @@ async function main(argv: string[]) {
                         data: result,
                     }
                 } catch (error) {
+                    progress?.abort()
                     await persistAndDisconnectClient(client, session).catch(() => {})
                     throw error
                 }

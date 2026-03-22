@@ -105,6 +105,7 @@ test("current-format encrypted fixtures restore to the original plaintext", asyn
     const fixture = await createFixture(plaintext, "secret")
     const dir = await mkdtemp(join(tmpdir(), "tglfs-cli-"))
     const outputPath = join(dir, "fixture.txt")
+    const progressUpdates: number[] = []
 
     try {
         const result = await restoreFileFromEncryptedParts(
@@ -112,11 +113,15 @@ test("current-format encrypted fixtures restore to the original plaintext", asyn
             "secret",
             outputPath,
             fixture.parts(),
+            false,
+            ({ bytesWritten }) => progressUpdates.push(bytesWritten),
         )
 
         const saved = new Uint8Array(await readFile(outputPath))
         assert.equal(result.bytesWritten, plaintext.length)
         assert.deepEqual(Array.from(saved), Array.from(plaintext))
+        assert.ok(progressUpdates.length > 0)
+        assert.equal(progressUpdates.at(-1), plaintext.length)
     } finally {
         await rm(dir, { recursive: true, force: true })
     }

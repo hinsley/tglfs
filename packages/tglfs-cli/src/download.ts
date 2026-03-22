@@ -18,6 +18,11 @@ type DownloadResult = {
     ufid: string
 }
 
+export type DownloadProgress = {
+    bytesWritten: number
+    totalBytes: number
+}
+
 type TelegramIntegerLike = {
     toString(): string
 }
@@ -152,6 +157,8 @@ async function* iterateEncryptedFile(client: TelegramClient, data: FileCardData)
 async function consumeDecompressedStream(
     readable: ReadableStream<Uint8Array>,
     filePath: string,
+    totalBytes: number,
+    onProgress?: (progress: DownloadProgress) => void,
 ): Promise<{ bytesWritten: number; computedUfid: string }> {
     const handle = await open(filePath, "w")
     const reader = readable.getReader()
@@ -169,6 +176,7 @@ async function consumeDecompressedStream(
             }
             await handle.write(value)
             bytesWritten += value.length
+            onProgress?.({ bytesWritten, totalBytes })
             await ufid.update(value)
         }
 
@@ -195,6 +203,7 @@ export async function restoreFileFromEncryptedParts(
     outputPath: string,
     encryptedParts: AsyncIterable<Uint8Array>,
     overwrite = false,
+    onProgress?: (progress: DownloadProgress) => void,
 ): Promise<DownloadResult> {
     await ensureOutputDirectory(outputPath)
     const tempPath = join(dirname(outputPath), `.${data.ufid}.part`)
@@ -207,7 +216,7 @@ export async function restoreFileFromEncryptedParts(
 
     const decompressionStream = new DecompressionStream("gzip")
     const writer = decompressionStream.writable.getWriter()
-    const consumePromise = consumeDecompressedStream(decompressionStream.readable, tempPath)
+    const consumePromise = consumeDecompressedStream(decompressionStream.readable, tempPath, data.size, onProgress)
 
     try {
         for await (const part of encryptedParts) {
@@ -284,6 +293,7 @@ export async function downloadFileCard(
     password: string,
     outputPath: string,
     overwrite = false,
+    onProgress?: (progress: DownloadProgress) => void,
 ): Promise<DownloadResult> {
-    return restoreFileFromEncryptedParts(data, password, outputPath, iterateEncryptedFile(client, data), overwrite)
+    return restoreFileFromEncryptedParts(data, password, outputPath, iterateEncryptedFile(client, data), overwrite, onProgress)
 }

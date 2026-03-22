@@ -58,6 +58,8 @@ tglfs download <ufid> --password-env
 printf '%s\n' 'secret' | tglfs download <ufid> --password-stdin
 ```
 
+Interactive TTY downloads render a progress bar. `--json` stays quiet until the final result so agents can parse the output safely.
+
 ## Environment Variables
 
 Login:

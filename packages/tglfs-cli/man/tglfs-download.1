@@ -32,3 +32,4 @@ Emit machine-readable JSON.
 Default environment variable for the decryption password.
 .SH AI AGENT NOTES
 If the download password is missing and the command is attached to a TTY, the CLI prompts for it. In a non-interactive session, the agent must provide the password via flags, environment variables, or standard input.
+Interactive TTY runs also render a progress bar while the file is being restored. JSON mode stays silent until the final result so agents can parse the output safely.
