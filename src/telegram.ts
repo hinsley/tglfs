@@ -5,11 +5,10 @@
 
 // TODO: Add `tglfs:chunk` annotation to chunk files.
 
-import { Api, TelegramClient } from "telegram"
-import { StoreSession } from "telegram/sessions"
-import { getFileInfo } from "telegram/Utils"
+import type { Api as TelegramApi, TelegramClient } from "telegram"
 
 import * as Config from "./config"
+import { getGramJs } from "./gramjs"
 import {
     buildFileCardSearchQuery,
     buildFileCardUfidLookupQuery,
@@ -28,6 +27,18 @@ import * as Encryption from "./web/encryption"
 import * as FileProcessing from "./web/fileProcessing"
 import * as Archive from "../packages/tglfs-cli/src/shared/archive"
 import { FileCardData } from "./types/models"
+
+let Api!: typeof import("telegram")["Api"]
+let TelegramClientCtor!: typeof import("telegram")["TelegramClient"]
+let StoreSession!: typeof import("telegram/sessions")["StoreSession"]
+let getFileInfo!: typeof import("telegram/Utils")["getFileInfo"]
+
+const gramJsReady = getGramJs().then((modules) => {
+    Api = modules.Api
+    TelegramClientCtor = modules.TelegramClient
+    StoreSession = modules.StoreSession
+    getFileInfo = modules.getFileInfo
+})
 
 // https://core.telegram.org/api/files
 // DOWNLOAD_PART_SIZE must be divisible by 4 KiB (Telegram policy).
@@ -160,6 +171,7 @@ function createServiceWorkerDownloadPump(
 }
 
 export async function fileDelete(client: TelegramClient, config: Config.Config) {
+    await gramJsReady
     const fileUfid = prompt("Enter UFID of file to delete:")
     if (!fileUfid || fileUfid.trim() === "") {
         alert("No UFID provided. Operation cancelled.")
@@ -208,6 +220,7 @@ export async function fileDelete(client: TelegramClient, config: Config.Config) 
 }
 
 export async function fileDownload(client: TelegramClient, config: Config.Config) {
+    await gramJsReady
     // TODO: Implement file validation via UFID comparison.
     const fileUfid = prompt("Enter UFID of file to download:")
     if (!fileUfid || fileUfid.trim() === "") {
@@ -280,7 +293,7 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
 
     try {
         // Request chunk messages by their IDs in the file card.
-        const chunkMsgs: Api.messages.Messages = await client.getMessages("me", { ids: fileCardData.chunks })
+        const chunkMsgs: TelegramApi.messages.Messages = await client.getMessages("me", { ids: fileCardData.chunks })
 
         const IVBytes = base64ToBytes(fileCardData.IV)
         // TODO: DRY-ify the salt & counter byte size. Should be
@@ -512,6 +525,7 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
 
 // TODO: Remove the legacy download pipeline after all existing files have been ported to the new scheme.
 export async function fileDownloadLegacy(client: TelegramClient, config: Config.Config) {
+    await gramJsReady
     // TODO: Implement file validation via UFID comparison.
     const fileUfid = prompt("Enter UFID of file to download (legacy):")
     if (!fileUfid || fileUfid.trim() === "") {
@@ -584,7 +598,7 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
 
     try {
         // Request chunk messages by their IDs in the file card.
-        const chunkMsgs: Api.messages.Messages = await client.getMessages("me", { ids: fileCardData.chunks })
+        const chunkMsgs: TelegramApi.messages.Messages = await client.getMessages("me", { ids: fileCardData.chunks })
 
         const IVBytes = base64ToBytes(fileCardData.IV)
         // TODO: DRY-ify the salt & counter byte size. Should be
@@ -806,6 +820,7 @@ export async function fileLookup(client: TelegramClient, config: Config.Config) 
 }
 
 export async function fileReceive(client: TelegramClient, config: Config.Config) {
+    await gramJsReady
     const source = prompt("Enter sender or receipt location:")?.trim()
     if (!source) {
         alert("No sender or receipt location provided. Operation cancelled.")
@@ -877,6 +892,7 @@ export async function fileReceive(client: TelegramClient, config: Config.Config)
 }
 
 export async function fileRename(client: TelegramClient, config: Config.Config) {
+    await gramJsReady
     const fileUfid = prompt("Enter UFID of file to rename:")
     if (!fileUfid || fileUfid.trim() === "") {
         alert("No UFID provided. Operation cancelled.")
@@ -929,6 +945,7 @@ export async function fileRename(client: TelegramClient, config: Config.Config) 
 }
 
 export async function fileSend(client: TelegramClient, config: Config.Config) {
+    await gramJsReady
     const fileUfid = prompt("Enter UFID of file to send:")
     if (!fileUfid || fileUfid.trim() === "") {
         alert("No UFID provided. Operation cancelled.")
@@ -1006,6 +1023,7 @@ export async function fileSend(client: TelegramClient, config: Config.Config) {
 }
 
 export async function fileUnsend(client: TelegramClient, config: Config.Config) {
+    await gramJsReady
     const source = prompt("Enter sender or receipt location:")?.trim()
     if (!source) {
         alert("No sender or receipt location provided. Operation cancelled.")
@@ -1085,6 +1103,7 @@ export async function fileUnsend(client: TelegramClient, config: Config.Config) 
 }
 
 export async function fileUpload(client: TelegramClient, config: Config.Config, sharedFiles?: File[]) {
+    await gramJsReady
     // TODO: Implement upload resumption.
     if (config.chunkSize < UPLOAD_PART_SIZE) {
         throw new Error(
@@ -1626,6 +1645,7 @@ export async function getFileCardByUfid(
     client: TelegramClient,
     ufid: string,
 ): Promise<{ msgId: number; date: number; data: FileCardData } | null> {
+    await gramJsReady
     return sharedLookupFileCardByUfid(client, ufid)
 }
 
@@ -1636,6 +1656,7 @@ export async function renameFileCard(
     data: FileCardData,
     newName: string,
 ): Promise<void> {
+    await gramJsReady
     await sharedRenameFileCardMessage(client, {
         Api,
         peer,
@@ -1651,6 +1672,7 @@ export async function deleteFileCard(
     msgId: number,
     data: FileCardData,
 ): Promise<void> {
+    await gramJsReady
     await sharedDeleteFileCardMessages(client, {
         Api,
         msgId,
@@ -1663,6 +1685,7 @@ export async function sendFileCard(
     data: FileCardData,
     recipient: string,
 ): Promise<void> {
+    await gramJsReady
     await sharedTransferFileCard(client, {
         Api,
         record: {
@@ -1682,6 +1705,7 @@ export async function downloadFileCard(
     data: FileCardData,
     password: string | null,
 ): Promise<void> {
+    await gramJsReady
     // Lightweight wrapper calling existing fileDownload code path with minor factoring would be ideal.
     // For now, reuse core logic by temporarily stashing into window and invoking a specialized path is not necessary.
     // We inline minimal setup and call the internal logic similar to fileDownload, but without prompts.
@@ -1709,7 +1733,7 @@ export async function downloadFileCard(
     }
 
     try {
-        const chunkMsgs: Api.messages.Messages = await client.getMessages("me", { ids: data.chunks })
+        const chunkMsgs: TelegramApi.messages.Messages = await client.getMessages("me", { ids: data.chunks })
         const IVBytes = base64ToBytes(data.IV)
         const salt = IVBytes.subarray(0, 16)
         const aesKey = await Encryption.deriveAESKeyFromPassword(password ?? "", salt)
@@ -1904,11 +1928,12 @@ export type AuthHandlers = {
 }
 
 export async function init(config: Config.Config, authHandlers: AuthHandlers = {}): Promise<TelegramClient> {
+    await gramJsReady
     console.log("Starting up...")
     // Load previous session from a session string.
     const storeSession = new StoreSession("./tglfs.session")
     // Connect.
-    const client = new TelegramClient(storeSession, config.apiId, config.apiHash, { connectionRetries: 5 })
+    const client = new TelegramClientCtor(storeSession, config.apiId, config.apiHash, { connectionRetries: 5 })
     // Provide credentials to the server.
     await client.start({
         phoneNumber: config.phone,

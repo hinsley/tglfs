@@ -1,7 +1,15 @@
-import { Api } from "telegram"
-import { getFileInfo } from "telegram/Utils"
+import type { Api as TelegramApi } from "telegram"
 import * as Encryption from "./encryption"
+import { getGramJs } from "../gramjs"
 import { FileCardData } from "../types/models"
+
+let Api!: typeof import("telegram")["Api"]
+let getFileInfo!: typeof import("telegram/Utils")["getFileInfo"]
+
+const gramJsReady = getGramJs().then((modules) => {
+    Api = modules.Api
+    getFileInfo = modules.getFileInfo
+})
 
 export type PreviewEntry = { msgId: number; date: number; data: FileCardData }
 type PreviewFileType = "image" | "video" | "audio" | "unsupported"
@@ -212,6 +220,7 @@ export class PreviewModal {
     }
 
     private async openAt(index: number) {
+        await gramJsReady
         if (!this.modal) return
         const entry = this.currentItems[index]
         const type = detectFileType(entry.data.name)
@@ -460,7 +469,7 @@ export class PreviewModal {
             { once: true },
         )
 
-        const chunkMsgs: Api.messages.Messages = await this.client.getMessages("me", { ids: data.chunks })
+        const chunkMsgs: TelegramApi.messages.Messages = await this.client.getMessages("me", { ids: data.chunks })
         const IVBytes = base64ToBytes(data.IV)
         const salt = IVBytes.subarray(0, 16)
         const aesKey = await Encryption.deriveAESKeyFromPassword(password ?? "", salt)
@@ -602,7 +611,7 @@ export class PreviewModal {
         onProgress: (pct: number) => void,
         signal: AbortSignal,
     ): Promise<Blob> {
-        const chunkMsgs: Api.messages.Messages = await this.client.getMessages("me", { ids: data.chunks })
+        const chunkMsgs: TelegramApi.messages.Messages = await this.client.getMessages("me", { ids: data.chunks })
         const IVBytes = base64ToBytes(data.IV)
         const salt = IVBytes.subarray(0, 16)
         const aesKey = await Encryption.deriveAESKeyFromPassword(password ?? "", salt)
