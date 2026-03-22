@@ -95,6 +95,16 @@ function base64ToBytes(base64: string) {
     })
 }
 
+function normalizePreviewStreamError(error: unknown): Error {
+    if (error instanceof TypeError) {
+        return new Error("Incorrect decryption password.")
+    }
+    if (error instanceof Error) {
+        return error
+    }
+    return new Error(String(error))
+}
+
 export class PreviewModal {
     private client: any
     private modal = document.getElementById("previewModal")
@@ -500,6 +510,9 @@ export class PreviewModal {
                 }
             } catch (err) {
                 appendError = err
+                try {
+                    await writer.abort(err)
+                } catch {}
             }
         })()
 
@@ -562,14 +575,11 @@ export class PreviewModal {
             await appendPromise
         }
 
-        if (writeError) {
-            if (writeError instanceof TypeError) {
-                throw new Error("Incorrect decryption password.")
-            }
-            throw writeError
-        }
         if (appendError) {
-            throw appendError
+            throw normalizePreviewStreamError(appendError)
+        }
+        if (writeError) {
+            throw normalizePreviewStreamError(writeError)
         }
         if (mediaSource.readyState === "open") {
             try {
@@ -626,6 +636,9 @@ export class PreviewModal {
                 }
             } catch (err) {
                 streamError = err
+                try {
+                    await writer.abort(err)
+                } catch {}
             }
         })()
 
@@ -688,17 +701,11 @@ export class PreviewModal {
             await readPromise
         }
 
-        if (writeError) {
-            if (writeError instanceof TypeError) {
-                throw new Error("Incorrect decryption password.")
-            }
-            throw writeError
-        }
         if (streamError) {
-            if (streamError instanceof TypeError) {
-                throw new Error("Incorrect decryption password.")
-            }
-            throw streamError
+            throw normalizePreviewStreamError(streamError)
+        }
+        if (writeError) {
+            throw normalizePreviewStreamError(writeError)
         }
 
         onProgress(100)
