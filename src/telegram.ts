@@ -54,6 +54,97 @@ function humanReadableSize(size: number): string {
     return (size / Math.pow(1024, i)).toFixed(i == 0 ? 0 : 2) + " " + sizes[i]
 }
 
+type ServiceWorkerDownloadPump = {
+    write: (chunk: Uint8Array) => Promise<void>
+    close: () => Promise<void>
+    abort: (reason?: unknown) => Promise<void>
+}
+
+function normalizeDownloadStreamError(error: unknown): Error {
+    if (error instanceof TypeError) {
+        return new Error("Incorrect decryption password.")
+    }
+    if (error instanceof Error) {
+        return error
+    }
+    return new Error(String(error))
+}
+
+function createServiceWorkerDownloadPump(
+    serviceWorkerRegistration: ServiceWorkerRegistration,
+    fileName: string,
+    byteCounterStream: TransformStream<Uint8Array, Uint8Array>,
+): ServiceWorkerDownloadPump {
+    serviceWorkerRegistration.active?.postMessage({
+        type: "SET_FILE_NAME",
+        fileName,
+    })
+
+    const decompressionStream = new DecompressionStream("gzip")
+    const writer = decompressionStream.writable.getWriter()
+    const reader = decompressionStream.readable.pipeThrough(byteCounterStream).getReader()
+    const pumpPromise = (async () => {
+        while (true) {
+            const { value, done } = await reader.read()
+            if (done) {
+                break
+            }
+            if (!value || value.length === 0) {
+                continue
+            }
+            const transferableChunk =
+                value.byteOffset === 0 && value.byteLength === value.buffer.byteLength ? value : value.slice()
+            serviceWorkerRegistration.active?.postMessage(
+                {
+                    type: "PROCESSED_DATA",
+                    data: transferableChunk,
+                },
+                [transferableChunk.buffer],
+            )
+        }
+    })()
+
+    return {
+        async write(chunk) {
+            try {
+                await writer.write(chunk)
+            } catch (error) {
+                throw normalizeDownloadStreamError(error)
+            }
+        },
+        async close() {
+            let writerError: unknown = null
+            try {
+                await writer.close()
+            } catch (error) {
+                writerError = error
+            }
+
+            let readerError: unknown = null
+            try {
+                await pumpPromise
+            } catch (error) {
+                readerError = error
+            }
+
+            if (writerError) {
+                throw normalizeDownloadStreamError(writerError)
+            }
+            if (readerError) {
+                throw normalizeDownloadStreamError(readerError)
+            }
+        },
+        async abort(reason) {
+            try {
+                await writer.abort(reason)
+            } catch {}
+            try {
+                await pumpPromise
+            } catch {}
+        },
+    }
+}
+
 export async function fileDelete(client: TelegramClient, config: Config.Config) {
     const fileUfid = prompt("Enter UFID of file to delete:")
     if (!fileUfid || fileUfid.trim() === "") {
@@ -250,146 +341,94 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
             },
         })
 
-        let decompressionStreamController: ReadableStreamController<Uint8Array> | null = null
-        const decompressionReadableStream = new ReadableStream({
-            start(controller) {
-                decompressionStreamController = controller
-            },
-        })
-        const decompressionStream = new DecompressionStream("gzip")
-        const decompressedDataStream = decompressionReadableStream.pipeThrough(decompressionStream).pipeThrough(byteCounterStream)
-        const decompressedDataStreamReader = decompressedDataStream.getReader()
-
         async function downloadFile(serviceWorkerRegistration: ServiceWorkerRegistration) {
-            // Inform the service worker of the file name.
-            serviceWorkerRegistration.active?.postMessage({
-                type: "SET_FILE_NAME",
-                fileName: fileCardData.name,
-            })
-            // Download each chunk.
-            for (const chunkMsg of chunkMsgs) {
-                let chunkBytesWritten = 0
-                while (chunkBytesWritten < chunkMsg.media.document.size) {
-                    // Download the next (up to) `DOWNLOAD_PART_SIZE` bytes of the chunk file.
-                    const chunkPart = await client.invoke(
-                        new Api.upload.GetFile({
-                            location: getFileInfo(chunkMsg.media).location,
-                            offset: chunkBytesWritten,
-                            limit: DOWNLOAD_PART_SIZE,
-                            precise: false,
-                            cdnSupported: false,
-                        }),
-                    )
-                    chunkBytesWritten += chunkPart.bytes.length
-
-                    // Write the chunk part to the decryption buffer.
-                    decryptionBuffer.set(chunkPart.bytes, aesBlockBytesWritten)
-                    aesBlockBytesWritten += chunkPart.bytes.length
-
-                    // If the decryption buffer is full, decrypt.
-                    if (aesBlockBytesWritten === decryptionBuffer.length) {
-                        const decryptedData = new Uint8Array(
-                            await window.crypto.subtle.decrypt(
-                                {
-                                    name: "AES-CTR",
-                                    counter: decryptionCounter,
-                                    length: 64, // Bit length of the counter block.
-                                },
-                                aesKey,
-                                decryptionBuffer,
-                            ),
+            const downloadPump = createServiceWorkerDownloadPump(
+                serviceWorkerRegistration,
+                fileCardData.name,
+                byteCounterStream,
+            )
+            let streamError: unknown = null
+            try {
+                // Download each chunk.
+                for (const chunkMsg of chunkMsgs) {
+                    let chunkBytesWritten = 0
+                    while (chunkBytesWritten < chunkMsg.media.document.size) {
+                        // Download the next (up to) `DOWNLOAD_PART_SIZE` bytes of the chunk file.
+                        const chunkPart = await client.invoke(
+                            new Api.upload.GetFile({
+                                location: getFileInfo(chunkMsg.media).location,
+                                offset: chunkBytesWritten,
+                                limit: DOWNLOAD_PART_SIZE,
+                                precise: false,
+                                cdnSupported: false,
+                            }),
                         )
-                        // Advance counter by number of 16-byte blocks consumed in this call.
-                        const blocks = Math.ceil(decryptionBuffer.length / 16)
-                        decryptionCounter = Encryption.incrementCounter64By(decryptionCounter, blocks)
-                        aesBlockBytesWritten = 0
+                        chunkBytesWritten += chunkPart.bytes.length
 
-                        // gzip-decompress the decrypted data.
-                        decompressionStreamController?.enqueue(decryptedData)
-                        let decompressedData = new Uint8Array(0)
-                        let bytesRead = 0
-                        while (bytesRead < decryptionBuffer.length) {
-                            const { value } = await decompressedDataStreamReader.read()
-                            if (!value) {
-                                continue
-                            }
-                            const newDecompressedData = new Uint8Array(decompressedData.length + value.length)
-                            newDecompressedData.set(decompressedData)
-                            newDecompressedData.set(value, decompressedData.length)
-                            decompressedData = newDecompressedData
-                            bytesRead += value.length
+                        // Write the chunk part to the decryption buffer.
+                        decryptionBuffer.set(chunkPart.bytes, aesBlockBytesWritten)
+                        aesBlockBytesWritten += chunkPart.bytes.length
+
+                        // If the decryption buffer is full, decrypt.
+                        if (aesBlockBytesWritten === decryptionBuffer.length) {
+                            const decryptedData = new Uint8Array(
+                                await window.crypto.subtle.decrypt(
+                                    {
+                                        name: "AES-CTR",
+                                        counter: decryptionCounter,
+                                        length: 64, // Bit length of the counter block.
+                                    },
+                                    aesKey,
+                                    decryptionBuffer,
+                                ),
+                            )
+                            // Advance counter by number of 16-byte blocks consumed in this call.
+                            const blocks = Math.ceil(decryptionBuffer.length / 16)
+                            decryptionCounter = Encryption.incrementCounter64By(decryptionCounter, blocks)
+                            aesBlockBytesWritten = 0
+
+                            await downloadPump.write(decryptedData)
                         }
+                    }
+                }
 
-                        // Send the decompressed data to the service worker.
-                        serviceWorkerRegistration.active?.postMessage(
+                // If there is any data left in the decryption buffer, process it.
+                if (aesBlockBytesWritten > 0) {
+                    // Decrypt the remaining data.
+                    const decryptedData = new Uint8Array(
+                        await window.crypto.subtle.decrypt(
                             {
-                                type: "PROCESSED_DATA",
-                                data: decompressedData,
+                                name: "AES-CTR",
+                                counter: decryptionCounter,
+                                length: 64, // Bit length of the counter block.
                             },
-                            [decompressedData.buffer],
-                        )
-                        
-                        // Progress UI is updated in byteCounterStream.
-                    }
-                }
-            }
+                            aesKey,
+                            decryptionBuffer.subarray(0, aesBlockBytesWritten),
+                        ),
+                    )
+                    // Advance counter by exact number of 16-byte blocks from the trailing bytes.
+                    const tailBlocks = Math.ceil(aesBlockBytesWritten / 16)
+                    decryptionCounter = Encryption.incrementCounter64By(decryptionCounter, tailBlocks)
 
-            // If there is any data left in the decryption buffer, process it.
-            if (aesBlockBytesWritten > 0) {
-                // Decrypt the remaining data.
-                const decryptedData = new Uint8Array(
-                    await window.crypto.subtle.decrypt(
-                        {
-                            name: "AES-CTR",
-                            counter: decryptionCounter,
-                            length: 64, // Bit length of the counter block.
-                        },
-                        aesKey,
-                        decryptionBuffer.subarray(0, aesBlockBytesWritten),
-                    ),
-                )
-                // Advance counter by exact number of 16-byte blocks from the trailing bytes.
-                const tailBlocks = Math.ceil(aesBlockBytesWritten / 16)
-                decryptionCounter = Encryption.incrementCounter64By(decryptionCounter, tailBlocks)
-
-                // gzip-decompress the decrypted data.
-                decompressionStreamController?.enqueue(decryptedData)
-                decompressionStreamController?.close()
-                let decompressedData = new Uint8Array(0)
-                let value, done
-                try {
-                    while ((({ value, done } = await decompressedDataStreamReader.read()), !done)) {
-                        const newDecompressedData = new Uint8Array(decompressedData.length + value.length)
-                        newDecompressedData.set(decompressedData)
-                        newDecompressedData.set(value, decompressedData.length)
-                        decompressedData = newDecompressedData
-                    }
-                } catch (e) {
-                    if (e instanceof TypeError) {
-                        alert("Incorrect decryption password entered. Aborting download.")
-                    } else {
-                        console.error(e)
-                    }
+                    await downloadPump.write(decryptedData)
                 }
 
-                // Send the decompressed data to the service worker.
-                serviceWorkerRegistration.active?.postMessage(
-                    {
-                        type: "PROCESSED_DATA",
-                        data: decompressedData,
-                    },
-                    [decompressedData.buffer],
-                )
-
-                // Progress UI is updated in byteCounterStream.
-            } else {
-                decompressionStreamController?.close()
+                await downloadPump.close()
+            } catch (error) {
+                streamError = error
+                await downloadPump.abort(error)
+            } finally {
+                serviceWorkerRegistration.active?.postMessage({
+                    type: "DOWNLOAD_COMPLETE",
+                })
             }
 
-            // Notify the service worker that data transmission is complete.
-            serviceWorkerRegistration.active?.postMessage({
-                type: "DOWNLOAD_COMPLETE",
-            })
+            if (streamError) {
+                if (streamError instanceof Error && streamError.message === "Incorrect decryption password.") {
+                    alert("Incorrect decryption password entered. Aborting download.")
+                }
+                throw streamError
+            }
 
             // Finalize UFID with zero-padded remainder, then verify.
             if (ufidPending.length > 0) {
@@ -586,130 +625,84 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
             },
         })
 
-        let decompressionStreamController: ReadableStreamController<Uint8Array> | null = null
-        const decompressionReadableStream = new ReadableStream({
-            start(controller) {
-                decompressionStreamController = controller
-            },
-        })
-        const decompressionStream = new DecompressionStream("gzip")
-        const decompressedDataStream = decompressionReadableStream.pipeThrough(decompressionStream).pipeThrough(byteCounterStream)
-        const decompressedDataStreamReader = decompressedDataStream.getReader()
-
         async function downloadFile(serviceWorkerRegistration: ServiceWorkerRegistration) {
-            // Inform the service worker of the file name.
-            serviceWorkerRegistration.active?.postMessage({
-                type: "SET_FILE_NAME",
-                fileName: fileCardData.name,
-            })
-            // Download each chunk.
-            for (const chunkMsg of chunkMsgs) {
-                let chunkBytesWritten = 0
-                while (chunkBytesWritten < chunkMsg.media.document.size) {
-                    // Download the next (up to) `DOWNLOAD_PART_SIZE` bytes of the chunk file.
-                    const chunkPart = await client.invoke(
-                        new Api.upload.GetFile({
-                            location: getFileInfo(chunkMsg.media).location,
-                            offset: chunkBytesWritten,
-                            limit: DOWNLOAD_PART_SIZE,
-                            precise: false,
-                            cdnSupported: false,
-                        }),
-                    )
-                    chunkBytesWritten += chunkPart.bytes.length
-
-                    // Write the chunk part to the decryption buffer.
-                    decryptionBuffer.set(chunkPart.bytes, aesBlockBytesWritten)
-                    aesBlockBytesWritten += chunkPart.bytes.length
-
-                    // If the decryption buffer is full, decrypt.
-                    if (aesBlockBytesWritten === decryptionBuffer.length) {
-                        const decryptedData = new Uint8Array(
-                            await window.crypto.subtle.decrypt(
-                                { name: "AES-CTR", counter: decryptionCounter, length: 64 },
-                                aesKey,
-                                decryptionBuffer,
-                            ),
+            const downloadPump = createServiceWorkerDownloadPump(
+                serviceWorkerRegistration,
+                fileCardData.name,
+                byteCounterStream,
+            )
+            let streamError: unknown = null
+            try {
+                // Download each chunk.
+                for (const chunkMsg of chunkMsgs) {
+                    let chunkBytesWritten = 0
+                    while (chunkBytesWritten < chunkMsg.media.document.size) {
+                        // Download the next (up to) `DOWNLOAD_PART_SIZE` bytes of the chunk file.
+                        const chunkPart = await client.invoke(
+                            new Api.upload.GetFile({
+                                location: getFileInfo(chunkMsg.media).location,
+                                offset: chunkBytesWritten,
+                                limit: DOWNLOAD_PART_SIZE,
+                                precise: false,
+                                cdnSupported: false,
+                            }),
                         )
-                        // Legacy behavior: increment the counter by 1 per 1 MiB block.
-                        decryptionCounter = Encryption.incrementCounter(decryptionCounter)
-                        aesBlockBytesWritten = 0
+                        chunkBytesWritten += chunkPart.bytes.length
 
-                        // gzip-decompress the decrypted data.
-                        decompressionStreamController?.enqueue(decryptedData)
-                        let decompressedData = new Uint8Array(0)
-                        let bytesRead = 0
-                        while (bytesRead < decryptionBuffer.length) {
-                            const { value } = await decompressedDataStreamReader.read()
-                            if (!value) {
-                                continue
-                            }
-                            const newDecompressedData = new Uint8Array(decompressedData.length + value.length)
-                            newDecompressedData.set(decompressedData)
-                            newDecompressedData.set(value, decompressedData.length)
-                            decompressedData = newDecompressedData
-                            bytesRead += value.length
+                        // Write the chunk part to the decryption buffer.
+                        decryptionBuffer.set(chunkPart.bytes, aesBlockBytesWritten)
+                        aesBlockBytesWritten += chunkPart.bytes.length
+
+                        // If the decryption buffer is full, decrypt.
+                        if (aesBlockBytesWritten === decryptionBuffer.length) {
+                            const decryptedData = new Uint8Array(
+                                await window.crypto.subtle.decrypt(
+                                    { name: "AES-CTR", counter: decryptionCounter, length: 64 },
+                                    aesKey,
+                                    decryptionBuffer,
+                                ),
+                            )
+                            // Legacy behavior: increment the counter by 1 per 1 MiB block.
+                            decryptionCounter = Encryption.incrementCounter(decryptionCounter)
+                            aesBlockBytesWritten = 0
+
+                            await downloadPump.write(decryptedData)
                         }
-
-                        // Send the decompressed data to the service worker.
-                        serviceWorkerRegistration.active?.postMessage(
-                            { type: "PROCESSED_DATA", data: decompressedData },
-                            [decompressedData.buffer],
-                        )
-                        
-                        // Progress UI is updated in byteCounterStream.
-                    }
-                }
-            }
-
-            // If there is any data left in the decryption buffer, process it.
-            if (aesBlockBytesWritten > 0) {
-                // Decrypt the remaining data.
-                const decryptedData = new Uint8Array(
-                    await window.crypto.subtle.decrypt(
-                        { name: "AES-CTR", counter: decryptionCounter, length: 64 },
-                        aesKey,
-                        decryptionBuffer.subarray(0, aesBlockBytesWritten),
-                    ),
-                )
-                // Legacy behavior: increment the counter by 1 per trailing block set.
-                decryptionCounter = Encryption.incrementCounter(decryptionCounter)
-
-                // gzip-decompress the decrypted data.
-                decompressionStreamController?.enqueue(decryptedData)
-                decompressionStreamController?.close()
-                let decompressedData = new Uint8Array(0)
-                let value, done
-                try {
-                    while ((({ value, done } = await decompressedDataStreamReader.read()), !done)) {
-                        const newDecompressedData = new Uint8Array(decompressedData.length + value.length)
-                        newDecompressedData.set(decompressedData)
-                        newDecompressedData.set(value, decompressedData.length)
-                        decompressedData = newDecompressedData
-                    }
-                } catch (e) {
-                    if (e instanceof TypeError) {
-                        alert("Incorrect decryption password entered. Aborting download.")
-                    } else {
-                        console.error(e)
                     }
                 }
 
-                // Send the decompressed data to the service worker.
-                serviceWorkerRegistration.active?.postMessage(
-                    { type: "PROCESSED_DATA", data: decompressedData },
-                    [decompressedData.buffer],
-                )
+                // If there is any data left in the decryption buffer, process it.
+                if (aesBlockBytesWritten > 0) {
+                    // Decrypt the remaining data.
+                    const decryptedData = new Uint8Array(
+                        await window.crypto.subtle.decrypt(
+                            { name: "AES-CTR", counter: decryptionCounter, length: 64 },
+                            aesKey,
+                            decryptionBuffer.subarray(0, aesBlockBytesWritten),
+                        ),
+                    )
+                    // Legacy behavior: increment the counter by 1 per trailing block set.
+                    decryptionCounter = Encryption.incrementCounter(decryptionCounter)
 
-                // Progress UI is updated in byteCounterStream.
-            } else {
-                decompressionStreamController?.close()
+                    await downloadPump.write(decryptedData)
+                }
+
+                await downloadPump.close()
+            } catch (error) {
+                streamError = error
+                await downloadPump.abort(error)
+            } finally {
+                serviceWorkerRegistration.active?.postMessage({
+                    type: "DOWNLOAD_COMPLETE",
+                })
             }
 
-            // Notify the service worker that data transmission is complete.
-            serviceWorkerRegistration.active?.postMessage({
-                type: "DOWNLOAD_COMPLETE",
-            })
+            if (streamError) {
+                if (streamError instanceof Error && streamError.message === "Incorrect decryption password.") {
+                    alert("Incorrect decryption password entered. Aborting download.")
+                }
+                throw streamError
+            }
         }
 
         const sanitizedUfid = encodeURIComponent(fileCardData.ufid)
@@ -1823,99 +1816,65 @@ export async function downloadFileCard(
             },
         })
 
-        let decompressionStreamController: ReadableStreamController<Uint8Array> | null = null
-        const decompressionReadableStream = new ReadableStream<Uint8Array>({
-            start(controller) {
-                decompressionStreamController = controller
-            },
-        })
-        const decompressionStream = new DecompressionStream("gzip")
-        const decompressedDataStream = decompressionReadableStream.pipeThrough(decompressionStream).pipeThrough(byteCounterStream)
-        const decompressedDataStreamReader = decompressedDataStream.getReader()
-
         async function downloadFile(serviceWorkerRegistration: ServiceWorkerRegistration) {
-            serviceWorkerRegistration.active?.postMessage({ type: "SET_FILE_NAME", fileName: data.name })
-            for (const chunkMsg of chunkMsgs) {
-                let chunkBytesWritten = 0
-                while (chunkBytesWritten < (chunkMsg as any).media.document.size) {
-                    const chunkPart = await client.invoke(
-                        new Api.upload.GetFile({
-                            location: getFileInfo((chunkMsg as any).media).location,
-                            offset: chunkBytesWritten,
-                            limit: DOWNLOAD_PART_SIZE,
-                            precise: false,
-                            cdnSupported: false,
-                        }),
-                    )
-                    chunkBytesWritten += (chunkPart as any).bytes.length
-                    decryptionBuffer.set((chunkPart as any).bytes, aesBlockBytesWritten)
-                    aesBlockBytesWritten += (chunkPart as any).bytes.length
-                    if (aesBlockBytesWritten === decryptionBuffer.length) {
-                        const decryptedData = new Uint8Array(
-                            await window.crypto.subtle.decrypt(
-                                { name: "AES-CTR", counter: decryptionCounter, length: 64 },
-                                aesKey,
-                                decryptionBuffer,
-                            ),
+            const downloadPump = createServiceWorkerDownloadPump(serviceWorkerRegistration, data.name, byteCounterStream)
+            let streamError: unknown = null
+            try {
+                for (const chunkMsg of chunkMsgs) {
+                    let chunkBytesWritten = 0
+                    while (chunkBytesWritten < (chunkMsg as any).media.document.size) {
+                        const chunkPart = await client.invoke(
+                            new Api.upload.GetFile({
+                                location: getFileInfo((chunkMsg as any).media).location,
+                                offset: chunkBytesWritten,
+                                limit: DOWNLOAD_PART_SIZE,
+                                precise: false,
+                                cdnSupported: false,
+                            }),
                         )
-                        const blocks = Math.ceil(decryptionBuffer.length / 16)
-                        decryptionCounter = Encryption.incrementCounter64By(decryptionCounter, blocks)
-                        aesBlockBytesWritten = 0
-                        decompressionStreamController?.enqueue(decryptedData)
-                        let decompressedData = new Uint8Array(0)
-                        let bytesRead = 0
-                        while (bytesRead < decryptionBuffer.length) {
-                            const { value } = await decompressedDataStreamReader.read()
-                            if (!value) continue
-                            const newDecompressedData = new Uint8Array(decompressedData.length + value.length)
-                            newDecompressedData.set(decompressedData)
-                            newDecompressedData.set(value, decompressedData.length)
-                            decompressedData = newDecompressedData
-                            bytesRead += value.length
+                        chunkBytesWritten += (chunkPart as any).bytes.length
+                        decryptionBuffer.set((chunkPart as any).bytes, aesBlockBytesWritten)
+                        aesBlockBytesWritten += (chunkPart as any).bytes.length
+                        if (aesBlockBytesWritten === decryptionBuffer.length) {
+                            const decryptedData = new Uint8Array(
+                                await window.crypto.subtle.decrypt(
+                                    { name: "AES-CTR", counter: decryptionCounter, length: 64 },
+                                    aesKey,
+                                    decryptionBuffer,
+                                ),
+                            )
+                            const blocks = Math.ceil(decryptionBuffer.length / 16)
+                            decryptionCounter = Encryption.incrementCounter64By(decryptionCounter, blocks)
+                            aesBlockBytesWritten = 0
+                            await downloadPump.write(decryptedData)
                         }
-                        serviceWorkerRegistration.active?.postMessage(
-                            { type: "PROCESSED_DATA", data: decompressedData },
-                            [decompressedData.buffer],
-                        )
                     }
                 }
-            }
-            if (aesBlockBytesWritten > 0) {
-                const decryptedData = new Uint8Array(
-                    await window.crypto.subtle.decrypt(
-                        { name: "AES-CTR", counter: decryptionCounter, length: 64 },
-                        aesKey,
-                        decryptionBuffer.subarray(0, aesBlockBytesWritten),
-                    ),
-                )
-                const tailBlocks = Math.ceil(aesBlockBytesWritten / 16)
-                decryptionCounter = Encryption.incrementCounter64By(decryptionCounter, tailBlocks)
-                decompressionStreamController?.enqueue(decryptedData)
-                decompressionStreamController?.close()
-                let decompressedData = new Uint8Array(0)
-                let value: Uint8Array | undefined, done: boolean | undefined
-                try {
-                    while ((({ value, done } = (await decompressedDataStreamReader.read()) as any), !done)) {
-                        const newDecompressedData = new Uint8Array(decompressedData.length + (value as Uint8Array).length)
-                        newDecompressedData.set(decompressedData)
-                        newDecompressedData.set(value as Uint8Array, decompressedData.length)
-                        decompressedData = newDecompressedData
-                    }
-                } catch (e) {
-                    if (e instanceof TypeError) {
-                        alert("Incorrect decryption password entered. Aborting download.")
-                    } else {
-                        console.error(e)
-                    }
+                if (aesBlockBytesWritten > 0) {
+                    const decryptedData = new Uint8Array(
+                        await window.crypto.subtle.decrypt(
+                            { name: "AES-CTR", counter: decryptionCounter, length: 64 },
+                            aesKey,
+                            decryptionBuffer.subarray(0, aesBlockBytesWritten),
+                        ),
+                    )
+                    const tailBlocks = Math.ceil(aesBlockBytesWritten / 16)
+                    decryptionCounter = Encryption.incrementCounter64By(decryptionCounter, tailBlocks)
+                    await downloadPump.write(decryptedData)
                 }
-                serviceWorkerRegistration.active?.postMessage(
-                    { type: "PROCESSED_DATA", data: decompressedData },
-                    [decompressedData.buffer],
-                )
-            } else {
-                decompressionStreamController?.close()
+                await downloadPump.close()
+            } catch (error) {
+                streamError = error
+                await downloadPump.abort(error)
+            } finally {
+                serviceWorkerRegistration.active?.postMessage({ type: "DOWNLOAD_COMPLETE" })
             }
-            serviceWorkerRegistration.active?.postMessage({ type: "DOWNLOAD_COMPLETE" })
+            if (streamError) {
+                if (streamError instanceof Error && streamError.message === "Incorrect decryption password.") {
+                    alert("Incorrect decryption password entered. Aborting download.")
+                }
+                throw streamError
+            }
             if (ufidPending.length > 0) {
                 const padded = new Uint8Array(UFIDChunkSize)
                 padded.set(ufidPending, 0)
