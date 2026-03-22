@@ -1,0 +1,38 @@
+{
+    "name": "tglfs",
+    "version": "0.1.0",
+    "description": "Global CLI for authenticating with Telegram and downloading TGLFS files by UFID.",
+    "type": "module",
+    "bin": {
+        "tglfs": "./dist/cli.js"
+    },
+    "man": [
+        "./man/tglfs.1",
+        "./man/tglfs-login.1",
+        "./man/tglfs-status.1",
+        "./man/tglfs-logout.1",
+        "./man/tglfs-download.1"
+    ],
+    "files": ["dist", "man", "README.md"],
+    "engines": {
+        "node": ">=22.0.0"
+    },
+    "scripts": {
+        "clean": "rm -rf dist",
+        "build": "tsc -p tsconfig.build.json",
+        "prepack": "npm run clean && npm run build",
+        "test": "node --import tsx --test test/**/*.test.ts"
+    },
+    "dependencies": {
+        "commander": "^14.0.3",
+        "env-paths": "^4.0.0",
+        "prompts": "^2.4.2",
+        "telegram": "^2.21.2"
+    },
+    "devDependencies": {
+        "@types/node": "^25.5.0",
+        "@types/prompts": "^2.4.9",
+        "tsx": "^4.21.0",
+        "typescript": "^5.4.3"
+    }
+}

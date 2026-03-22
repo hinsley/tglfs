@@ -1,0 +1,34 @@
+.TH TGLFS-DOWNLOAD 1 "March 2026" "tglfs 0.1.0" "User Commands"
+.SH NAME
+tglfs-download \- download a current-format TGLFS file by UFID
+.SH SYNOPSIS
+.B tglfs download
+[\fIOPTIONS\fR] \fIufid\fR
+.SH DESCRIPTION
+Looks up a TGLFS file card in Telegram Saved Messages by UFID, downloads the encrypted chunks, decrypts and gunzips them, verifies the UFID, and writes the plaintext to disk.
+.SH OPTIONS
+.TP
+.B --output <path>
+Destination path for the restored plaintext file.
+.TP
+.B --force
+Overwrite an existing output file.
+.TP
+.B --password <password>
+Decryption password.
+.TP
+.B --password-env [name]
+Read the decryption password from an environment variable. If no name is provided, the command uses
+.B TGLFS_DOWNLOAD_PASSWORD.
+.TP
+.B --password-stdin
+Read the decryption password from standard input.
+.TP
+.B --json
+Emit machine-readable JSON.
+.SH ENVIRONMENT
+.TP
+.B TGLFS_DOWNLOAD_PASSWORD
+Default environment variable for the decryption password.
+.SH AI AGENT NOTES
+If the download password is missing and the command is attached to a TTY, the CLI prompts for it. In a non-interactive session, the agent must provide the password via flags, environment variables, or standard input.

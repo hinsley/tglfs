@@ -1,0 +1,51 @@
+.TH TGLFS-LOGIN 1 "March 2026" "tglfs 0.1.0" "User Commands"
+.SH NAME
+tglfs-login \- authenticate with Telegram and persist a TGLFS session
+.SH SYNOPSIS
+.B tglfs login
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+Authenticates with Telegram as a user account and stores both TGLFS config and the Telegram session for later commands.
+.SH OPTIONS
+.TP
+.B --api-id <id>
+Telegram API ID.
+.TP
+.B --api-hash <hash>
+Telegram API hash.
+.TP
+.B --phone <phone>
+Telegram phone number.
+.TP
+.B --code <code>
+Telegram login code.
+.TP
+.B --code-stdin
+Read the Telegram login code from standard input.
+.TP
+.B --password <password>
+Telegram two-factor password.
+.TP
+.B --password-stdin
+Read the Telegram two-factor password from standard input.
+.TP
+.B --json
+Emit machine-readable JSON.
+.SH ENVIRONMENT
+.TP
+.B TGLFS_API_ID
+Telegram API ID.
+.TP
+.B TGLFS_API_HASH
+Telegram API hash.
+.TP
+.B TGLFS_PHONE
+Telegram phone number.
+.TP
+.B TGLFS_LOGIN_CODE
+Telegram login code.
+.TP
+.B TGLFS_2FA_PASSWORD
+Telegram two-factor password.
+.SH AI AGENT NOTES
+If no login code or two-factor password source is supplied and the command is attached to a TTY, the CLI prompts for the missing value. In a non-interactive session, the agent must provide the secret via flags, environment variables, or standard input.
