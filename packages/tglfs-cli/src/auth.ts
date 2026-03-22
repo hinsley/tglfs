@@ -1,7 +1,8 @@
-import { TelegramClient } from "telegram"
-import { StringSession } from "telegram/sessions/StringSession.js"
+import type { TelegramClient } from "telegram/client/TelegramClient.js"
+import type { StringSession } from "telegram/sessions/StringSession.js"
 
 import { CliError, EXIT_CODES } from "./errors.js"
+import { createQuietTelegramClient, createStringSession } from "./gramjs.js"
 import { isInteractiveSession, promptPassword, promptText, readTrimmedStdin } from "./interactive.js"
 import { clearPersistedState, loadConfig, loadSessionString, saveConfig, saveSessionString, sessionExists, storePaths } from "./store.js"
 import type { PersistedConfig } from "./types.js"
@@ -25,6 +26,10 @@ type TelegramIdentity = {
     lastName?: string
     username?: string
     phone?: string
+}
+
+export function formatTwoFactorPrompt(hint?: string) {
+    return hint ? `Telegram 2FA password (Hint: ${hint})` : "Telegram 2FA password"
 }
 
 function normalizeApiId(raw: string): number {
@@ -86,8 +91,8 @@ export async function connectAuthorizedClient() {
         )
     }
 
-    const session = new StringSession(sessionString)
-    const client = new TelegramClient(session, config.apiId, config.apiHash, { connectionRetries: 5 })
+    const session = createStringSession(sessionString)
+    const client = createQuietTelegramClient(session, config.apiId, config.apiHash)
     await client.connect()
     const authorized = await client.checkAuthorization()
     if (!authorized) {
@@ -107,7 +112,7 @@ export async function persistAndDisconnectClient(client: TelegramClient, session
     if (sessionString.trim() !== "") {
         await saveSessionString(sessionString)
     }
-    await client.disconnect()
+    await client.destroy()
 }
 
 export async function login(options: LoginOptions) {
@@ -137,8 +142,8 @@ export async function login(options: LoginOptions) {
     )
 
     const storedSession = (await loadSessionString()) ?? ""
-    const session = new StringSession(storedSession)
-    const client = new TelegramClient(session, apiId, apiHash, { connectionRetries: 5 })
+    const session = createStringSession(storedSession)
+    const client = createQuietTelegramClient(session, apiId, apiHash)
 
     let sharedStdinValue: string | undefined
     const getSharedStdin = async (label: string) => {
@@ -192,9 +197,7 @@ export async function login(options: LoginOptions) {
                         EXIT_CODES.INTERACTIVE_REQUIRED,
                     )
                 }
-                return promptPassword(
-                    hint ? `Telegram 2FA password (${hint})` : "Telegram 2FA password",
-                )
+                return promptPassword(formatTwoFactorPrompt(hint))
             },
             onError: async (error: Error) => {
                 if (error instanceof CliError) {
@@ -215,7 +218,7 @@ export async function login(options: LoginOptions) {
             paths: storePaths,
         }
     } finally {
-        await client.disconnect().catch(() => {})
+        await client.destroy().catch(() => {})
     }
 }
 
@@ -248,8 +251,8 @@ export async function status() {
         return result
     }
 
-    const session = new StringSession(sessionString)
-    const client = new TelegramClient(session, config.apiId, config.apiHash, { connectionRetries: 5 })
+    const session = createStringSession(sessionString)
+    const client = createQuietTelegramClient(session, config.apiId, config.apiHash)
 
     try {
         await client.connect()
@@ -262,7 +265,7 @@ export async function status() {
     } catch (error) {
         result.error = error instanceof Error ? error.message : String(error)
     } finally {
-        await client.disconnect().catch(() => {})
+        await client.destroy().catch(() => {})
     }
 
     return result

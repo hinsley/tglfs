@@ -1,11 +1,11 @@
 import { mkdir, open, rename, rm } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 
-import { Api, TelegramClient } from "telegram"
-import { getFileInfo } from "telegram/Utils.js"
+import type { TelegramClient } from "telegram/client/TelegramClient.js"
 
 import { decodeIv, deriveAESKeyFromPassword, ENCRYPTION_CHUNK_SIZE, incrementCounter64By } from "./crypto.js"
 import { CliError, EXIT_CODES } from "./errors.js"
+import { getGramJs } from "./gramjs.js"
 import type { FileCardData } from "./types.js"
 import { UfidAccumulator } from "./ufid.js"
 
@@ -43,6 +43,7 @@ function normalizeDownloadError(error: unknown): CliError {
 }
 
 async function* iterateEncryptedFile(client: TelegramClient, data: FileCardData): AsyncGenerator<Uint8Array> {
+    const { Api, getFileInfo } = getGramJs()
     const chunkMessages = await client.getMessages("me", { ids: data.chunks } as any)
     const chunkMap = new Map<number, any>()
     for (const message of chunkMessages) {
