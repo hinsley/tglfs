@@ -4,20 +4,7 @@ export type PersistedConfig = {
     phone: string
 }
 
-export type FileCardData = {
-    name: string
-    ufid: string
-    size: number
-    uploadComplete: boolean
-    chunks: number[]
-    IV: string
-}
-
-export type FileCardRecord = {
-    msgId: number
-    date: number
-    data: FileCardData
-}
+export type { FileCardData, FileCardRecord } from "./shared/file-cards.js"
 
 export type JsonEnvelope<T> =
     | {

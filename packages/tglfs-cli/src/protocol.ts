@@ -1,37 +1,13 @@
 import type { TelegramClient } from "telegram"
 
 import { CliError, EXIT_CODES } from "./errors.js"
+import {
+    buildFileCardUfidLookupQuery,
+    parseFileCardMessage,
+} from "./shared/file-cards.js"
 import type { FileCardData, FileCardRecord } from "./types.js"
 
-function isFileCardData(value: unknown): value is FileCardData {
-    if (!value || typeof value !== "object") {
-        return false
-    }
-
-    const candidate = value as Partial<FileCardData>
-    return (
-        typeof candidate.name === "string" &&
-        typeof candidate.ufid === "string" &&
-        typeof candidate.size === "number" &&
-        typeof candidate.uploadComplete === "boolean" &&
-        Array.isArray(candidate.chunks) &&
-        candidate.chunks.every((chunk) => typeof chunk === "number") &&
-        typeof candidate.IV === "string"
-    )
-}
-
-export function parseFileCardMessage(message: string): FileCardData | null {
-    if (!message.startsWith("tglfs:file")) {
-        return null
-    }
-
-    try {
-        const payload = JSON.parse(message.substring(message.indexOf("{")))
-        return isFileCardData(payload) ? payload : null
-    } catch {
-        return null
-    }
-}
+export { parseFileCardMessage } from "./shared/file-cards.js"
 
 export function validateDownloadableFileCard(data: FileCardData) {
     if (!data.uploadComplete) {
@@ -66,7 +42,7 @@ export async function getFileCardByUfid(client: TelegramClient, ufid: string): P
     }
 
     const messages = await client.getMessages("me", {
-        search: `tglfs:file "ufid":"${trimmed}"`,
+        search: buildFileCardUfidLookupQuery(trimmed),
         limit: 10,
         waitTime: 0,
     })

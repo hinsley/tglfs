@@ -10,6 +10,13 @@ import { StoreSession } from "telegram/sessions"
 import { getFileInfo } from "telegram/Utils"
 
 import * as Config from "./config"
+import {
+    buildFileCardSearchQuery,
+    buildFileCardUfidLookupQuery,
+    extractFileCardRecords,
+    formatFileCardDate,
+    formatFileCardSize,
+} from "../packages/tglfs-cli/src/shared/file-cards"
 import * as Encryption from "./web/encryption"
 import * as FileProcessing from "./web/fileProcessing"
 import * as Archive from "./web/archive"
@@ -758,32 +765,16 @@ export async function fileLookup(client: TelegramClient, config: Config.Config) 
         return
     }
     const msgs = await client.getMessages("me", {
-        search: ("tglfs:file " + query).trim(),
+        search: buildFileCardSearchQuery(query),
+        waitTime: 0,
     })
     let response = `Lookup results for "${query}":`
     const fileCards: FileCardData[] = []
-    for (const msg of msgs) {
-        if (!msg.message.startsWith("tglfs:file")) {
-            continue // Not a file card message.
-        }
-        const fileCardData: FileCardData = JSON.parse(msg.message.substring(msg.message.indexOf("{")))
+    for (const record of extractFileCardRecords(msgs)) {
+        const fileCardData = record.data
         fileCards.push(fileCardData)
 
-        const humanReadableFileSize = humanReadableSize(fileCardData.size)
-        // TODO: DRY-ify datetime formatting.
-        const date = new Date(msg.date * 1000)
-        const formattedDate = date
-            .toLocaleString("en-US", {
-                year: "numeric",
-                month: "2-digit",
-                day: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-                hour12: false,
-            })
-            .replace(",", "") // Remove the comma between date and time.
-        response += `\n\nFile ${fileCards.length}\nName: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`
+        response += `\n\nFile ${fileCards.length}\nName: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${formatFileCardSize(fileCardData.size)}\nTimestamp: ${formatFileCardDate(record.date)}`
     }
     if (fileCards.length == 0) {
         alert(`No results found for "${query}".`)
@@ -814,32 +805,16 @@ export async function fileReceive(client: TelegramClient, config: Config.Config)
         return
     }
     const msgs = await client.getMessages(source, {
-        search: "tglfs:file",
+        search: buildFileCardSearchQuery(),
+        waitTime: 0,
     })
     let response = `Available files from ${source}:`
     const fileCards: FileCardData[] = []
-    for (const msg of msgs) {
-        if (!msg.message.startsWith("tglfs:file")) {
-            continue // Not a file card message.
-        }
-        const fileCardData: FileCardData = JSON.parse(msg.message.substring(msg.message.indexOf("{")))
+    for (const record of extractFileCardRecords(msgs)) {
+        const fileCardData = record.data
         fileCards.push(fileCardData)
 
-        const humanReadableFileSize = humanReadableSize(fileCardData.size)
-        // TODO: DRY-ify datetime formatting.
-        const date = new Date(msg.date * 1000)
-        const formattedDate = date
-            .toLocaleString("en-US", {
-                year: "numeric",
-                month: "2-digit",
-                day: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-                hour12: false,
-            })
-            .replace(",", "") // Remove the comma between date and time.
-        response += `\n\nFile ${fileCards.length}\nName: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`
+        response += `\n\nFile ${fileCards.length}\nName: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${formatFileCardSize(fileCardData.size)}\nTimestamp: ${formatFileCardDate(record.date)}`
     }
     if (fileCards.length == 0) {
         alert(`No files found at ${source}.`)
@@ -1637,33 +1612,27 @@ export async function listFileCards(
     client: TelegramClient,
     opts?: { query?: string; limit?: number; offsetId?: number },
 ): Promise<Array<{ msgId: number; date: number; data: FileCardData }>> {
-    const q = ("tglfs:file " + (opts?.query ?? "")).trim()
     const msgs = await client.getMessages("me", {
-        search: q,
+        search: buildFileCardSearchQuery(opts?.query),
         limit: opts?.limit ?? 50,
         addOffset: 0,
         minId: 0,
         maxId: opts?.offsetId ?? 0,
+        waitTime: 0,
     } as any)
-    const results: Array<{ msgId: number; date: number; data: FileCardData }> = []
-    for (const msg of msgs) {
-        if (!msg.message?.startsWith?.("tglfs:file")) continue
-        try {
-            const data: FileCardData = JSON.parse(msg.message.substring(msg.message.indexOf("{")))
-            results.push({ msgId: msg.id, date: msg.date, data })
-        } catch {}
-    }
-    return results
+    return extractFileCardRecords(msgs)
 }
 
 export async function getFileCardByUfid(
     client: TelegramClient,
     ufid: string,
 ): Promise<{ msgId: number; date: number; data: FileCardData } | null> {
-    const msgs = await client.getMessages("me", { search: 'tglfs:file "ufid":"' + ufid.trim() + '"' })
-    if (msgs.length === 0) return null
-    const data: FileCardData = JSON.parse(msgs[0].message.substring(msgs[0].message.indexOf("{")))
-    return { msgId: msgs[0].id, date: msgs[0].date, data }
+    const msgs = await client.getMessages("me", {
+        search: buildFileCardUfidLookupQuery(ufid),
+        limit: 10,
+        waitTime: 0,
+    } as any)
+    return extractFileCardRecords(msgs)[0] ?? null
 }
 
 export async function renameFileCard(

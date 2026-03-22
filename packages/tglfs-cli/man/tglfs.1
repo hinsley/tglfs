@@ -1,12 +1,12 @@
 .TH TGLFS 1 "March 2026" "tglfs 0.1.0" "User Commands"
 .SH NAME
-tglfs \- authenticate with Telegram and download TGLFS files by UFID
+tglfs \- authenticate with Telegram, search file cards, and download TGLFS files by UFID
 .SH SYNOPSIS
 .B tglfs
 [\fIOPTIONS\fR] [\fICOMMAND\fR]
 .SH DESCRIPTION
 .B tglfs
-is a global command-line client for authenticating with Telegram and downloading current-format TGLFS files by UFID.
+is a global command-line client for authenticating with Telegram, searching TGLFS file cards in Saved Messages, and downloading current-format TGLFS files by UFID.
 .PP
 Run
 .B tglfs help <command>
@@ -22,6 +22,9 @@ Show current config and Telegram authorization state.
 .B logout
 Remove the saved Telegram session.
 .TP
+.B search [query]
+Search TGLFS file cards in Saved Messages.
+.TP
 .B download <ufid>
 Download a current-format TGLFS file by UFID.
 .TP
@@ -33,4 +36,5 @@ The CLI stores config and session files in OS-standard per-user app directories.
 .BR tglfs-login (1),
 .BR tglfs-status (1),
 .BR tglfs-logout (1),
+.BR tglfs-search (1),
 .BR tglfs-download (1)

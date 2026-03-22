@@ -3,7 +3,7 @@
 import { access } from "node:fs/promises"
 import process from "node:process"
 
-import { Command } from "commander"
+import { Command, Option } from "commander"
 
 import {
     BUNDLED_TELEGRAM_API_HASH,
@@ -16,10 +16,19 @@ import {
 } from "./auth.js"
 import { defaultOutputPath, downloadFileCard } from "./download.js"
 import { CliError, EXIT_CODES, toCliError } from "./errors.js"
-import { isInteractiveSession, promptConfirm, promptPassword, promptSelect, promptText, readTrimmedStdin } from "./interactive.js"
+import {
+    isInteractiveSession,
+    promptConfirm,
+    promptOptionalText,
+    promptPassword,
+    promptSelect,
+    promptText,
+    readTrimmedStdin,
+} from "./interactive.js"
 import { printJson } from "./json.js"
 import { createByteProgressReporter } from "./progress.js"
 import { getFileCardByUfid } from "./protocol.js"
+import { FILE_CARD_SEARCH_SORT_VALUES, formatSearchResultsTable, searchFileCards } from "./search.js"
 import { storePaths } from "./store.js"
 
 type JsonFlag = {
@@ -69,6 +78,14 @@ async function pathExists(path: string) {
     }
 }
 
+function parsePositiveInteger(label: string, value: string) {
+    const parsed = Number(value)
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new CliError("invalid_argument", `${label} must be a positive integer.`, EXIT_CODES.GENERAL_ERROR)
+    }
+    return parsed
+}
+
 async function resolveDownloadPassword(options: {
     password?: string
     passwordEnv?: string | boolean
@@ -103,6 +120,7 @@ async function runInteractiveMenu(program: Command) {
     const choice = await promptSelect("TGLFS action", [
         { title: "Login", value: "login", description: "Authenticate and persist the Telegram session." },
         { title: "Status", value: "status", description: "Show current config and auth status." },
+        { title: "Search", value: "search", description: "Search TGLFS file cards in Saved Messages." },
         { title: "Download", value: "download", description: "Download a TGLFS file by UFID." },
         { title: "Logout", value: "logout", description: "Remove the saved Telegram session." },
         { title: "Help", value: "help", description: "Show general CLI help." },
@@ -116,6 +134,14 @@ async function runInteractiveMenu(program: Command) {
         case "status":
             await program.parseAsync(["node", "tglfs", "status"], { from: "user" })
             return
+        case "search": {
+            const query = await promptOptionalText("Search query (leave blank to list all)")
+            await program.parseAsync(
+                ["node", "tglfs", "search", ...(query === "" ? [] : [query])],
+                { from: "user" },
+            )
+            return
+        }
         case "download": {
             const ufid = await promptText("UFID to download")
             await program.parseAsync(["node", "tglfs", "download", ufid], { from: "user" })
@@ -137,7 +163,7 @@ async function main(argv: string[]) {
 
     program
         .name("tglfs")
-        .description("Authenticate with Telegram and download current-format TGLFS files by UFID.")
+        .description("Authenticate with Telegram, search Saved Messages, and download current-format TGLFS files by UFID.")
         .showHelpAfterError()
         .showSuggestionAfterError()
         .addHelpCommand("help [command]", "display help for command")
@@ -201,6 +227,47 @@ async function main(argv: string[]) {
                 return {
                     text: options.all ? "Removed saved session and config." : "Removed saved session.",
                     data: result,
+                }
+            })
+        })
+
+    program
+        .command("search")
+        .description("Search TGLFS file cards in Telegram Saved Messages.")
+        .argument("[query]", "Search query for filename or UFID")
+        .addOption(
+            new Option("--sort <sort>", "Sort order for the current result window")
+                .choices([...FILE_CARD_SEARCH_SORT_VALUES])
+                .default(FILE_CARD_SEARCH_SORT_VALUES[0]),
+        )
+        .option("--limit <n>", "Maximum number of file cards to fetch", (value) => parsePositiveInteger("Limit", value), 50)
+        .option("--offset-id <msgId>", "Resume from a Telegram message-id cursor", (value) =>
+            parsePositiveInteger("Offset id", value),
+        )
+        .option("--json", "Output machine-readable JSON")
+        .addHelpText(
+            "after",
+            "\nIf no query is provided, the command lists the first page of all TGLFS file cards in Saved Messages.\nPagination uses Telegram message ids via --offset-id.\n",
+        )
+        .action(async (query: string | undefined, options) => {
+            await runJsonAware(options, async () => {
+                const { client, session } = await connectAuthorizedClient()
+                try {
+                    const result = await searchFileCards(client, {
+                        query,
+                        limit: options.limit,
+                        offsetId: options.offsetId,
+                        sort: options.sort,
+                    })
+                    await persistAndDisconnectClient(client, session)
+
+                    return {
+                        text: formatSearchResultsTable(result),
+                        data: result,
+                    }
+                } catch (error) {
+                    await persistAndDisconnectClient(client, session).catch(() => {})
+                    throw error
                 }
             })
         })

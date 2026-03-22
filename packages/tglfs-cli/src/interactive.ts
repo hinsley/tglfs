@@ -44,6 +44,16 @@ export async function promptText(message: string, initial?: string) {
     return response.value?.trim() ?? ""
 }
 
+export async function promptOptionalText(message: string, initial = "") {
+    const response = await ask<{ value?: string }>({
+        type: "text",
+        name: "value",
+        message,
+        initial,
+    })
+    return response.value?.trim() ?? ""
+}
+
 export async function promptPassword(message: string, initial = "") {
     const response = await ask<{ value?: string }>({
         type: "password",

@@ -1,7 +1,7 @@
 {
     "name": "tglfs",
     "version": "0.1.0",
-    "description": "Global CLI for authenticating with Telegram and downloading TGLFS files by UFID.",
+    "description": "Global CLI for authenticating with Telegram, searching TGLFS file cards, and downloading files by UFID.",
     "type": "module",
     "bin": {
         "tglfs": "./dist/cli.js"
@@ -11,6 +11,7 @@
         "./man/tglfs-login.1",
         "./man/tglfs-status.1",
         "./man/tglfs-logout.1",
+        "./man/tglfs-search.1",
         "./man/tglfs-download.1"
     ],
     "files": ["dist", "man", "README.md"],

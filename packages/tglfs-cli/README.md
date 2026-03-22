@@ -1,6 +1,6 @@
 # tglfs
 
-`tglfs` is a global CLI for authenticating with Telegram and downloading current-format TGLFS files by UFID.
+`tglfs` is a global CLI for authenticating with Telegram, searching TGLFS file cards in Saved Messages, and downloading current-format files by UFID.
 
 ## Install
 
@@ -13,9 +13,11 @@ npm install -g tglfs
 ```sh
 tglfs --help
 tglfs help login
+tglfs help search
 tglfs help download
 tglfs login
 tglfs status
+tglfs search [query]
 tglfs logout
 tglfs download <ufid>
 ```
@@ -25,6 +27,7 @@ On Unix-like systems, installed manpages are also available:
 ```sh
 man tglfs
 man tglfs-login
+man tglfs-search
 man tglfs-download
 ```
 
@@ -60,6 +63,20 @@ printf '%s\n' 'secret' | tglfs download <ufid> --password-stdin
 
 Interactive TTY downloads render a progress bar. `--json` stays quiet until the final result so agents can parse the output safely.
 
+## Search Flow
+
+Search Saved Messages for TGLFS file cards by filename or UFID:
+
+```sh
+tglfs search
+tglfs search theorydesign
+tglfs search e5d494acbfd03de2
+tglfs search "project docs" --limit 10 --offset-id 170397
+tglfs search --sort name_asc --json
+```
+
+Plain-text output shows a table of `Name`, `Size`, `Date`, `UFID`, and `Status`. If a result page is full, the CLI prints the exact `--offset-id` command for the next page.
+
 ## Environment Variables
 
 Login:
@@ -82,6 +99,7 @@ The CLI is designed to work with interactive agents and terminal tools:
 
 - Prefer direct subcommands instead of menus when automating.
 - Use `--json` for machine-readable `status` and `download` output.
+- Use `--json` for machine-readable `status`, `search`, and `download` output.
 - Use stdin or env vars for secrets in non-interactive runs.
 - If Telegram asks for an SMS/in-app code or 2FA password and no secret source was supplied, the agent should hand off to the user to provide it.
 
@@ -89,5 +107,6 @@ Examples:
 
 ```sh
 tglfs status --json
+tglfs search --json
 printf '%s\n' "$TGLFS_DOWNLOAD_PASSWORD" | tglfs download <ufid> --password-stdin --json
 ```
