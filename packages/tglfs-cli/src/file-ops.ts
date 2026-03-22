@@ -42,6 +42,13 @@ export type FileInspectionResult = {
     probeError?: string
 }
 
+export type FileModeProbe = NonNullable<FileInspectionResult["probe"]>
+
+export type FileModeDetectionResult = {
+    probe?: FileModeProbe
+    lastError?: string
+}
+
 function normalizePeer(peer: string | undefined, fallback = "me") {
     const normalized = peer?.trim() ?? fallback
     if (normalized === "") {
@@ -205,29 +212,42 @@ async function inspectChunkMessages(client: TelegramClient, peer: string, data: 
     })
 }
 
+export async function detectFileMode(
+    expected: { size: number; ufid: string },
+    inspectMode: (mode: DownloadMode) => Promise<{ bytesWritten: number; computedUfid: string }>,
+): Promise<FileModeDetectionResult> {
+    let lastError: string | undefined
+
+    for (const mode of ["current", "legacy"] satisfies DownloadMode[]) {
+        try {
+            const result = await inspectMode(mode)
+            if (result.bytesWritten === expected.size && result.computedUfid === expected.ufid) {
+                return {
+                    probe: {
+                        mode,
+                        bytesWritten: result.bytesWritten,
+                        computedUfid: result.computedUfid,
+                    },
+                }
+            }
+            lastError = `The ${mode} probe did not match the expected UFID.`
+        } catch (error) {
+            lastError = error instanceof Error ? error.message : String(error)
+        }
+    }
+
+    return { lastError }
+}
+
 async function probeFileMode(
     client: TelegramClient,
     peer: string,
     data: FileCardData,
     password: string,
-): Promise<FileInspectionResult["probe"] | undefined> {
-    const tryMode = async (mode: DownloadMode) => {
-        const result = await inspectFileFromEncryptedParts(data, password, iterateEncryptedFile(client, data, peer), mode)
-        if (result.bytesWritten === data.size && result.computedUfid === data.ufid) {
-            return {
-                mode,
-                bytesWritten: result.bytesWritten,
-                computedUfid: result.computedUfid,
-            }
-        }
-        return null
-    }
-
-    try {
-        return (await tryMode("current")) ?? (await tryMode("legacy")) ?? undefined
-    } catch {
-        return undefined
-    }
+): Promise<FileModeDetectionResult> {
+    return detectFileMode({ size: data.size, ufid: data.ufid }, (mode) =>
+        inspectFileFromEncryptedParts(data, password, iterateEncryptedFile(client, data, peer), mode),
+    )
 }
 
 export async function inspectFileCard(
@@ -247,12 +267,14 @@ export async function inspectFileCard(
     let probeError: string | undefined
     if (everyChunkReadable) {
         try {
-            probe = await probeFileMode(client, peer, record.data, options.password ?? "")
+            const detection = await probeFileMode(client, peer, record.data, options.password ?? "")
+            probe = detection.probe
             if (!probe) {
                 probeError =
-                    options.password === undefined
+                    detection.lastError ??
+                    (options.password === undefined
                         ? "Format probe could not distinguish current vs legacy with an empty password."
-                        : "Format probe failed with the supplied password."
+                        : "Format probe failed with the supplied password.")
             }
         } catch (error) {
             probeError = error instanceof Error ? error.message : String(error)
