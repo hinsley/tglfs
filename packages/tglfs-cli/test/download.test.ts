@@ -6,7 +6,7 @@ import test from "node:test"
 
 import { deriveAESKeyFromPassword, ENCRYPTION_CHUNK_SIZE, incrementCounter64By } from "../src/crypto.js"
 import { CliError } from "../src/errors.js"
-import { restoreFileFromEncryptedParts } from "../src/download.js"
+import { coerceTelegramDocumentSize, resolveChunkDocumentSize, restoreFileFromEncryptedParts } from "../src/download.js"
 import type { FileCardData } from "../src/types.js"
 import { computeUfidFromBytes } from "../src/ufid.js"
 
@@ -160,4 +160,25 @@ test("UFID mismatches are reported after successful decryption", async () => {
     } finally {
         await rm(dir, { recursive: true, force: true })
     }
+})
+
+test("GramJS-style integer document sizes are accepted for chunk downloads", () => {
+    const size = coerceTelegramDocumentSize({
+        toString() {
+            return "228396"
+        },
+    })
+
+    assert.equal(size, 228396)
+})
+
+test("non-document chunk references are rejected with a precise invalid-file-card error", () => {
+    assert.throws(
+        () => resolveChunkDocumentSize({ id: 170396, className: "Message", message: "WOAH WTF" }, 170396, "ufid-123"),
+        (error: unknown) =>
+            error instanceof CliError &&
+            error.code === "invalid_file_card" &&
+            error.message.includes("170396") &&
+            error.message.includes("not a Telegram document"),
+    )
 })

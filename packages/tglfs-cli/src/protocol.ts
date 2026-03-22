@@ -67,6 +67,8 @@ export async function getFileCardByUfid(client: TelegramClient, ufid: string): P
 
     const messages = await client.getMessages("me", {
         search: `tglfs:file "ufid":"${trimmed}"`,
+        limit: 10,
+        waitTime: 0,
     })
 
     const match = messages.find((message) => typeof message.message === "string" && parseFileCardMessage(message.message))

@@ -18,6 +18,73 @@ type DownloadResult = {
     ufid: string
 }
 
+type TelegramIntegerLike = {
+    toString(): string
+}
+
+function isTelegramIntegerLike(value: unknown): value is TelegramIntegerLike {
+    return Boolean(value) && typeof value === "object" && typeof (value as TelegramIntegerLike).toString === "function"
+}
+
+export function coerceTelegramDocumentSize(value: unknown): number | null {
+    if (typeof value === "number") {
+        return Number.isSafeInteger(value) && value >= 0 ? value : null
+    }
+
+    if (typeof value === "bigint") {
+        return value >= 0n && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : null
+    }
+
+    if (isTelegramIntegerLike(value)) {
+        const parsed = Number(value.toString())
+        return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null
+    }
+
+    return null
+}
+
+export function resolveChunkDocumentSize(chunkMessage: any, chunkId: number, ufid: string): number {
+    if (!chunkMessage) {
+        throw new CliError(
+            "invalid_file_card",
+            `The file card references chunk message ${chunkId}, but it no longer exists in Saved Messages.`,
+            EXIT_CODES.INVALID_FILE_CARD,
+            { ufid, chunkId, reason: "missing_chunk_message" },
+        )
+    }
+
+    if (!chunkMessage?.media?.document) {
+        throw new CliError(
+            "invalid_file_card",
+            `The file card references chunk message ${chunkId}, but that Saved Messages entry is not a Telegram document.`,
+            EXIT_CODES.INVALID_FILE_CARD,
+            {
+                ufid,
+                chunkId,
+                reason: "chunk_message_not_document",
+                messageType: chunkMessage.className,
+            },
+        )
+    }
+
+    const chunkSize = coerceTelegramDocumentSize(chunkMessage.media.document.size)
+    if (chunkSize === null) {
+        throw new CliError(
+            "invalid_file_card",
+            `The file card references chunk message ${chunkId}, but its document size is invalid.`,
+            EXIT_CODES.INVALID_FILE_CARD,
+            {
+                ufid,
+                chunkId,
+                reason: "invalid_chunk_size",
+                size: chunkMessage.media.document.size,
+            },
+        )
+    }
+
+    return chunkSize
+}
+
 function normalizeDownloadError(error: unknown): CliError {
     if (error instanceof CliError) {
         return error
@@ -44,22 +111,17 @@ function normalizeDownloadError(error: unknown): CliError {
 
 async function* iterateEncryptedFile(client: TelegramClient, data: FileCardData): AsyncGenerator<Uint8Array> {
     const { Api, getFileInfo } = getGramJs()
-    const chunkMessages = await client.getMessages("me", { ids: data.chunks } as any)
+    const chunkMessages = await client.getMessages("me", { ids: data.chunks, waitTime: 0 } as any)
     const chunkMap = new Map<number, any>()
     for (const message of chunkMessages) {
-        chunkMap.set(message.id, message)
+        if (message?.id !== undefined) {
+            chunkMap.set(message.id, message)
+        }
     }
 
     for (const chunkId of data.chunks) {
         const chunkMessage = chunkMap.get(chunkId)
-        const chunkSize = chunkMessage?.media?.document?.size
-        if (!chunkMessage || typeof chunkSize !== "number") {
-            throw new CliError(
-                "invalid_file_card",
-                "One or more Telegram chunk messages are missing or malformed.",
-                EXIT_CODES.INVALID_FILE_CARD,
-            )
-        }
+        const chunkSize = resolveChunkDocumentSize(chunkMessage, chunkId, data.ufid)
 
         let offset = 0
         while (offset < chunkSize) {
@@ -73,6 +135,14 @@ async function* iterateEncryptedFile(client: TelegramClient, data: FileCardData)
                 } as any),
             )
             const bytes = (part as any).bytes as Uint8Array
+            if (!(bytes instanceof Uint8Array) || bytes.length === 0) {
+                throw new CliError(
+                    "download_failed",
+                    `Telegram returned an empty response while downloading chunk message ${chunkId}.`,
+                    EXIT_CODES.GENERAL_ERROR,
+                    { ufid: data.ufid, chunkId, offset },
+                )
+            }
             offset += bytes.length
             yield bytes
         }
