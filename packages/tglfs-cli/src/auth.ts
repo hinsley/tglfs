@@ -4,6 +4,7 @@ import type { StringSession } from "telegram/sessions/StringSession.js"
 import { CliError, EXIT_CODES } from "./errors.js"
 import { createQuietTelegramClient, createStringSession } from "./gramjs.js"
 import { isInteractiveSession, promptPassword, promptText, readTrimmedStdin } from "./interactive.js"
+import { BUNDLED_CHUNK_SIZE } from "./shared/constants.js"
 import { clearPersistedState, loadConfig, loadSessionString, saveConfig, saveSessionString, sessionExists, storePaths } from "./store.js"
 import type { PersistedConfig } from "./types.js"
 
@@ -207,7 +208,12 @@ export async function login(options: LoginOptions) {
             },
         })
 
-        const config: PersistedConfig = { apiId, apiHash, phone }
+        const config: PersistedConfig = {
+            apiId,
+            apiHash,
+            phone,
+            chunkSize: existingConfig?.chunkSize ?? BUNDLED_CHUNK_SIZE,
+        }
         const me = await client.getMe()
         await saveConfig(config)
         await saveSessionString(session.save())

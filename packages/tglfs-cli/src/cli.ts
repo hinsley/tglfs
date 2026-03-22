@@ -17,19 +17,28 @@ import {
 import { defaultOutputPath, downloadFileCard } from "./download.js"
 import { CliError, EXIT_CODES, toCliError } from "./errors.js"
 import {
+    deleteFiles,
+    inspectFileCard,
+    receiveFiles,
+    renameFile,
+    sendFiles,
+    unsendFiles,
+} from "./file-ops.js"
+import {
     isInteractiveSession,
     promptConfirm,
     promptOptionalText,
-    promptPassword,
     promptSelect,
     promptText,
-    readTrimmedStdin,
 } from "./interactive.js"
 import { printJson } from "./json.js"
 import { createByteProgressReporter } from "./progress.js"
 import { getFileCardByUfid } from "./protocol.js"
+import { resolveOptionalPassword } from "./secrets.js"
 import { FILE_CARD_SEARCH_SORT_VALUES, formatSearchResultsTable, searchFileCards } from "./search.js"
+import { formatFileCardDate, formatFileCardSize } from "./shared/file-cards.js"
 import { storePaths } from "./store.js"
+import { uploadPaths } from "./upload.js"
 
 type JsonFlag = {
     json?: boolean
@@ -86,48 +95,85 @@ function parsePositiveInteger(label: string, value: string) {
     return parsed
 }
 
-async function resolveDownloadPassword(options: {
-    password?: string
-    passwordEnv?: string | boolean
-    passwordStdin?: boolean
-}) {
-    if (options.password !== undefined) {
-        return options.password
-    }
-
-    const envName =
-        typeof options.passwordEnv === "string" && options.passwordEnv.trim() !== ""
-            ? options.passwordEnv.trim()
-            : options.passwordEnv
-              ? "TGLFS_DOWNLOAD_PASSWORD"
-              : undefined
-    if (envName && process.env[envName] !== undefined) {
-        return process.env[envName] ?? ""
-    }
-    if (process.env.TGLFS_DOWNLOAD_PASSWORD !== undefined) {
-        return process.env.TGLFS_DOWNLOAD_PASSWORD
-    }
-    if (options.passwordStdin) {
-        return readTrimmedStdin("File decryption password is required on stdin.")
+async function confirmDestructiveAction(message: string, force = false) {
+    if (force) {
+        return
     }
     if (!isInteractiveSession()) {
-        return ""
+        throw new CliError(
+            "interactive_required",
+            `${message} Use --yes to confirm in non-interactive mode.`,
+            EXIT_CODES.INTERACTIVE_REQUIRED,
+        )
     }
-    return promptPassword("File decryption password (leave empty if none)")
+    const confirmed = await promptConfirm(message)
+    if (!confirmed) {
+        throw new CliError("cancelled", "Operation cancelled.", EXIT_CODES.GENERAL_ERROR)
+    }
+}
+
+function formatInspectResult(result: Awaited<ReturnType<typeof inspectFileCard>>) {
+    const lines = [
+        `Peer: ${result.peer === "me" ? "Saved Messages" : result.peer}`,
+        `Name: ${result.data.name}`,
+        `UFID: ${result.data.ufid}`,
+        `Size: ${formatFileCardSize(result.data.size)}`,
+        `Date: ${formatFileCardDate(result.date)}`,
+        `Message ID: ${result.msgId}`,
+        `Status: ${result.data.uploadComplete ? "Complete" : "Incomplete"}`,
+        `Format: ${result.format}`,
+        `Chunks: ${result.chunks.length}`,
+        "",
+        "Chunk details:",
+        ...result.chunks.map((chunk) => {
+            if (chunk.status === "ok") {
+                return `  ${chunk.msgId}: ok (${formatFileCardSize(chunk.size ?? 0)})`
+            }
+            return `  ${chunk.msgId}: ${chunk.status}${chunk.className ? ` (${chunk.className})` : ""}`
+        }),
+    ]
+
+    if (result.probe) {
+        lines.push("")
+        lines.push(
+            `Probe: ${result.probe.mode} (${formatFileCardSize(result.probe.bytesWritten)} -> ${result.probe.computedUfid})`,
+        )
+    } else if (result.probeError) {
+        lines.push("")
+        lines.push(`Probe: ${result.probeError}`)
+    }
+
+    return lines.join("\n")
 }
 
 async function runInteractiveMenu(program: Command) {
     const choice = await promptSelect("TGLFS action", [
+        { title: "Upload", value: "upload", description: "Upload one file or an archive of multiple files." },
         { title: "Login", value: "login", description: "Authenticate and persist the Telegram session." },
         { title: "Status", value: "status", description: "Show current config and auth status." },
         { title: "Search", value: "search", description: "Search TGLFS file cards in Saved Messages." },
         { title: "Download", value: "download", description: "Download a TGLFS file by UFID." },
+        { title: "Rename", value: "rename", description: "Rename a file card in Saved Messages." },
+        { title: "Delete", value: "delete", description: "Delete files from Saved Messages." },
+        { title: "Send", value: "send", description: "Send owned files to another peer." },
+        { title: "Receive", value: "receive", description: "Receive files from another peer into Saved Messages." },
+        { title: "Unsend", value: "unsend", description: "Delete received files from another peer mailbox." },
+        { title: "Inspect", value: "inspect", description: "Inspect a file card and probe current vs legacy format." },
         { title: "Logout", value: "logout", description: "Remove the saved Telegram session." },
         { title: "Help", value: "help", description: "Show general CLI help." },
         { title: "Exit", value: "exit", description: "Quit without doing anything." },
     ])
 
     switch (choice) {
+        case "upload": {
+            const rawPaths = await promptText("File path(s) to upload (comma-separated)")
+            const paths = rawPaths
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean)
+            await program.parseAsync(["node", "tglfs", "upload", ...paths], { from: "user" })
+            return
+        }
         case "login":
             await program.parseAsync(["node", "tglfs", "login"], { from: "user" })
             return
@@ -147,6 +193,56 @@ async function runInteractiveMenu(program: Command) {
             await program.parseAsync(["node", "tglfs", "download", ufid], { from: "user" })
             return
         }
+        case "rename": {
+            const ufid = await promptText("UFID to rename")
+            const newName = await promptText("New file name")
+            await program.parseAsync(["node", "tglfs", "rename", ufid, newName], { from: "user" })
+            return
+        }
+        case "delete": {
+            const rawUfids = await promptText("UFID(s) to delete (comma-separated)")
+            const ufids = rawUfids
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean)
+            await program.parseAsync(["node", "tglfs", "delete", ...ufids], { from: "user" })
+            return
+        }
+        case "send": {
+            const rawUfids = await promptText("UFID(s) to send (comma-separated)")
+            const recipient = await promptText("Recipient peer")
+            const ufids = rawUfids
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean)
+            await program.parseAsync(["node", "tglfs", "send", ...ufids, "--to", recipient], { from: "user" })
+            return
+        }
+        case "receive": {
+            const source = await promptText("Source peer")
+            const rawUfids = await promptText("UFID(s) to receive (comma-separated)")
+            const ufids = rawUfids
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean)
+            await program.parseAsync(["node", "tglfs", "receive", source, ...ufids], { from: "user" })
+            return
+        }
+        case "unsend": {
+            const source = await promptText("Source peer")
+            const rawUfids = await promptText("UFID(s) to unsend (comma-separated)")
+            const ufids = rawUfids
+                .split(",")
+                .map((value) => value.trim())
+                .filter(Boolean)
+            await program.parseAsync(["node", "tglfs", "unsend", source, ...ufids], { from: "user" })
+            return
+        }
+        case "inspect": {
+            const ufid = await promptText("UFID to inspect")
+            await program.parseAsync(["node", "tglfs", "inspect", ufid], { from: "user" })
+            return
+        }
         case "logout":
             await program.parseAsync(["node", "tglfs", "logout"], { from: "user" })
             return
@@ -163,7 +259,9 @@ async function main(argv: string[]) {
 
     program
         .name("tglfs")
-        .description("Authenticate with Telegram, search Saved Messages, and download current-format TGLFS files by UFID.")
+        .description(
+            "Authenticate with Telegram, manage TGLFS file cards, transfer files between peers, and download current or legacy TGLFS files by UFID.",
+        )
         .showHelpAfterError()
         .showSuggestionAfterError()
         .addHelpCommand("help [command]", "display help for command")
@@ -171,6 +269,80 @@ async function main(argv: string[]) {
             "after",
             `\nStorage paths:\n  config: ${storePaths.configFile}\n  session: ${storePaths.sessionFile}\n`,
         )
+
+    program
+        .command("upload")
+        .description("Upload one file, or archive multiple files, into Telegram Saved Messages.")
+        .argument("<paths...>", "File path(s) to upload")
+        .option("--password <password>", "Encryption password")
+        .option("--password-env [name]", "Read encryption password from an environment variable")
+        .option("--password-stdin", "Read encryption password from stdin")
+        .option("--json", "Output machine-readable JSON")
+        .addHelpText(
+            "after",
+            "\nUploading multiple paths produces a tar archive using the same naming convention as the web app.\nTTY runs show separate UFID and upload progress bars; --json stays quiet for automation.\nEnvironment variable: TGLFS_UPLOAD_PASSWORD\n",
+        )
+        .action(async (paths: string[], options) => {
+            await runJsonAware(options, async () => {
+                const { client, config, session } = await connectAuthorizedClient()
+                let ufidProgress: ReturnType<typeof createByteProgressReporter> | undefined
+                let uploadProgress: ReturnType<typeof createByteProgressReporter> | undefined
+                try {
+                    const password =
+                        (await resolveOptionalPassword({
+                            ...options,
+                            defaultEnv: "TGLFS_UPLOAD_PASSWORD",
+                            promptMessage: "File encryption password (leave empty if none)",
+                            stdinMessage: "File encryption password is required on stdin.",
+                            fallbackValue: "",
+                        })) ?? ""
+                    const result = await uploadPaths(client, {
+                        paths,
+                        chunkSize: config.chunkSize,
+                        password,
+                        onUfidProgress: ({ bytesProcessed, totalBytes }) => {
+                            if (options.json) {
+                                return
+                            }
+                            ufidProgress ??= createByteProgressReporter({
+                                label: "Calculating UFID",
+                                totalBytes,
+                            })
+                            ufidProgress.update(bytesProcessed)
+                        },
+                        onUploadProgress: ({ bytesProcessed, totalBytes }) => {
+                            if (options.json) {
+                                return
+                            }
+                            if (ufidProgress) {
+                                ufidProgress.complete()
+                                ufidProgress = undefined
+                            }
+                            uploadProgress ??= createByteProgressReporter({
+                                label: "Uploading",
+                                totalBytes,
+                            })
+                            uploadProgress.update(bytesProcessed)
+                        },
+                    })
+                    ufidProgress?.complete()
+                    uploadProgress?.complete()
+                    await persistAndDisconnectClient(client, session)
+
+                    return {
+                        text: result.archived
+                            ? `Uploaded archive ${result.name} as UFID ${result.ufid}.`
+                            : `Uploaded ${result.name} as UFID ${result.ufid}.`,
+                        data: result,
+                    }
+                } catch (error) {
+                    ufidProgress?.abort()
+                    uploadProgress?.abort()
+                    await persistAndDisconnectClient(client, session).catch(() => {})
+                    throw error
+                }
+            })
+        })
 
     program
         .command("login")
@@ -233,13 +405,14 @@ async function main(argv: string[]) {
 
     program
         .command("search")
-        .description("Search TGLFS file cards in Telegram Saved Messages.")
+        .description("Search TGLFS file cards in Telegram Saved Messages or another peer mailbox.")
         .argument("[query]", "Search query for filename or UFID")
         .addOption(
             new Option("--sort <sort>", "Sort order for the current result window")
                 .choices([...FILE_CARD_SEARCH_SORT_VALUES])
                 .default(FILE_CARD_SEARCH_SORT_VALUES[0]),
         )
+        .option("--peer <peer>", "Peer to search instead of Saved Messages")
         .option("--limit <n>", "Maximum number of file cards to fetch", (value) => parsePositiveInteger("Limit", value), 50)
         .option("--offset-id <msgId>", "Resume from a Telegram message-id cursor", (value) =>
             parsePositiveInteger("Offset id", value),
@@ -254,6 +427,7 @@ async function main(argv: string[]) {
                 const { client, session } = await connectAuthorizedClient()
                 try {
                     const result = await searchFileCards(client, {
+                        peer: options.peer,
                         query,
                         limit: options.limit,
                         offsetId: options.offsetId,
@@ -274,10 +448,11 @@ async function main(argv: string[]) {
 
     program
         .command("download")
-        .description("Download a current-format TGLFS file from Telegram by UFID.")
+        .description("Download a TGLFS file from Telegram by UFID.")
         .argument("<ufid>", "TGLFS file UFID")
         .option("-o, --output <path>", "Destination file path")
         .option("-f, --force", "Overwrite the output path if it already exists")
+        .option("--legacy", "Use the legacy decryption/counter pipeline")
         .option("--password <password>", "Decryption password")
         .option("--password-env [name]", "Read decryption password from an environment variable")
         .option("--password-stdin", "Read decryption password from stdin")
@@ -311,7 +486,14 @@ async function main(argv: string[]) {
                         options.force = true
                     }
 
-                    const password = await resolveDownloadPassword(options)
+                    const password =
+                        (await resolveOptionalPassword({
+                            ...options,
+                            defaultEnv: "TGLFS_DOWNLOAD_PASSWORD",
+                            promptMessage: "File decryption password (leave empty if none)",
+                            stdinMessage: "File decryption password is required on stdin.",
+                            fallbackValue: "",
+                        })) ?? ""
                     progress = options.json
                         ? undefined
                         : createByteProgressReporter({
@@ -326,16 +508,174 @@ async function main(argv: string[]) {
                         outputPath,
                         Boolean(options.force),
                         ({ bytesWritten }) => progress?.update(bytesWritten),
+                        options.legacy ? "legacy" : "current",
                     )
                     progress?.complete()
                     await persistAndDisconnectClient(client, session)
 
                     return {
-                        text: `Downloaded ${result.name} to ${result.outputPath}.`,
+                        text: `Downloaded ${result.name} to ${result.outputPath}${options.legacy ? " using the legacy pipeline" : ""}.`,
                         data: result,
                     }
                 } catch (error) {
                     progress?.abort()
+                    await persistAndDisconnectClient(client, session).catch(() => {})
+                    throw error
+                }
+            })
+        })
+
+    program
+        .command("rename")
+        .description("Rename a TGLFS file card in Saved Messages.")
+        .argument("<ufid>", "TGLFS file UFID")
+        .argument("<new-name>", "New file name")
+        .option("--json", "Output machine-readable JSON")
+        .action(async (ufid: string, newName: string, options) => {
+            await runJsonAware(options, async () => {
+                const { client, session } = await connectAuthorizedClient()
+                try {
+                    const result = await renameFile(client, ufid, newName)
+                    await persistAndDisconnectClient(client, session)
+                    return {
+                        text: `Renamed ${result.before.data.ufid} to ${result.after.data.name}.`,
+                        data: result,
+                    }
+                } catch (error) {
+                    await persistAndDisconnectClient(client, session).catch(() => {})
+                    throw error
+                }
+            })
+        })
+
+    program
+        .command("delete")
+        .description("Delete one or more owned TGLFS files from Saved Messages.")
+        .argument("<ufids...>", "UFID(s) to delete")
+        .option("-y, --yes", "Skip the confirmation prompt")
+        .option("--json", "Output machine-readable JSON")
+        .action(async (ufids: string[], options) => {
+            await runJsonAware(options, async () => {
+                await confirmDestructiveAction(`Delete ${ufids.length} file(s)?`, Boolean(options.yes))
+                const { client, session } = await connectAuthorizedClient()
+                try {
+                    const result = await deleteFiles(client, ufids)
+                    await persistAndDisconnectClient(client, session)
+                    return {
+                        text: `Deleted ${result.length} file(s) from Saved Messages.`,
+                        data: { count: result.length, files: result },
+                    }
+                } catch (error) {
+                    await persistAndDisconnectClient(client, session).catch(() => {})
+                    throw error
+                }
+            })
+        })
+
+    program
+        .command("send")
+        .description("Send one or more owned TGLFS files to another peer.")
+        .argument("<ufids...>", "UFID(s) to send")
+        .requiredOption("--to <peer>", "Recipient peer")
+        .option("--json", "Output machine-readable JSON")
+        .action(async (ufids: string[], options) => {
+            await runJsonAware(options, async () => {
+                const { client, session } = await connectAuthorizedClient()
+                try {
+                    const result = await sendFiles(client, ufids, options.to)
+                    await persistAndDisconnectClient(client, session)
+                    return {
+                        text: `Sent ${result.length} file(s) to ${options.to}.`,
+                        data: { recipient: options.to, count: result.length, files: result },
+                    }
+                } catch (error) {
+                    await persistAndDisconnectClient(client, session).catch(() => {})
+                    throw error
+                }
+            })
+        })
+
+    program
+        .command("receive")
+        .description("Receive one or more TGLFS files from another peer into Saved Messages.")
+        .argument("<source>", "Source peer")
+        .argument("<ufids...>", "UFID(s) to receive")
+        .option("--json", "Output machine-readable JSON")
+        .action(async (source: string, ufids: string[], options) => {
+            await runJsonAware(options, async () => {
+                const { client, session } = await connectAuthorizedClient()
+                try {
+                    const result = await receiveFiles(client, source, ufids)
+                    await persistAndDisconnectClient(client, session)
+                    return {
+                        text: `Received ${result.length} file(s) from ${source}.`,
+                        data: { source, count: result.length, files: result },
+                    }
+                } catch (error) {
+                    await persistAndDisconnectClient(client, session).catch(() => {})
+                    throw error
+                }
+            })
+        })
+
+    program
+        .command("unsend")
+        .description("Delete one or more received TGLFS files from another peer mailbox.")
+        .argument("<source>", "Source peer")
+        .argument("<ufids...>", "UFID(s) to unsend")
+        .option("-y, --yes", "Skip the confirmation prompt")
+        .option("--json", "Output machine-readable JSON")
+        .action(async (source: string, ufids: string[], options) => {
+            await runJsonAware(options, async () => {
+                await confirmDestructiveAction(`Unsend ${ufids.length} file(s) from ${source}?`, Boolean(options.yes))
+                const { client, session } = await connectAuthorizedClient()
+                try {
+                    const result = await unsendFiles(client, source, ufids)
+                    await persistAndDisconnectClient(client, session)
+                    return {
+                        text: `Unsent ${result.length} file(s) from ${source}.`,
+                        data: { source, count: result.length, files: result },
+                    }
+                } catch (error) {
+                    await persistAndDisconnectClient(client, session).catch(() => {})
+                    throw error
+                }
+            })
+        })
+
+    program
+        .command("inspect")
+        .description("Inspect a file card, its chunk references, and probe current vs legacy format.")
+        .argument("<ufid>", "TGLFS file UFID")
+        .option("--peer <peer>", "Peer to inspect instead of Saved Messages")
+        .option("--password <password>", "Password to use for current-vs-legacy probing")
+        .option("--password-env [name]", "Read the probe password from an environment variable")
+        .option("--password-stdin", "Read the probe password from stdin")
+        .option("--json", "Output machine-readable JSON")
+        .action(async (ufid: string, options) => {
+            await runJsonAware(options, async () => {
+                const { client, session } = await connectAuthorizedClient()
+                try {
+                    const password =
+                        options.password !== undefined || options.passwordEnv || options.passwordStdin
+                            ? await resolveOptionalPassword({
+                                  ...options,
+                                  defaultEnv: "TGLFS_INSPECT_PASSWORD",
+                                  promptMessage: "File probe password (leave empty if none)",
+                                  stdinMessage: "File probe password is required on stdin.",
+                                  fallbackValue: "",
+                              })
+                            : undefined
+                    const result = await inspectFileCard(client, ufid, {
+                        peer: options.peer,
+                        password,
+                    })
+                    await persistAndDisconnectClient(client, session)
+                    return {
+                        text: formatInspectResult(result),
+                        data: result,
+                    }
+                } catch (error) {
                     await persistAndDisconnectClient(client, session).catch(() => {})
                     throw error
                 }

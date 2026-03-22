@@ -29,6 +29,7 @@ test("searchFileCards returns an empty success window for no matches", async () 
         },
     ])
     assert.deepEqual(result, {
+        peer: "me",
         query: "missing",
         sort: "name_asc",
         limit: 5,
@@ -79,6 +80,37 @@ test("searchFileCards keeps a raw cursor but sorts the visible window", async ()
     assert.equal(result.nextOffsetId, 39)
 })
 
+test("searchFileCards can query a non-default peer mailbox", async () => {
+    const calls: Array<{ peer: string; options: unknown }> = []
+    const client = {
+        async getMessages(peer: string, options: unknown) {
+            calls.push({ peer, options })
+            return []
+        },
+    } as any
+
+    const result = await searchFileCards(client, {
+        peer: "friend123",
+        query: "design",
+        limit: 3,
+    })
+
+    assert.equal(result.peer, "friend123")
+    assert.deepEqual(calls, [
+        {
+            peer: "friend123",
+            options: {
+                search: "tglfs:file design",
+                limit: 3,
+                addOffset: 0,
+                minId: 0,
+                maxId: 0,
+                waitTime: 0,
+            },
+        },
+    ])
+})
+
 test("plain search output renders a table and next-page hint", () => {
     const text = formatSearchResultsTable({
         query: "project docs",
@@ -104,6 +136,26 @@ test("plain search output renders a table and next-page hint", () => {
     assert.match(text, /alpha\.txt/)
     assert.match(text, /Incomplete/)
     assert.match(text, /Next page: tglfs search 'project docs' --limit 2 --offset-id 39 --sort name_asc/)
+})
+
+test("plain search output includes --peer in peer next-page hints", () => {
+    const text = formatSearchResultsTable({
+        peer: "friend123",
+        query: "",
+        sort: "date_desc",
+        limit: 5,
+        nextOffsetId: 123,
+        hasMore: true,
+        results: [
+            {
+                msgId: 40,
+                date: 1700000000,
+                data: { name: "alpha.txt", ufid: "u1", size: 100, uploadComplete: true, chunks: [1], IV: "a" },
+            },
+        ],
+    })
+
+    assert.match(text, /Next page: tglfs search --peer 'friend123' --limit 5 --offset-id 123/)
 })
 
 test("plain search output reports empty result sets without error text", () => {

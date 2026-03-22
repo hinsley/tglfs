@@ -1,0 +1,29 @@
+.TH TGLFS-INSPECT 1 "March 2026" "tglfs 0.1.0" "User Commands"
+.SH NAME
+tglfs-inspect \- inspect file-card metadata, chunk references, and current-vs-legacy format
+.SH SYNOPSIS
+.B tglfs inspect
+[\fIOPTIONS\fR] \fIufid\fR
+.SH DESCRIPTION
+Shows the file-card metadata, checks whether each referenced chunk message exists and is a Telegram document, and probes whether the file restores with the current or legacy download pipeline.
+.SH OPTIONS
+.TP
+.B --peer <peer>
+Peer to inspect instead of Saved Messages.
+.TP
+.B --password <password>
+Password to use for current-vs-legacy probing.
+.TP
+.B --password-env [name]
+Read the probe password from an environment variable. If no name is provided, the command uses
+.B TGLFS_INSPECT_PASSWORD.
+.TP
+.B --password-stdin
+Read the probe password from standard input.
+.TP
+.B --json
+Emit machine-readable JSON.
+.SH ENVIRONMENT
+.TP
+.B TGLFS_INSPECT_PASSWORD
+Default environment variable for the probe password.

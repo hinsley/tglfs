@@ -19,6 +19,8 @@ export type FileCardMessageLike = {
     message?: string | null
 }
 
+export const FILE_CARD_PREFIX = "tglfs:file"
+
 export const FILE_CARD_SEARCH_SORT_VALUES = [
     "date_desc",
     "date_asc",
@@ -48,7 +50,7 @@ export function isFileCardData(value: unknown): value is FileCardData {
 }
 
 export function parseFileCardMessage(message: string): FileCardData | null {
-    if (!message.startsWith("tglfs:file")) {
+    if (!message.startsWith(FILE_CARD_PREFIX)) {
         return null
     }
 
@@ -58,6 +60,10 @@ export function parseFileCardMessage(message: string): FileCardData | null {
     } catch {
         return null
     }
+}
+
+export function serializeFileCardMessage(data: FileCardData) {
+    return `${FILE_CARD_PREFIX}\n${JSON.stringify(data)}`
 }
 
 export function extractFileCardRecord(message: FileCardMessageLike): FileCardRecord | null {
@@ -89,11 +95,11 @@ export function extractFileCardRecords(messages: Iterable<FileCardMessageLike>) 
 }
 
 export function buildFileCardSearchQuery(query = "") {
-    return `tglfs:file ${query.trim()}`.trim()
+    return `${FILE_CARD_PREFIX} ${query.trim()}`.trim()
 }
 
 export function buildFileCardUfidLookupQuery(ufid: string) {
-    return `tglfs:file "ufid":"${ufid.trim()}"`
+    return `${FILE_CARD_PREFIX} "ufid":"${ufid.trim()}"`
 }
 
 export function sortFileCardRecords(records: FileCardRecord[], sort: FileCardSearchSort) {

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 
-import { deriveAESKeyFromPassword, ENCRYPTION_CHUNK_SIZE, incrementCounter64By } from "../src/crypto.js"
+import { deriveAESKeyFromPassword, ENCRYPTION_CHUNK_SIZE, incrementCounter, incrementCounter64By } from "../src/crypto.js"
 import { CliError } from "../src/errors.js"
 import { coerceTelegramDocumentSize, resolveChunkDocumentSize, restoreFileFromEncryptedParts } from "../src/download.js"
 import type { FileCardData } from "../src/types.js"
@@ -42,7 +42,7 @@ async function gzip(bytes: Uint8Array) {
     return readAll(compressionStream.readable)
 }
 
-async function createFixture(plaintext: Uint8Array, password: string) {
+async function createFixture(plaintext: Uint8Array, password: string, mode: "current" | "legacy" = "current") {
     const compressed = await gzip(plaintext)
     const salt = Uint8Array.from({ length: 16 }, (_, index) => index + 1)
     const counter = Uint8Array.from({ length: 16 }, (_, index) => index + 33)
@@ -60,7 +60,10 @@ async function createFixture(plaintext: Uint8Array, password: string) {
             ),
         )
         encryptedChunks.push(encrypted)
-        encryptionCounter = incrementCounter64By(encryptionCounter, Math.ceil(piece.length / 16))
+        encryptionCounter =
+            mode === "legacy"
+                ? incrementCounter(encryptionCounter)
+                : incrementCounter64By(encryptionCounter, Math.ceil(piece.length / 16))
     }
 
     const combinedLength = encryptedChunks.reduce((sum, chunk) => sum + chunk.length, 0)
@@ -162,6 +165,32 @@ test("UFID mismatches are reported after successful decryption", async () => {
                 ),
             (error: unknown) => error instanceof CliError && error.code === "ufid_mismatch",
         )
+    } finally {
+        await rm(dir, { recursive: true, force: true })
+    }
+})
+
+test("legacy encrypted fixtures restore with the legacy pipeline", async () => {
+    const fixtureText = "Legacy-format fixture payload for TGLFS CLI download parity.\n".repeat(48)
+    const plaintext = new TextEncoder().encode(fixtureText)
+    const fixture = await createFixture(plaintext, "secret", "legacy")
+    const dir = await mkdtemp(join(tmpdir(), "tglfs-cli-"))
+    const outputPath = join(dir, "legacy-fixture.txt")
+
+    try {
+        const result = await restoreFileFromEncryptedParts(
+            fixture.data,
+            "secret",
+            outputPath,
+            fixture.parts(),
+            false,
+            undefined,
+            "legacy",
+        )
+
+        const saved = new Uint8Array(await readFile(outputPath))
+        assert.equal(result.bytesWritten, plaintext.length)
+        assert.deepEqual(Array.from(saved), Array.from(plaintext))
     } finally {
         await rm(dir, { recursive: true, force: true })
     }

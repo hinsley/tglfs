@@ -17,9 +17,16 @@ import {
     formatFileCardDate,
     formatFileCardSize,
 } from "../packages/tglfs-cli/src/shared/file-cards"
+import {
+    deleteFileCardMessages as sharedDeleteFileCardMessages,
+    listFileCards as sharedListFileCards,
+    lookupFileCardByUfid as sharedLookupFileCardByUfid,
+    renameFileCardMessage as sharedRenameFileCardMessage,
+    transferFileCard as sharedTransferFileCard,
+} from "../packages/tglfs-cli/src/shared/telegram-files"
 import * as Encryption from "./web/encryption"
 import * as FileProcessing from "./web/fileProcessing"
-import * as Archive from "./web/archive"
+import * as Archive from "../packages/tglfs-cli/src/shared/archive"
 import { FileCardData } from "./types/models"
 
 // https://core.telegram.org/api/files
@@ -1612,27 +1619,14 @@ export async function listFileCards(
     client: TelegramClient,
     opts?: { query?: string; limit?: number; offsetId?: number },
 ): Promise<Array<{ msgId: number; date: number; data: FileCardData }>> {
-    const msgs = await client.getMessages("me", {
-        search: buildFileCardSearchQuery(opts?.query),
-        limit: opts?.limit ?? 50,
-        addOffset: 0,
-        minId: 0,
-        maxId: opts?.offsetId ?? 0,
-        waitTime: 0,
-    } as any)
-    return extractFileCardRecords(msgs)
+    return sharedListFileCards(client, opts)
 }
 
 export async function getFileCardByUfid(
     client: TelegramClient,
     ufid: string,
 ): Promise<{ msgId: number; date: number; data: FileCardData } | null> {
-    const msgs = await client.getMessages("me", {
-        search: buildFileCardUfidLookupQuery(ufid),
-        limit: 10,
-        waitTime: 0,
-    } as any)
-    return extractFileCardRecords(msgs)[0] ?? null
+    return sharedLookupFileCardByUfid(client, ufid)
 }
 
 export async function renameFileCard(
@@ -1642,14 +1636,14 @@ export async function renameFileCard(
     data: FileCardData,
     newName: string,
 ): Promise<void> {
-    const updated: FileCardData = { ...data, name: newName }
-    await client.invoke(
-        new Api.messages.EditMessage({
-            peer,
-            id: msgId,
-            message: `tglfs:file\n${JSON.stringify(updated)}`,
-        }),
-    )
+    await sharedRenameFileCardMessage(client, {
+        Api,
+        peer,
+        msgId,
+        peerId: peer,
+        data,
+        newName,
+    })
 }
 
 export async function deleteFileCard(
@@ -1657,7 +1651,11 @@ export async function deleteFileCard(
     msgId: number,
     data: FileCardData,
 ): Promise<void> {
-    await client.invoke(new Api.messages.DeleteMessages({ id: [...data.chunks, msgId] }))
+    await sharedDeleteFileCardMessages(client, {
+        Api,
+        msgId,
+        data,
+    })
 }
 
 export async function sendFileCard(
@@ -1665,19 +1663,17 @@ export async function sendFileCard(
     data: FileCardData,
     recipient: string,
 ): Promise<void> {
-    let result: any
-    let newChunkIds: number[] = []
-    for (let i = 0; i < data.chunks.length; i += BATCH_LIMIT) {
-        for (let j = i; j < Math.min(i + BATCH_LIMIT, data.chunks.length); j++) {
-            result = await client.invoke(
-                new Api.messages.ForwardMessages({ fromPeer: "me", toPeer: recipient, id: [data.chunks[j]], silent: true }),
-            )
-            newChunkIds.push(result.updates[0].id)
-        }
-        await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY))
-    }
-    const updated = { ...data, chunks: newChunkIds }
-    await client.sendMessage(recipient, { message: `tglfs:file\n${JSON.stringify(updated)}` })
+    await sharedTransferFileCard(client, {
+        Api,
+        record: {
+            msgId: 0,
+            date: 0,
+            data,
+        },
+        sourcePeer: "me",
+        targetPeer: recipient,
+        silent: true,
+    })
 }
 
 export async function downloadFileCard(

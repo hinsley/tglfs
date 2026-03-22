@@ -1,0 +1,19 @@
+.TH TGLFS-DELETE 1 "March 2026" "tglfs 0.1.0" "User Commands"
+.SH NAME
+tglfs-delete \- delete one or more owned TGLFS files from Saved Messages
+.SH SYNOPSIS
+.B tglfs delete
+[\fB--yes\fR] [\fB--json\fR] \fIufids...\fR
+.SH DESCRIPTION
+Deletes the Saved Messages file card plus all referenced chunk messages for each UFID.
+.SH OPTIONS
+.TP
+.B --yes
+Skip the confirmation prompt.
+.TP
+.B --json
+Emit machine-readable JSON.
+.SH AI AGENT NOTES
+Agents should pass
+.B --yes
+in non-interactive sessions.

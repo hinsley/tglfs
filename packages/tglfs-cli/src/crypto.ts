@@ -39,6 +39,17 @@ export function incrementCounter64By(counter: Uint8Array, blocks: number): Uint8
     return result
 }
 
+export function incrementCounter(counter: Uint8Array): Uint8Array {
+    const result = new Uint8Array(counter.length)
+    let carry = 1
+    for (let index = counter.length - 1; index >= 0; index -= 1) {
+        const sum = counter[index] + carry
+        result[index] = sum & 0xff
+        carry = sum >> 8
+    }
+    return result
+}
+
 export function decodeIv(iv: string): { salt: Uint8Array; counter: Uint8Array } {
     const bytes = Uint8Array.from(Buffer.from(iv, "base64"))
     if (bytes.length !== 32) {

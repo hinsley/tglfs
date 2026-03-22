@@ -3,6 +3,7 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 
 import { CliError, EXIT_CODES } from "./errors.js"
+import { BUNDLED_CHUNK_SIZE } from "./shared/constants.js"
 import type { PersistedConfig } from "./types.js"
 
 const appPaths = envPaths("tglfs", { suffix: "" })
@@ -25,6 +26,8 @@ function validateConfig(value: unknown): PersistedConfig {
         !Number.isFinite(record.apiId) ||
         typeof record.apiHash !== "string" ||
         record.apiHash.trim() === "" ||
+        (record.chunkSize !== undefined &&
+            (typeof record.chunkSize !== "number" || !Number.isFinite(record.chunkSize) || record.chunkSize <= 0)) ||
         typeof record.phone !== "string" ||
         record.phone.trim() === ""
     ) {
@@ -34,6 +37,7 @@ function validateConfig(value: unknown): PersistedConfig {
     return {
         apiId: record.apiId,
         apiHash: record.apiHash,
+        chunkSize: record.chunkSize ?? BUNDLED_CHUNK_SIZE,
         phone: record.phone,
     }
 }

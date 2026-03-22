@@ -2,9 +2,9 @@ import type { TelegramClient } from "telegram"
 
 import { CliError, EXIT_CODES } from "./errors.js"
 import {
-    buildFileCardUfidLookupQuery,
     parseFileCardMessage,
 } from "./shared/file-cards.js"
+import { lookupFileCardByUfid } from "./shared/telegram-files.js"
 import type { FileCardData, FileCardRecord } from "./types.js"
 
 export { parseFileCardMessage } from "./shared/file-cards.js"
@@ -35,40 +35,21 @@ export function validateDownloadableFileCard(data: FileCardData) {
     }
 }
 
-export async function getFileCardByUfid(client: TelegramClient, ufid: string): Promise<FileCardRecord> {
+export async function getFileCardByUfid(client: TelegramClient, ufid: string, peer = "me"): Promise<FileCardRecord> {
     const trimmed = ufid.trim()
     if (trimmed === "") {
         throw new CliError("invalid_ufid", "UFID must not be empty.", EXIT_CODES.GENERAL_ERROR)
     }
 
-    const messages = await client.getMessages("me", {
-        search: buildFileCardUfidLookupQuery(trimmed),
-        limit: 10,
-        waitTime: 0,
-    })
-
-    const match = messages.find((message) => typeof message.message === "string" && parseFileCardMessage(message.message))
-    if (!match || typeof match.message !== "string") {
+    const match = await lookupFileCardByUfid(client as any, trimmed, { peer })
+    if (!match) {
         throw new CliError(
             "file_not_found",
-            `No TGLFS file card was found for UFID ${trimmed}.`,
+            `No TGLFS file card was found for UFID ${trimmed} in ${peer === "me" ? "Saved Messages" : peer}.`,
             EXIT_CODES.FILE_NOT_FOUND,
         )
     }
 
-    const data = parseFileCardMessage(match.message)
-    if (!data) {
-        throw new CliError(
-            "invalid_file_card",
-            `The file card for UFID ${trimmed} is unreadable.`,
-            EXIT_CODES.INVALID_FILE_CARD,
-        )
-    }
-
-    validateDownloadableFileCard(data)
-    return {
-        msgId: match.id,
-        date: match.date,
-        data,
-    }
+    validateDownloadableFileCard(match.data)
+    return match
 }

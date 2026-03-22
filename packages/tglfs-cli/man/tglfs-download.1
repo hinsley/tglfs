@@ -1,11 +1,15 @@
 .TH TGLFS-DOWNLOAD 1 "March 2026" "tglfs 0.1.0" "User Commands"
 .SH NAME
-tglfs-download \- download a current-format TGLFS file by UFID
+tglfs-download \- download a current-format or legacy TGLFS file by UFID
 .SH SYNOPSIS
 .B tglfs download
 [\fIOPTIONS\fR] \fIufid\fR
 .SH DESCRIPTION
 Looks up a TGLFS file card in Telegram Saved Messages by UFID, downloads the encrypted chunks, decrypts and gunzips them, verifies the UFID, and writes the plaintext to disk.
+.PP
+Use
+.B --legacy
+for files that still require the older counter-advance behavior.
 .SH OPTIONS
 .TP
 .B --output <path>
@@ -13,6 +17,9 @@ Destination path for the restored plaintext file.
 .TP
 .B --force
 Overwrite an existing output file.
+.TP
+.B --legacy
+Use the legacy decryption pipeline.
 .TP
 .B --password <password>
 Decryption password.

@@ -1,19 +1,19 @@
 import type { TelegramClient } from "telegram/client/TelegramClient.js"
 
 import {
-    buildFileCardSearchQuery,
-    extractFileCardRecords,
     FILE_CARD_SEARCH_SORT_VALUES,
     formatFileCardDate,
     formatFileCardSize,
     sortFileCardRecords,
 } from "./shared/file-cards.js"
 import type { FileCardRecord, FileCardSearchSort } from "./shared/file-cards.js"
+import { listFileCards } from "./shared/telegram-files.js"
 
 export { FILE_CARD_SEARCH_SORT_VALUES } from "./shared/file-cards.js"
 export type { FileCardSearchSort } from "./shared/file-cards.js"
 
 export type SearchFileCardsOptions = {
+    peer?: string
     query?: string
     limit?: number
     offsetId?: number
@@ -21,6 +21,7 @@ export type SearchFileCardsOptions = {
 }
 
 export type SearchFileCardsResult = {
+    peer: string
     query: string
     sort: FileCardSearchSort
     limit: number
@@ -44,25 +45,23 @@ function padCell(value: string, width: number) {
 }
 
 export async function searchFileCards(client: TelegramClient, options: SearchFileCardsOptions = {}): Promise<SearchFileCardsResult> {
+    const peer = options.peer?.trim() || "me"
     const query = options.query?.trim() ?? ""
     const limit = options.limit ?? DEFAULT_SEARCH_LIMIT
     const sort = options.sort ?? FILE_CARD_SEARCH_SORT_VALUES[0]
     const offsetId = options.offsetId
 
-    const messages = await client.getMessages("me", {
-        search: buildFileCardSearchQuery(query),
+    const rawResults = await listFileCards(client as any, {
+        peer,
+        query,
         limit,
-        addOffset: 0,
-        minId: 0,
-        maxId: offsetId ?? 0,
-        waitTime: 0,
-    } as any)
-
-    const rawResults = extractFileCardRecords(messages)
+        offsetId,
+    })
     const results = rawResults.slice()
     sortFileCardRecords(results, sort)
 
     return {
+        peer,
         query,
         sort,
         limit,
@@ -74,10 +73,14 @@ export async function searchFileCards(client: TelegramClient, options: SearchFil
 }
 
 export function formatSearchResultsTable(result: SearchFileCardsResult) {
+    const peer = result.peer ?? "me"
     if (result.results.length === 0) {
+        const location = peer === "me" ? "Saved Messages" : peer
         return result.query === ""
-            ? "No TGLFS files found."
-            : `No TGLFS files found for query ${shellQuote(result.query)}.`
+            ? peer === "me"
+                ? "No TGLFS files found."
+                : `No TGLFS files found in ${location}.`
+            : `No TGLFS files found for query ${shellQuote(result.query)} in ${location}.`
     }
 
     const headers = ["Name", "Size", "Date", "UFID", "Status"]
@@ -102,6 +105,9 @@ export function formatSearchResultsTable(result: SearchFileCardsResult) {
         const parts = ["tglfs", "search"]
         if (result.query !== "") {
             parts.push(shellQuote(result.query))
+        }
+        if (peer !== "me") {
+            parts.push("--peer", shellQuote(peer))
         }
         parts.push("--limit", String(result.limit), "--offset-id", String(result.nextOffsetId))
         if (result.sort !== FILE_CARD_SEARCH_SORT_VALUES[0]) {

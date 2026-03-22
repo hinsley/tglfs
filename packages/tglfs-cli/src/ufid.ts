@@ -49,6 +49,31 @@ export class UfidAccumulator {
     }
 }
 
+export async function computeUfidFromStream(
+    stream: ReadableStream<Uint8Array>,
+    onProgress?: (bytesProcessed: number, totalBytes: number) => void,
+    totalBytes = 0,
+) {
+    const reader = stream.getReader()
+    const accumulator = new UfidAccumulator()
+    let bytesProcessed = 0
+
+    while (true) {
+        const { done, value } = await reader.read()
+        if (done) {
+            break
+        }
+        if (!value || value.length === 0) {
+            continue
+        }
+        bytesProcessed += value.length
+        onProgress?.(bytesProcessed, totalBytes)
+        await accumulator.update(value)
+    }
+
+    return accumulator.digest()
+}
+
 export async function computeUfidFromBytes(bytes: Uint8Array) {
     const accumulator = new UfidAccumulator()
     await accumulator.update(bytes)

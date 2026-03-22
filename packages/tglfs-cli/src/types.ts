@@ -1,6 +1,7 @@
 export type PersistedConfig = {
     apiId: number
     apiHash: string
+    chunkSize: number
     phone: string
 }
 

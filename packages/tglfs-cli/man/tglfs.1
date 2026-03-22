@@ -1,17 +1,20 @@
 .TH TGLFS 1 "March 2026" "tglfs 0.1.0" "User Commands"
 .SH NAME
-tglfs \- authenticate with Telegram, search file cards, and download TGLFS files by UFID
+tglfs \- authenticate with Telegram, manage TGLFS file cards, transfer files, and download TGLFS files by UFID
 .SH SYNOPSIS
 .B tglfs
 [\fIOPTIONS\fR] [\fICOMMAND\fR]
 .SH DESCRIPTION
 .B tglfs
-is a global command-line client for authenticating with Telegram, searching TGLFS file cards in Saved Messages, and downloading current-format TGLFS files by UFID.
+is a global command-line client for authenticating with Telegram, uploading files, managing TGLFS file cards, transferring files between peers, searching mailboxes, and downloading current-format or legacy TGLFS files by UFID.
 .PP
 Run
 .B tglfs help <command>
 for subcommand-specific help.
 .SH COMMANDS
+.TP
+.B upload <paths...>
+Upload one file, or archive multiple files, into Saved Messages.
 .TP
 .B login
 Authenticate with Telegram and persist the resulting session.
@@ -23,10 +26,28 @@ Show current config and Telegram authorization state.
 Remove the saved Telegram session.
 .TP
 .B search [query]
-Search TGLFS file cards in Saved Messages.
+Search TGLFS file cards in Saved Messages or another peer mailbox.
 .TP
 .B download <ufid>
-Download a current-format TGLFS file by UFID.
+Download a current-format or legacy TGLFS file by UFID.
+.TP
+.B rename <ufid> <new-name>
+Rename an owned TGLFS file card.
+.TP
+.B delete <ufid...>
+Delete one or more owned TGLFS files.
+.TP
+.B send <ufid...> --to <peer>
+Send one or more owned TGLFS files to another peer.
+.TP
+.B receive <source> <ufid...>
+Receive one or more TGLFS files from another peer into Saved Messages.
+.TP
+.B unsend <source> <ufid...>
+Delete one or more received TGLFS files from another peer mailbox.
+.TP
+.B inspect <ufid>
+Inspect file-card metadata, chunk references, and probe current vs legacy format.
 .TP
 .B help [command]
 Display help for a command.
@@ -36,5 +57,12 @@ The CLI stores config and session files in OS-standard per-user app directories.
 .BR tglfs-login (1),
 .BR tglfs-status (1),
 .BR tglfs-logout (1),
+.BR tglfs-upload (1),
 .BR tglfs-search (1),
-.BR tglfs-download (1)
+.BR tglfs-download (1),
+.BR tglfs-rename (1),
+.BR tglfs-delete (1),
+.BR tglfs-send (1),
+.BR tglfs-receive (1),
+.BR tglfs-unsend (1),
+.BR tglfs-inspect (1)

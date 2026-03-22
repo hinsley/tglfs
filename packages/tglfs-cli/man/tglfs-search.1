@@ -1,12 +1,15 @@
 .TH TGLFS-SEARCH 1 "March 2026" "tglfs 0.1.0" "User Commands"
 .SH NAME
-tglfs-search \- search TGLFS file cards in Saved Messages
+tglfs-search \- search TGLFS file cards in Saved Messages or another peer mailbox
 .SH SYNOPSIS
 .B tglfs search
 [\fIOPTIONS\fR] [\fIquery\fR]
 .SH DESCRIPTION
-Looks up TGLFS file cards in Telegram Saved Messages. With no query, the command lists the first page of all file cards. Search results include complete and incomplete file cards.
+Looks up TGLFS file cards in Telegram Saved Messages or another peer mailbox. With no query, the command lists the first page of all file cards. Search results include complete and incomplete file cards.
 .SH OPTIONS
+.TP
+.B --peer <peer>
+Peer to search instead of Saved Messages.
 .TP
 .B --limit <n>
 Maximum number of file cards to fetch. Default:

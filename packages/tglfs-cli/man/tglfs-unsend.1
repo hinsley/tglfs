@@ -1,0 +1,19 @@
+.TH TGLFS-UNSEND 1 "March 2026" "tglfs 0.1.0" "User Commands"
+.SH NAME
+tglfs-unsend \- delete one or more received TGLFS files from another peer mailbox
+.SH SYNOPSIS
+.B tglfs unsend
+[\fB--yes\fR] [\fB--json\fR] \fIsource\fR \fIufids...\fR
+.SH DESCRIPTION
+Deletes the referenced chunk messages from the source peer mailbox in batches, then deletes the matching file card message.
+.SH OPTIONS
+.TP
+.B --yes
+Skip the confirmation prompt.
+.TP
+.B --json
+Emit machine-readable JSON.
+.SH AI AGENT NOTES
+Agents should pass
+.B --yes
+in non-interactive sessions.
