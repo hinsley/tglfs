@@ -1,15 +1,20 @@
 .TH TGLFS-INSPECT 1 "March 2026" "tglfs 0.1.0" "User Commands"
 .SH NAME
-tglfs-inspect \- inspect file-card metadata, chunk references, and current-vs-legacy format
+tglfs-inspect \- inspect file-card metadata and chunk references
 .SH SYNOPSIS
 .B tglfs inspect
 [\fIOPTIONS\fR] \fIufid\fR
 .SH DESCRIPTION
-Shows the file-card metadata, checks whether each referenced chunk message exists and is a Telegram document, and probes whether the file restores with the current or legacy download pipeline.
+Shows the file-card metadata and checks whether each referenced chunk message exists and is a Telegram document. Use
+.B --probe
+to run the expensive full current-vs-legacy integrity probe, which downloads, decrypts, and validates the file data.
 .SH OPTIONS
 .TP
 .B --peer <peer>
 Peer to inspect instead of Saved Messages.
+.TP
+.B --probe
+Run the full current-vs-legacy integrity probe.
 .TP
 .B --password <password>
 Password to use for current-vs-legacy probing.

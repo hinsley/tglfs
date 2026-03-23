@@ -17,6 +17,7 @@ import {
     transferFileCard,
     unsendFileCard,
 } from "./shared/telegram-files.js"
+import { formatFileCardDate, formatFileCardSize } from "./shared/file-cards.js"
 
 export type ChunkInspection = {
     msgId: number
@@ -70,6 +71,14 @@ export async function resolveFileCardRecord(client: TelegramClient, ufid: string
     return record
 }
 
+export async function resolveFileCardRecords(client: TelegramClient, ufids: string[], peer = "me") {
+    const records: FileCardRecord[] = []
+    for (const ufid of ufids) {
+        records.push(await resolveFileCardRecord(client, ufid, peer))
+    }
+    return records
+}
+
 export async function renameFile(client: TelegramClient, ufid: string, newName: string) {
     const record = await resolveFileCardRecord(client, ufid, "me")
     const trimmedName = newName.trim()
@@ -96,19 +105,21 @@ export async function renameFile(client: TelegramClient, ufid: string, newName: 
     }
 }
 
-export async function deleteFiles(client: TelegramClient, ufids: string[]) {
+export async function deleteResolvedFiles(client: TelegramClient, records: FileCardRecord[]) {
     const { Api } = getGramJs()
-    const deleted: FileCardRecord[] = []
-    for (const ufid of ufids) {
-        const record = await resolveFileCardRecord(client, ufid, "me")
+    for (const record of records) {
         await deleteFileCardMessages(client as any, {
             Api: Api as any,
             msgId: record.msgId,
             data: record.data,
         })
-        deleted.push(record)
     }
-    return deleted
+    return records
+}
+
+export async function deleteFiles(client: TelegramClient, ufids: string[]) {
+    const records = await resolveFileCardRecords(client, ufids, "me")
+    return deleteResolvedFiles(client, records)
 }
 
 export async function sendFiles(client: TelegramClient, ufids: string[], recipient: string) {
@@ -256,6 +267,7 @@ export async function inspectFileCard(
     options: {
         peer?: string
         password?: string
+        probe?: boolean
     } = {},
 ): Promise<FileInspectionResult> {
     const peer = normalizePeer(options.peer)
@@ -265,7 +277,9 @@ export async function inspectFileCard(
 
     let probe: FileInspectionResult["probe"]
     let probeError: string | undefined
-    if (everyChunkReadable) {
+    if (!options.probe) {
+        probeError = "Format probe skipped. Re-run with --probe to verify current vs legacy format."
+    } else if (everyChunkReadable) {
         try {
             const detection = await probeFileMode(client, peer, record.data, options.password ?? "")
             probe = detection.probe
@@ -293,4 +307,14 @@ export async function inspectFileCard(
         probe,
         probeError,
     }
+}
+
+export function formatDeleteConfirmation(records: FileCardRecord[]) {
+    const lines = [`Delete ${records.length} file(s) from Saved Messages?`, ""]
+    for (const record of records) {
+        lines.push(
+            `${record.data.name} | ${formatFileCardSize(record.data.size)} | ${formatFileCardDate(record.date)} | ${record.data.ufid}`,
+        )
+    }
+    return lines.join("\n")
 }

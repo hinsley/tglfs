@@ -17,10 +17,12 @@ import {
 import { defaultOutputPath, downloadFileCard } from "./download.js"
 import { CliError, EXIT_CODES, toCliError } from "./errors.js"
 import {
-    deleteFiles,
+    deleteResolvedFiles,
+    formatDeleteConfirmation,
     inspectFileCard,
     receiveFiles,
     renameFile,
+    resolveFileCardRecords,
     sendFiles,
     unsendFiles,
 } from "./file-ops.js"
@@ -158,7 +160,7 @@ async function runInteractiveMenu(program: Command) {
         { title: "Send", value: "send", description: "Send owned files to another peer." },
         { title: "Receive", value: "receive", description: "Receive files from another peer into Saved Messages." },
         { title: "Unsend", value: "unsend", description: "Delete received files from another peer mailbox." },
-        { title: "Inspect", value: "inspect", description: "Inspect a file card and probe current vs legacy format." },
+        { title: "Inspect", value: "inspect", description: "Inspect a file card. Use --probe for a full format check." },
         { title: "Logout", value: "logout", description: "Remove the saved Telegram session." },
         { title: "Help", value: "help", description: "Show general CLI help." },
         { title: "Exit", value: "exit", description: "Quit without doing anything." },
@@ -556,10 +558,11 @@ async function main(argv: string[]) {
         .option("--json", "Output machine-readable JSON")
         .action(async (ufids: string[], options) => {
             await runJsonAware(options, async () => {
-                await confirmDestructiveAction(`Delete ${ufids.length} file(s)?`, Boolean(options.yes))
                 const { client, session } = await connectAuthorizedClient()
                 try {
-                    const result = await deleteFiles(client, ufids)
+                    const records = await resolveFileCardRecords(client, ufids, "me")
+                    await confirmDestructiveAction(formatDeleteConfirmation(records), Boolean(options.yes))
+                    const result = await deleteResolvedFiles(client, records)
                     await persistAndDisconnectClient(client, session)
                     return {
                         text: `Deleted ${result.length} file(s) from Saved Messages.`,
@@ -645,9 +648,10 @@ async function main(argv: string[]) {
 
     program
         .command("inspect")
-        .description("Inspect a file card, its chunk references, and probe current vs legacy format.")
+        .description("Inspect a file card and chunk references. Use --probe for a full current-vs-legacy integrity probe.")
         .argument("<ufid>", "TGLFS file UFID")
         .option("--peer <peer>", "Peer to inspect instead of Saved Messages")
+        .option("--probe", "Run the full current-vs-legacy probe. This downloads, decrypts, and validates file data.")
         .option("--password <password>", "Password to use for current-vs-legacy probing")
         .option("--password-env [name]", "Read the probe password from an environment variable")
         .option("--password-stdin", "Read the probe password from stdin")
@@ -656,8 +660,11 @@ async function main(argv: string[]) {
             await runJsonAware(options, async () => {
                 const { client, session } = await connectAuthorizedClient()
                 try {
+                    const shouldProbe = Boolean(
+                        options.probe || options.password !== undefined || options.passwordEnv || options.passwordStdin,
+                    )
                     const password =
-                        options.password !== undefined || options.passwordEnv || options.passwordStdin
+                        shouldProbe
                             ? await resolveOptionalPassword({
                                   ...options,
                                   defaultEnv: "TGLFS_INSPECT_PASSWORD",
@@ -669,6 +676,7 @@ async function main(argv: string[]) {
                     const result = await inspectFileCard(client, ufid, {
                         peer: options.peer,
                         password,
+                        probe: shouldProbe,
                     })
                     await persistAndDisconnectClient(client, session)
                     return {

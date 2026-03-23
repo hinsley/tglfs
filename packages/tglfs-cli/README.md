@@ -144,11 +144,17 @@ Delete received files from another peer mailbox:
 tglfs unsend alice <ufid...> --yes
 ```
 
-Inspect file-card metadata, chunk references, and probe current vs legacy format:
+Inspect file-card metadata and chunk references:
 
 ```sh
 tglfs inspect <ufid>
 tglfs inspect <ufid> --peer alice
+```
+
+Run the expensive full current-vs-legacy integrity probe only when you want it:
+
+```sh
+tglfs inspect <ufid> --probe
 tglfs inspect <ufid> --password 'secret'
 ```
 
