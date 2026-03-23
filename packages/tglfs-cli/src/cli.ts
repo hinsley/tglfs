@@ -34,6 +34,7 @@ import {
     promptText,
 } from "./interactive.js"
 import { printJson } from "./json.js"
+import { dispatchInteractiveCommand, splitCommaSeparatedInput } from "./menu.js"
 import { createByteProgressReporter } from "./progress.js"
 import { getFileCardByUfid } from "./protocol.js"
 import { resolveOptionalPassword } from "./secrets.js"
@@ -189,84 +190,66 @@ async function runInteractiveMenu(program: Command) {
     switch (choice) {
         case "upload": {
             const rawPaths = await promptText("File path(s) to upload (comma-separated)")
-            const paths = rawPaths
-                .split(",")
-                .map((value) => value.trim())
-                .filter(Boolean)
-            await program.parseAsync(["node", "tglfs", "upload", ...paths], { from: "user" })
+            const paths = splitCommaSeparatedInput(rawPaths)
+            await dispatchInteractiveCommand(program, ["upload", ...paths])
             return
         }
         case "login":
-            await program.parseAsync(["node", "tglfs", "login"], { from: "user" })
+            await dispatchInteractiveCommand(program, ["login"])
             return
         case "status":
-            await program.parseAsync(["node", "tglfs", "status"], { from: "user" })
+            await dispatchInteractiveCommand(program, ["status"])
             return
         case "search": {
             const query = await promptOptionalText("Search query (leave blank to list all)")
-            await program.parseAsync(
-                ["node", "tglfs", "search", ...(query === "" ? [] : [query])],
-                { from: "user" },
-            )
+            await dispatchInteractiveCommand(program, ["search", ...(query === "" ? [] : [query])])
             return
         }
         case "download": {
             const ufid = await promptText("UFID to download")
-            await program.parseAsync(["node", "tglfs", "download", ufid], { from: "user" })
+            await dispatchInteractiveCommand(program, ["download", ufid])
             return
         }
         case "rename": {
             const ufid = await promptText("UFID to rename")
             const newName = await promptText("New file name")
-            await program.parseAsync(["node", "tglfs", "rename", ufid, newName], { from: "user" })
+            await dispatchInteractiveCommand(program, ["rename", ufid, newName])
             return
         }
         case "delete": {
             const rawUfids = await promptText("UFID(s) to delete (comma-separated)")
-            const ufids = rawUfids
-                .split(",")
-                .map((value) => value.trim())
-                .filter(Boolean)
-            await program.parseAsync(["node", "tglfs", "delete", ...ufids], { from: "user" })
+            const ufids = splitCommaSeparatedInput(rawUfids)
+            await dispatchInteractiveCommand(program, ["delete", ...ufids])
             return
         }
         case "send": {
             const rawUfids = await promptText("UFID(s) to send (comma-separated)")
             const recipient = await promptText("Recipient peer")
-            const ufids = rawUfids
-                .split(",")
-                .map((value) => value.trim())
-                .filter(Boolean)
-            await program.parseAsync(["node", "tglfs", "send", ...ufids, "--to", recipient], { from: "user" })
+            const ufids = splitCommaSeparatedInput(rawUfids)
+            await dispatchInteractiveCommand(program, ["send", ...ufids, "--to", recipient])
             return
         }
         case "receive": {
             const source = await promptText("Source peer")
             const rawUfids = await promptText("UFID(s) to receive (comma-separated)")
-            const ufids = rawUfids
-                .split(",")
-                .map((value) => value.trim())
-                .filter(Boolean)
-            await program.parseAsync(["node", "tglfs", "receive", source, ...ufids], { from: "user" })
+            const ufids = splitCommaSeparatedInput(rawUfids)
+            await dispatchInteractiveCommand(program, ["receive", source, ...ufids])
             return
         }
         case "unsend": {
             const source = await promptText("Source peer")
             const rawUfids = await promptText("UFID(s) to unsend (comma-separated)")
-            const ufids = rawUfids
-                .split(",")
-                .map((value) => value.trim())
-                .filter(Boolean)
-            await program.parseAsync(["node", "tglfs", "unsend", source, ...ufids], { from: "user" })
+            const ufids = splitCommaSeparatedInput(rawUfids)
+            await dispatchInteractiveCommand(program, ["unsend", source, ...ufids])
             return
         }
         case "inspect": {
             const ufid = await promptText("UFID to inspect")
-            await program.parseAsync(["node", "tglfs", "inspect", ufid], { from: "user" })
+            await dispatchInteractiveCommand(program, ["inspect", ufid])
             return
         }
         case "logout":
-            await program.parseAsync(["node", "tglfs", "logout"], { from: "user" })
+            await dispatchInteractiveCommand(program, ["logout"])
             return
         case "help":
             program.outputHelp()
