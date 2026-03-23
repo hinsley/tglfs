@@ -1,7 +1,27 @@
 {
     "name": "tglfs",
     "version": "0.1.0",
-    "description": "Global CLI for authenticating with Telegram, managing TGLFS file cards, transferring files between peers, and downloading files by UFID.",
+    "description": "Global CLI for authenticating with Telegram, uploading and managing TGLFS files, transferring them between Telegram chats, and downloading them by UFID.",
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/hinsley/tglfs.git",
+        "directory": "packages/tglfs-cli"
+    },
+    "homepage": "https://github.com/hinsley/tglfs#readme",
+    "bugs": {
+        "url": "https://github.com/hinsley/tglfs/issues"
+    },
+    "keywords": [
+        "telegram",
+        "cli",
+        "files",
+        "storage",
+        "backup",
+        "tui",
+        "gramjs",
+        "npm"
+    ],
     "type": "module",
     "bin": {
         "tglfs": "./dist/cli.js"
