@@ -132,11 +132,21 @@ Plain-text output shows a table of `Name`, `Size`, `Date`, `UFID`, and `Status`.
 
 ## Peer Transfer And Inspection
 
+Peer values for `--to`, `<source>`, and `--peer` are passed directly to Telegram/GramJS entity resolution. In practice, use one of:
+
+- a public username like `alice` or `@alice`
+- `me` for Saved Messages
+- a phone number your Telegram account can already resolve, typically a saved contact
+
+If Telegram cannot resolve the peer value, the command fails.
+
 Receive files from another peer into Saved Messages:
 
 ```sh
 tglfs receive alice <ufid...>
 ```
+
+For `receive` and `unsend`, `<source>` is the chat or mailbox that currently contains the TGLFS file card and chunk messages you want to operate on. It is not necessarily the original uploader's personal account.
 
 Delete received files from another peer mailbox:
 

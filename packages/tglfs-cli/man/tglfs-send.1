@@ -6,3 +6,12 @@ tglfs-send \- send one or more owned TGLFS files to another peer
 [\fB--json\fR] \fIufids...\fR \fB--to\fR \fIpeer\fR
 .SH DESCRIPTION
 Forwards the referenced chunk messages in batches to the target peer, rewrites the chunk ids in a new file card, and sends the rewritten file card to that peer.
+.SH PEER RESOLUTION
+The
+.I peer
+value is passed directly to Telegram/GramJS entity resolution. In practice, use a public username such as
+.B alice
+or
+.BR @alice ,
+.B me
+for Saved Messages, or a phone number that the current Telegram account can already resolve, typically a saved contact. If Telegram cannot resolve the value, the command fails.

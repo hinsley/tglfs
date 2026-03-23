@@ -6,6 +6,19 @@ tglfs-unsend \- delete one or more received TGLFS files from another peer mailbo
 [\fB--yes\fR] [\fB--json\fR] \fIsource\fR \fIufids...\fR
 .SH DESCRIPTION
 Deletes the referenced chunk messages from the source peer mailbox in batches, then deletes the matching file card message.
+.SH SOURCE RESOLUTION
+The
+.I source
+value is passed directly to Telegram/GramJS entity resolution. In practice, use a public username such as
+.B alice
+or
+.BR @alice ,
+.B me
+for Saved Messages, or a phone number that the current Telegram account can already resolve, typically a saved contact. If Telegram cannot resolve the value, the command fails.
+.PP
+The
+.I source
+identifies the chat or mailbox that currently contains the received TGLFS file card and chunk messages you want to remove. It is not necessarily the original uploader's personal account.
 .SH OPTIONS
 .TP
 .B --yes

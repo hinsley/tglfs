@@ -114,6 +114,23 @@ async function confirmDestructiveAction(message: string, force = false) {
     }
 }
 
+const TELEGRAM_PEER_HELP = [
+    "Peer resolution:",
+    "  Peer values are passed directly to Telegram/GramJS entity resolution.",
+    "  In practice, use a public username (`alice` or `@alice`), `me` for Saved Messages,",
+    "  or a phone number that your Telegram account can already resolve (typically a saved contact).",
+    "  If Telegram cannot resolve the value, the command fails.",
+].join("\n")
+
+const TELEGRAM_SOURCE_HELP = [
+    TELEGRAM_PEER_HELP,
+    "",
+    "Source mailbox:",
+    "  For `receive` and `unsend`, <source> is the chat/mailbox that currently contains",
+    "  the TGLFS file card and chunk messages you want to operate on.",
+    "  It is not necessarily the original uploader's personal account.",
+].join("\n")
+
 function formatInspectResult(result: Awaited<ReturnType<typeof inspectFileCard>>) {
     const lines = [
         `Peer: ${result.peer === "me" ? "Saved Messages" : result.peer}`,
@@ -579,7 +596,8 @@ async function main(argv: string[]) {
         .command("send")
         .description("Send one or more owned TGLFS files to another peer.")
         .argument("<ufids...>", "UFID(s) to send")
-        .requiredOption("--to <peer>", "Recipient peer")
+        .requiredOption("--to <peer>", "Recipient peer/mailbox")
+        .addHelpText("after", `\n${TELEGRAM_PEER_HELP}\n`)
         .option("--json", "Output machine-readable JSON")
         .action(async (ufids: string[], options) => {
             await runJsonAware(options, async () => {
@@ -601,8 +619,9 @@ async function main(argv: string[]) {
     program
         .command("receive")
         .description("Receive one or more TGLFS files from another peer into Saved Messages.")
-        .argument("<source>", "Source peer")
+        .argument("<source>", "Source peer/mailbox to search")
         .argument("<ufids...>", "UFID(s) to receive")
+        .addHelpText("after", `\n${TELEGRAM_SOURCE_HELP}\n`)
         .option("--json", "Output machine-readable JSON")
         .action(async (source: string, ufids: string[], options) => {
             await runJsonAware(options, async () => {
@@ -624,8 +643,9 @@ async function main(argv: string[]) {
     program
         .command("unsend")
         .description("Delete one or more received TGLFS files from another peer mailbox.")
-        .argument("<source>", "Source peer")
+        .argument("<source>", "Source peer/mailbox to search")
         .argument("<ufids...>", "UFID(s) to unsend")
+        .addHelpText("after", `\n${TELEGRAM_SOURCE_HELP}\n`)
         .option("-y, --yes", "Skip the confirmation prompt")
         .option("--json", "Output machine-readable JSON")
         .action(async (source: string, ufids: string[], options) => {

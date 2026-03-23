@@ -6,3 +6,16 @@ tglfs-receive \- receive one or more TGLFS files from another peer into Saved Me
 [\fB--json\fR] \fIsource\fR \fIufids...\fR
 .SH DESCRIPTION
 For each UFID, forwards the source peer's chunk messages into Saved Messages, rewrites the chunk ids in a new local file card, and stores that new file card in Saved Messages.
+.SH SOURCE RESOLUTION
+The
+.I source
+value is passed directly to Telegram/GramJS entity resolution. In practice, use a public username such as
+.B alice
+or
+.BR @alice ,
+.B me
+for Saved Messages, or a phone number that the current Telegram account can already resolve, typically a saved contact. If Telegram cannot resolve the value, the command fails.
+.PP
+The
+.I source
+identifies the chat or mailbox that currently contains the TGLFS file card and chunk messages you want to receive. It is not necessarily the original uploader's personal account.
