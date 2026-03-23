@@ -132,11 +132,13 @@ Plain-text output shows a table of `Name`, `Size`, `Date`, `UFID`, and `Status`.
 
 ## Peer Transfer And Inspection
 
-Peer values for `--to`, `<source>`, and `--peer` are passed directly to Telegram/GramJS entity resolution. In practice, use one of:
+Peer values for `--to`, `<source>`, and `--peer` are passed directly to Telegram/GramJS entity resolution. Users, groups, and channels can all work. In practice, use one of:
 
-- a public username like `alice` or `@alice`
+- a public username like `alice`, `@alice`, `@mygroup`, or `@mychannel`
 - `me` for Saved Messages
 - a phone number your Telegram account can already resolve, typically a saved contact
+
+Private users, groups, and channels can also work if Telegram can already resolve them for the authenticated account, which usually means that account already has access to the dialog/entity.
 
 If Telegram cannot resolve the peer value, the command fails.
 

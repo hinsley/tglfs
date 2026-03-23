@@ -9,9 +9,14 @@ Forwards the referenced chunk messages in batches to the target peer, rewrites t
 .SH PEER RESOLUTION
 The
 .I peer
-value is passed directly to Telegram/GramJS entity resolution. In practice, use a public username such as
+value is passed directly to Telegram/GramJS entity resolution. Users, groups, and channels can all work. In practice, use a public username such as
 .B alice
 or
 .BR @alice ,
+.BR @mygroup ,
+or
+.BR @mychannel ,
 .B me
 for Saved Messages, or a phone number that the current Telegram account can already resolve, typically a saved contact. If Telegram cannot resolve the value, the command fails.
+.PP
+Private users, groups, and channels can also work if Telegram can already resolve them for the current account, which usually means that account already has access to the dialog or entity.

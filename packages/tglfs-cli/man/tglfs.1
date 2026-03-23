@@ -38,7 +38,7 @@ Rename an owned TGLFS file card.
 Delete one or more owned TGLFS files.
 .TP
 .B send <ufid...> --to <peer>
-Send one or more owned TGLFS files to another peer. The peer value is resolved by Telegram/GramJS, typically via username, @username, me, or a resolvable contact number.
+Send one or more owned TGLFS files to another peer. Users, groups, and channels can all work if Telegram/GramJS can resolve the value, including public usernames and many already-accessible private dialogs.
 .TP
 .B receive <source> <ufid...>
 Receive one or more TGLFS files from another peer into Saved Messages. The source value names the mailbox to search, not necessarily the original uploader.

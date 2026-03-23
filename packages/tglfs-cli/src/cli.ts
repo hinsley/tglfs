@@ -117,8 +117,11 @@ async function confirmDestructiveAction(message: string, force = false) {
 const TELEGRAM_PEER_HELP = [
     "Peer resolution:",
     "  Peer values are passed directly to Telegram/GramJS entity resolution.",
-    "  In practice, use a public username (`alice` or `@alice`), `me` for Saved Messages,",
+    "  Users, groups, and channels can all work.",
+    "  In practice, use a public username (`alice`, `@alice`, `@mygroup`, `@mychannel`), `me` for Saved Messages,",
     "  or a phone number that your Telegram account can already resolve (typically a saved contact).",
+    "  Private chats/groups/channels can also work if Telegram can already resolve them for the current account,",
+    "  which usually means the account already has access to that dialog/entity.",
     "  If Telegram cannot resolve the value, the command fails.",
 ].join("\n")
 
