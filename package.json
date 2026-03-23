@@ -1,4 +1,7 @@
 {
+    "name": "tglfs-login-ux",
+    "private": true,
+    "workspaces": ["packages/tglfs-cli"],
     "devDependencies": {
         "@types/wicg-file-system-access": "^2023.10.5",
         "assert": "^2.1.0",
@@ -21,11 +24,14 @@
         "telegram": "^2.21.2"
     },
     "scripts": {
-        "build": "vite build",
+        "build": "npm run build:web && npm run build:cli",
+        "build:web": "vite build",
+        "build:cli": "npm run build --workspace tglfs",
         "format": "prettier --write .",
         "run": "vite",
         "dev": "vite",
-        "preview": "vite preview"
+        "preview": "vite preview",
+        "test": "npm run test --workspace tglfs"
     },
     "overrides": {
         "term-size": "4.0.0",

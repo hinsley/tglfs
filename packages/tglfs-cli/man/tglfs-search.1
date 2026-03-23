@@ -1,0 +1,37 @@
+.TH TGLFS-SEARCH 1 "March 2026" "tglfs 0.1.0" "User Commands"
+.SH NAME
+tglfs-search \- search TGLFS file cards in Saved Messages or another peer mailbox
+.SH SYNOPSIS
+.B tglfs search
+[\fIOPTIONS\fR] [\fIquery\fR]
+.SH DESCRIPTION
+Looks up TGLFS file cards in Telegram Saved Messages or another peer mailbox. With no query, the command lists the first page of all file cards. Search results include complete and incomplete file cards.
+.SH OPTIONS
+.TP
+.B --peer <peer>
+Peer to search instead of Saved Messages.
+.TP
+.B --limit <n>
+Maximum number of file cards to fetch. Default:
+.B 50.
+.TP
+.B --offset-id <msgId>
+Resume from a Telegram message-id cursor returned by a previous search page.
+.TP
+.B --sort <sort>
+Sort the current result window. Values:
+.BR date_desc ,
+.BR date_asc ,
+.BR name_asc ,
+.BR name_desc ,
+.BR size_desc ,
+.BR size_asc .
+.TP
+.B --json
+Emit machine-readable JSON.
+.SH AI AGENT NOTES
+The plain-text output is for humans. Agents should prefer
+.B --json
+and can paginate statelessly with
+.B --offset-id.
+The search cursor follows Telegram message order, even when the displayed page is client-side sorted.

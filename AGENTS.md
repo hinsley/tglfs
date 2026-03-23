@@ -38,3 +38,11 @@ bd sync               # Sync with git
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
 
+## CLI Package Notes
+
+- The global npm CLI lives in `packages/tglfs-cli`.
+- Keep CLI runtime code isolated from the browser app in `src/web`; do not import DOM or service-worker modules into the CLI package.
+- Prefer updating the CLI package's direct subcommands, `--help` output, and manpages together so installed users and AI agents get consistent guidance.
+- Run CLI quality gates from the repo root with:
+  - `npm run build --workspace tglfs`
+  - `npm run test --workspace tglfs`

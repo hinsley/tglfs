@@ -1,0 +1,22 @@
+.TH TGLFS-SEND 1 "March 2026" "tglfs 0.1.0" "User Commands"
+.SH NAME
+tglfs-send \- send one or more owned TGLFS files to another peer
+.SH SYNOPSIS
+.B tglfs send
+[\fB--json\fR] \fIufids...\fR \fB--to\fR \fIpeer\fR
+.SH DESCRIPTION
+Forwards the referenced chunk messages in batches to the target peer, rewrites the chunk ids in a new file card, and sends the rewritten file card to that peer.
+.SH PEER RESOLUTION
+The
+.I peer
+value is passed directly to Telegram/GramJS entity resolution. Users, groups, and channels can all work. In practice, use a public username such as
+.B alice
+or
+.BR @alice ,
+.BR @mygroup ,
+or
+.BR @mychannel ,
+.B me
+for Saved Messages, or a phone number that the current Telegram account can already resolve, typically a saved contact. If Telegram cannot resolve the value, the command fails.
+.PP
+Private users, groups, and channels can also work if Telegram can already resolve them for the current account, which usually means that account already has access to the dialog or entity.

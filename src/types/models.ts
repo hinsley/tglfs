@@ -1,8 +1,1 @@
-export type FileCardData = {
-    name: string
-    ufid: string
-    size: number
-    uploadComplete: boolean
-    chunks: number[]
-    IV: string
-} 
+export type { FileCardData } from "../../packages/tglfs-cli/src/shared/file-cards"

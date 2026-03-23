@@ -1,27 +1,12 @@
 import * as Config from "../config"
+import {
+    formatFileCardDate,
+    formatFileCardSize,
+    sortFileCardRecords,
+} from "../../packages/tglfs-cli/src/shared/file-cards"
 import { listFileCards, renameFileCard, deleteFileCard, downloadFileCard, sendFileCard } from "../telegram"
 import { FileCardData } from "../types/models"
 import { PreviewModal } from "./preview"
-
-function humanReadableSize(size: number): string {
-    if (size <= 0 || !isFinite(size)) return "0 B"
-    const units = ["B", "KiB", "MiB", "GiB", "TiB"]
-    const i = Math.floor(Math.log(size) / Math.log(1024))
-    const value = size / Math.pow(1024, i)
-    return `${value.toFixed(i === 0 ? 0 : 2)} ${units[i]}`
-}
-
-function formatDate(epochSec: number): string {
-    const date = new Date(epochSec * 1000)
-    const pad = (n: number) => (n < 10 ? "0" + n : "" + n)
-    const y = date.getFullYear()
-    const m = pad(date.getMonth() + 1)
-    const d = pad(date.getDate())
-    const hh = pad(date.getHours())
-    const mm = pad(date.getMinutes())
-    const ss = pad(date.getSeconds())
-    return `${y}-${m}-${d} ${hh}:${mm}:${ss}`
-}
 
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"])
 const VIDEO_EXTS = new Set(["mp4", "webm", "mov", "avi", "mkv", "m4v"])
@@ -81,25 +66,7 @@ const state: BrowserState = {
 }
 
 function applySort(items: Array<{ msgId: number; date: number; data: FileCardData }>) {
-    const s = state.sort
-    items.sort((a, b) => {
-        switch (s) {
-            case "date_desc":
-                return b.date - a.date
-            case "date_asc":
-                return a.date - b.date
-            case "name_asc":
-                return a.data.name.localeCompare(b.data.name)
-            case "name_desc":
-                return b.data.name.localeCompare(a.data.name)
-            case "size_desc":
-                return b.data.size - a.data.size
-            case "size_asc":
-                return a.data.size - b.data.size
-            default:
-                return 0
-        }
-    })
+    sortFileCardRecords(items, state.sort)
 }
 
 let previewModal: PreviewModal | null = null
@@ -183,9 +150,9 @@ function renderList(items: Array<{ msgId: number; date: number; data: FileCardDa
             tr.dataset.msgid = String(msgId)
             tr.innerHTML = `
                 <td class="name"><span class="file-type-icon">${icon}</span>${data.name}</td>
-                <td class="size">${humanReadableSize(data.size)}</td>
+                <td class="size">${formatFileCardSize(data.size)}</td>
                 <td class="ufid"><code title="Click to copy UFID" data-ufid>${data.ufid}</code></td>
-                <td class="date">${formatDate(date)}</td>
+                <td class="date">${formatFileCardDate(date)}</td>
                 <td class="status"><span class="pill ${data.uploadComplete ? "complete" : "incomplete"}">${data.uploadComplete ? "Complete" : "Incomplete"}</span></td>`
             tbody.appendChild(tr)
             attachSelectionHandlers(tr, { msgId, date, data }, index)
@@ -209,7 +176,7 @@ function renderList(items: Array<{ msgId: number; date: number; data: FileCardDa
             card.innerHTML = `
                 <div class="flex-grow-1">
                     <div class="title"><span class="file-type-icon">${icon}</span>${data.name}</div>
-                    <div class="meta">${humanReadableSize(data.size)} • ${formatDate(date)}</div>
+                    <div class="meta">${formatFileCardSize(data.size)} • ${formatFileCardDate(date)}</div>
                     <div class="meta"><code title="Tap to copy UFID" data-ufid>${data.ufid}</code></div>
                 </div>`
             cards.appendChild(card)
@@ -244,9 +211,9 @@ function renderGrid(items: Array<{ msgId: number; date: number; data: FileCardDa
                     <span class="file-name-text"><span class="file-name-scroll">${data.name}</span></span>
                 </div>
                 <div class="file-meta">
-                    <span>${humanReadableSize(data.size)}</span>
+                    <span>${formatFileCardSize(data.size)}</span>
                     <span class="dot-separator">•</span>
-                    <span>${formatDate(date).split(' ')[0]}</span>
+                    <span>${formatFileCardDate(date).split(" ")[0]}</span>
                 </div>
             </div>`
         grid.appendChild(item)

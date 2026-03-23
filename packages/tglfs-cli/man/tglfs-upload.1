@@ -1,0 +1,28 @@
+.TH TGLFS-UPLOAD 1 "March 2026" "tglfs 0.1.0" "User Commands"
+.SH NAME
+tglfs-upload \- upload one file, or archive multiple files, into Telegram Saved Messages
+.SH SYNOPSIS
+.B tglfs upload
+[\fIOPTIONS\fR] \fIpaths...\fR
+.SH DESCRIPTION
+Uploads one file directly into Saved Messages, or packages multiple files into a tar archive using the same naming convention as the web app before uploading.
+.SH OPTIONS
+.TP
+.B --password <password>
+Encryption password.
+.TP
+.B --password-env [name]
+Read the encryption password from an environment variable. If no name is provided, the command uses
+.B TGLFS_UPLOAD_PASSWORD.
+.TP
+.B --password-stdin
+Read the encryption password from standard input.
+.TP
+.B --json
+Emit machine-readable JSON.
+.SH ENVIRONMENT
+.TP
+.B TGLFS_UPLOAD_PASSWORD
+Default environment variable for the upload encryption password.
+.SH AI AGENT NOTES
+TTY uploads render separate UFID and upload progress bars. In non-interactive sessions, agents should provide the encryption password via flags, environment variables, or standard input when needed.

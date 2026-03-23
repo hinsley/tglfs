@@ -1,0 +1,70 @@
+.TH TGLFS 1 "March 2026" "tglfs 0.1.0" "User Commands"
+.SH NAME
+tglfs \- authenticate with Telegram, manage TGLFS file cards, transfer files, and download TGLFS files by UFID
+.SH SYNOPSIS
+.B tglfs
+[\fIOPTIONS\fR] [\fICOMMAND\fR]
+.SH DESCRIPTION
+.B tglfs
+is a global command-line client for authenticating with Telegram, uploading files, managing TGLFS file cards, transferring files between peers, searching mailboxes, and downloading current-format or legacy TGLFS files by UFID.
+.PP
+Run
+.B tglfs help <command>
+for subcommand-specific help.
+.SH COMMANDS
+.TP
+.B upload <paths...>
+Upload one file, or archive multiple files, into Saved Messages.
+.TP
+.B login
+Authenticate with Telegram and persist the resulting session.
+.TP
+.B status
+Show current config and Telegram authorization state.
+.TP
+.B logout
+Remove the saved Telegram session.
+.TP
+.B search [query]
+Search TGLFS file cards in Saved Messages or another peer mailbox.
+.TP
+.B download <ufid>
+Download a current-format or legacy TGLFS file by UFID.
+.TP
+.B rename <ufid> <new-name>
+Rename an owned TGLFS file card.
+.TP
+.B delete <ufid...>
+Delete one or more owned TGLFS files.
+.TP
+.B send <ufid...> --to <peer>
+Send one or more owned TGLFS files to another peer. Users, groups, and channels can all work if Telegram/GramJS can resolve the value, including public usernames and many already-accessible private dialogs.
+.TP
+.B receive <source> <ufid...>
+Receive one or more TGLFS files from another peer into Saved Messages. The source value names the mailbox to search, not necessarily the original uploader.
+.TP
+.B unsend <source> <ufid...>
+Delete one or more received TGLFS files from another peer mailbox. The source value names the mailbox to modify, not necessarily the original uploader.
+.TP
+.B inspect <ufid>
+Inspect file-card metadata and chunk references; use
+.B --probe
+for a full current-vs-legacy integrity check.
+.TP
+.B help [command]
+Display help for a command.
+.SH FILES
+The CLI stores config and session files in OS-standard per-user app directories.
+.SH SEE ALSO
+.BR tglfs-login (1),
+.BR tglfs-status (1),
+.BR tglfs-logout (1),
+.BR tglfs-upload (1),
+.BR tglfs-search (1),
+.BR tglfs-download (1),
+.BR tglfs-rename (1),
+.BR tglfs-delete (1),
+.BR tglfs-send (1),
+.BR tglfs-receive (1),
+.BR tglfs-unsend (1),
+.BR tglfs-inspect (1)

@@ -1,0 +1,17 @@
+.TH TGLFS-LOGOUT 1 "March 2026" "tglfs 0.1.0" "User Commands"
+.SH NAME
+tglfs-logout \- remove persisted TGLFS auth state
+.SH SYNOPSIS
+.B tglfs logout
+[\fB--all\fR] [\fB--json\fR]
+.SH DESCRIPTION
+Removes the saved Telegram session. With
+.B --all
+it also removes the persisted TGLFS config.
+.SH OPTIONS
+.TP
+.B --all
+Delete config as well as the session.
+.TP
+.B --json
+Emit machine-readable JSON.
