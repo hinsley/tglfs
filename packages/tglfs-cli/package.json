@@ -1,6 +1,6 @@
 {
     "name": "tglfs",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "Global CLI for authenticating with Telegram, uploading and managing TGLFS files, transferring them between Telegram chats, and downloading them by UFID.",
     "license": "MIT",
     "repository": {
@@ -24,7 +24,7 @@
     ],
     "type": "module",
     "bin": {
-        "tglfs": "./dist/cli.js"
+        "tglfs": "dist/cli.js"
     },
     "man": [
         "./man/tglfs.1",
@@ -41,7 +41,11 @@
         "./man/tglfs-unsend.1",
         "./man/tglfs-inspect.1"
     ],
-    "files": ["dist", "man", "README.md"],
+    "files": [
+        "dist",
+        "man",
+        "README.md"
+    ],
     "engines": {
         "node": ">=22.0.0"
     },
