@@ -3,7 +3,7 @@
 tglfs-delete \- delete one or more owned TGLFS files from Saved Messages
 .SH SYNOPSIS
 .B tglfs delete
-[\fB--yes\fR] [\fB--json\fR] \fIufids...\fR
+[\fB--yes\fR] [\fB--no-interactive\fR] [\fB--json\fR] \fIufids...\fR
 .SH DESCRIPTION
 Deletes the Saved Messages file card plus all referenced chunk messages for each UFID.
 .SH OPTIONS
@@ -11,9 +11,12 @@ Deletes the Saved Messages file card plus all referenced chunk messages for each
 .B --yes
 Skip the confirmation prompt.
 .TP
+.B --no-interactive
+Disable interactive prompts and fail instead of prompting.
+.TP
 .B --json
 Emit machine-readable JSON.
 .SH AI AGENT NOTES
 Agents should pass
 .B --yes
-in non-interactive sessions.
+in non-interactive or JSON sessions.

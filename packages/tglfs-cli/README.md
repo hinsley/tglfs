@@ -93,7 +93,7 @@ tglfs delete <ufid...> --yes
 tglfs send <ufid...> --to alice
 ```
 
-TTY uploads render separate UFID and upload progress bars. `--json` stays quiet until the final result so agents can parse the output safely.
+TTY uploads render separate UFID and upload progress bars. `--json` prints exactly one final JSON object to stdout, writes failures to stderr, and never prompts. Uploads default to no encryption unless you explicitly provide a password source.
 
 ## Download Flow
 
@@ -113,7 +113,7 @@ printf '%s\n' 'secret' | tglfs download <ufid> --password-stdin
 tglfs download <ufid> --legacy
 ```
 
-Interactive TTY downloads render a progress bar. `--json` stays quiet until the final result so agents can parse the output safely.
+Interactive TTY downloads render a progress bar. `--json` prints exactly one final JSON object to stdout, writes failures to stderr, and never prompts.
 
 ## Search Flow
 
@@ -199,7 +199,8 @@ Inspect:
 The CLI is designed to work with interactive agents and terminal tools:
 
 - Prefer direct subcommands instead of menus when automating.
-- Use `--json` for machine-readable `status`, `search`, `upload`, `rename`, `delete`, `send`, `receive`, `unsend`, `inspect`, and `download` output.
+- Use `--json` for machine-readable `status`, `search`, `upload`, `rename`, `delete`, `send`, `receive`, `unsend`, `inspect`, and `download` output. In JSON mode, the CLI prints one success object to stdout, prints failures to stderr, and disables prompts.
+- Use `--no-interactive` on TTY runs when you want prompt-free behavior without JSON output.
 - Use stdin or env vars for secrets in non-interactive runs.
 - Pass `--yes` for destructive commands such as `delete` and `unsend` in non-interactive runs.
 - If Telegram asks for an SMS or in-app code or a 2FA password and no secret source was supplied, the agent should hand off to the user to provide it.

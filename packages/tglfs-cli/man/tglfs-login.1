@@ -10,6 +10,9 @@ Authenticates with Telegram as a user account and stores both TGLFS config and t
 If no API ID or API hash is supplied, the CLI uses the same bundled Telegram app credentials as the web client. Explicit flags and environment variables still override those defaults.
 .SH OPTIONS
 .TP
+.B --no-interactive
+Disable interactive prompts and fail instead of prompting.
+.TP
 .B --api-id <id>
 Telegram API ID.
 .TP
@@ -50,4 +53,8 @@ Telegram login code.
 .B TGLFS_2FA_PASSWORD
 Telegram two-factor password.
 .SH AI AGENT NOTES
-If no login code or two-factor password source is supplied and the command is attached to a TTY, the CLI prompts for the missing value. In a non-interactive session, the agent must provide the secret via flags, environment variables, or standard input.
+If no login code or two-factor password source is supplied and the command is attached to a TTY, the CLI prompts for the missing value unless
+.B --no-interactive
+or
+.B --json
+is used. In a non-interactive or JSON session, the agent must provide the secret via flags, environment variables, or standard input.

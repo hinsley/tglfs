@@ -19,6 +19,8 @@ type LoginOptions = {
     codeStdin?: boolean
     password?: string
     passwordStdin?: boolean
+    interactive?: boolean
+    json?: boolean
 }
 
 type TelegramIdentity = {
@@ -45,6 +47,7 @@ async function resolveRequiredValue(
     label: string,
     values: Array<string | undefined>,
     promptFn: () => Promise<string>,
+    interactive = isInteractiveSession(),
 ): Promise<string> {
     for (const value of values) {
         if (typeof value === "string" && value.trim() !== "") {
@@ -52,7 +55,7 @@ async function resolveRequiredValue(
         }
     }
 
-    if (!isInteractiveSession()) {
+    if (!interactive) {
         throw new CliError(
             "interactive_required",
             `${label} is required. Provide it with a flag, environment variable, or stdin.`,
@@ -125,6 +128,7 @@ export async function login(options: LoginOptions) {
         )
     }
 
+    const interactive = options.interactive !== false && !options.json && isInteractiveSession()
     const existingConfig = await loadConfig()
 
     const apiId = normalizeApiId(
@@ -140,6 +144,7 @@ export async function login(options: LoginOptions) {
         "Telegram phone number",
         [options.phone, process.env.TGLFS_PHONE, existingConfig?.phone],
         async () => promptText("Telegram phone number", existingConfig?.phone),
+        interactive,
     )
 
     const storedSession = (await loadSessionString()) ?? ""
@@ -168,7 +173,7 @@ export async function login(options: LoginOptions) {
                 if (options.codeStdin) {
                     return getSharedStdin("Telegram login code is required on stdin.")
                 }
-                if (!isInteractiveSession()) {
+                if (!interactive) {
                     throw new CliError(
                         "interactive_required",
                         "Telegram login code is required. Provide `--code`, `TGLFS_LOGIN_CODE`, or `--code-stdin`.",
@@ -191,7 +196,7 @@ export async function login(options: LoginOptions) {
                 if (options.passwordStdin) {
                     return getSharedStdin("Telegram 2FA password is required on stdin.")
                 }
-                if (!isInteractiveSession()) {
+                if (!interactive) {
                     throw new CliError(
                         "interactive_required",
                         "Telegram 2FA password is required. Provide `--password`, `TGLFS_2FA_PASSWORD`, or `--password-stdin`.",
@@ -204,7 +209,7 @@ export async function login(options: LoginOptions) {
                 if (error instanceof CliError) {
                     throw error
                 }
-                return !isInteractiveSession()
+                return !interactive
             },
         })
 

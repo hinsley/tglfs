@@ -3,7 +3,7 @@
 tglfs-unsend \- delete one or more received TGLFS files from another peer mailbox
 .SH SYNOPSIS
 .B tglfs unsend
-[\fB--yes\fR] [\fB--json\fR] \fIsource\fR \fIufids...\fR
+[\fB--yes\fR] [\fB--no-interactive\fR] [\fB--json\fR] \fIsource\fR \fIufids...\fR
 .SH DESCRIPTION
 Deletes the referenced chunk messages from the source peer mailbox in batches, then deletes the matching file card message.
 .SH SOURCE RESOLUTION
@@ -29,9 +29,12 @@ identifies the chat or mailbox that currently contains the received TGLFS file c
 .B --yes
 Skip the confirmation prompt.
 .TP
+.B --no-interactive
+Disable interactive prompts and fail instead of prompting.
+.TP
 .B --json
 Emit machine-readable JSON.
 .SH AI AGENT NOTES
 Agents should pass
 .B --yes
-in non-interactive sessions.
+in non-interactive or JSON sessions.

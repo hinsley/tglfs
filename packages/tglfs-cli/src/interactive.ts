@@ -1,6 +1,7 @@
 import prompts from "prompts"
 
 import { CliError, EXIT_CODES } from "./errors.js"
+import { CLI_FAIL_ON_PROMPT_SYMBOL, CLI_PROMPTS_OVERRIDE_SYMBOL } from "./test-hooks.js"
 
 export function isInteractiveSession() {
     return Boolean(process.stdin.isTTY && process.stdout.isTTY)
@@ -24,8 +25,34 @@ export async function readTrimmedStdin(message: string) {
     return value
 }
 
+function getPromptsImplementation() {
+    return ((globalThis as Record<PropertyKey, unknown>)[CLI_PROMPTS_OVERRIDE_SYMBOL] as typeof prompts | undefined) ?? prompts
+}
+
+function failOnPromptIfRequested() {
+    if ((globalThis as Record<PropertyKey, unknown>)[CLI_FAIL_ON_PROMPT_SYMBOL]) {
+        throw new CliError("prompt_used", "Interactive prompts are disabled for this execution context.", EXIT_CODES.GENERAL_ERROR)
+    }
+}
+
+function requirePromptValue<T>(value: T | undefined) {
+    if (value === undefined) {
+        throw new CliError("cancelled", "Interactive input was cancelled or not answered.", EXIT_CODES.GENERAL_ERROR)
+    }
+    return value
+}
+
 async function ask<T extends object>(questions: prompts.PromptObject<string> | prompts.PromptObject<string>[]) {
-    const result = await prompts(questions, {
+    failOnPromptIfRequested()
+    if (!isInteractiveSession()) {
+        throw new CliError(
+            "interactive_required",
+            "Interactive input is not available. Supply the required value with flags, environment variables, or stdin.",
+            EXIT_CODES.INTERACTIVE_REQUIRED,
+        )
+    }
+
+    const result = await getPromptsImplementation()(questions, {
         onCancel: () => {
             throw new CliError("cancelled", "Operation cancelled.", EXIT_CODES.GENERAL_ERROR)
         },
@@ -41,7 +68,7 @@ export async function promptText(message: string, initial?: string) {
         initial,
         validate: (value) => (value.trim() === "" ? "A value is required." : true),
     })
-    return response.value?.trim() ?? ""
+    return requirePromptValue(response.value)?.trim() ?? ""
 }
 
 export async function promptOptionalText(message: string, initial = "") {
@@ -51,7 +78,7 @@ export async function promptOptionalText(message: string, initial = "") {
         message,
         initial,
     })
-    return response.value?.trim() ?? ""
+    return requirePromptValue(response.value)?.trim() ?? ""
 }
 
 export async function promptPassword(message: string, initial = "") {
@@ -61,7 +88,7 @@ export async function promptPassword(message: string, initial = "") {
         message,
         initial,
     })
-    return response.value ?? ""
+    return requirePromptValue(response.value)
 }
 
 export async function promptConfirm(message: string, initial = false) {
@@ -71,7 +98,7 @@ export async function promptConfirm(message: string, initial = false) {
         message,
         initial,
     })
-    return Boolean(response.value)
+    return Boolean(requirePromptValue(response.value))
 }
 
 export async function promptSelect<T extends string>(
@@ -89,8 +116,5 @@ export async function promptSelect<T extends string>(
         })),
     })
 
-    if (!response.value) {
-        throw new CliError("cancelled", "Operation cancelled.", EXIT_CODES.GENERAL_ERROR)
-    }
-    return response.value
+    return requirePromptValue(response.value)
 }

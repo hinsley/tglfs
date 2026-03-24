@@ -7,11 +7,10 @@ export type PersistedConfig = {
 
 export type { FileCardData, FileCardRecord } from "./shared/file-cards.js"
 
-export type JsonEnvelope<T> =
-    | {
+export type JsonEnvelope<T extends Record<string, unknown>> =
+    | ({
           ok: true
-          data: T
-      }
+      } & T)
     | {
           ok: false
           error: {
