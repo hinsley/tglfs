@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
+import { realpathSync } from "node:fs"
 import { access } from "node:fs/promises"
 import process from "node:process"
-import { pathToFileURL } from "node:url"
+import { fileURLToPath } from "node:url"
 
 import { Command, Option } from "commander"
 
@@ -201,7 +202,13 @@ function isDirectEntrypoint() {
     if (!process.argv[1]) {
         return false
     }
-    return import.meta.url === pathToFileURL(process.argv[1]).href
+    try {
+        const invokedPath = realpathSync(process.argv[1])
+        const modulePath = realpathSync(fileURLToPath(import.meta.url))
+        return invokedPath === modulePath
+    } catch {
+        return false
+    }
 }
 
 function createProgram(runtime = getCliRuntime()) {

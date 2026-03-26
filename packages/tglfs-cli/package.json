@@ -1,6 +1,6 @@
 {
     "name": "tglfs",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "description": "Global CLI for authenticating with Telegram, uploading and managing TGLFS files, transferring them between Telegram chats, and downloading them by UFID.",
     "license": "MIT",
     "repository": {
