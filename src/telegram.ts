@@ -79,28 +79,6 @@ function humanReadableSize(size: number): string {
     return (size / Math.pow(1024, i)).toFixed(i == 0 ? 0 : 2) + " " + sizes[i]
 }
 
-function getFileExtension(name: string): string {
-    const lastDot = name.lastIndexOf(".")
-    if (lastDot < 0 || lastDot === name.length - 1) {
-        return ""
-    }
-    return name.slice(lastDot + 1).toLowerCase()
-}
-
-function isPotentialStreamingRemuxCandidate(file: File): boolean {
-    const extension = getFileExtension(file.name)
-    const mimeType = file.type.toLowerCase()
-    return (
-        extension === "mp4" ||
-        extension === "m4v" ||
-        extension === "mov" ||
-        extension === "qt" ||
-        mimeType === "video/mp4" ||
-        mimeType === "application/mp4" ||
-        mimeType === "video/quicktime"
-    )
-}
-
 type ServiceWorkerDownloadPump = {
     write: (chunk: Uint8Array) => Promise<void>
     close: () => Promise<void>
@@ -1146,24 +1124,13 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
         files = Array.from(selectedFiles)
     }
     const single = files.length === 1
-    let file = files[0]
+    const file = files[0]
     console.log(single ? `Selected file: ${file.name}` : `Selected ${files.length} files for archive upload.`)
 
     let password = prompt("(Optional) Encryption password:")
     if (password === null) {
         return
     }
-
-    let remuxModule: typeof import("./web/videoRemux") | null = null
-    let remuxKind: import("./web/videoRemux").RemuxableVideoKind | null = null
-    if (single && isPotentialStreamingRemuxCandidate(file)) {
-        remuxModule = await import("./web/videoRemux")
-        remuxKind = remuxModule.getRemuxableVideoKind(file)
-    }
-    const shouldRemuxForStreaming =
-        remuxModule !== null && remuxKind !== null
-            ? confirm(remuxModule.getRemuxConfirmMessage(file, remuxKind))
-            : false
     
     // Hide UI and show progress bar.
     const controlsDiv = document.getElementById("controls")
@@ -1175,29 +1142,28 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
     if (browserDiv) browserDiv.setAttribute("hidden", "")
     document.body.classList.remove("file-browser-active")
     progressDiv?.removeAttribute("hidden")
-    const restoreUploadUi = () => {
-        progressDiv?.setAttribute("hidden", "")
-        if (browserWasVisible) {
-            browserDiv?.removeAttribute("hidden")
-            document.body.classList.add("file-browser-active")
-        } else if (controlsWasVisible) {
-            controlsDiv?.removeAttribute("hidden")
-            document.body.classList.remove("file-browser-active")
-        } else {
-            controlsDiv?.removeAttribute("hidden")
-            document.body.classList.remove("file-browser-active")
-        }
-    }
     
     // Set up progress bar view.
     const progressBarText = document.getElementById("progressBarText")
     const progressBar = document.getElementById("progress")
     const progressBytesText = document.getElementById("progressBytesText")
     const progressTimeText = document.getElementById("progressTimeText")
-    let displayName = single ? file.name : Archive.defaultArchiveName()
-    let totalBytes = single ? file.size : Archive.computeTarSize(files)
+    let displayName: string
+    let totalBytes: number
     let inputStream: ReadableStream<Uint8Array>
     let ufidStream: ReadableStream<Uint8Array> | null = null
+    if (single) {
+        displayName = file.name
+        totalBytes = file.size
+        inputStream = file.stream()
+    } else {
+        displayName = Archive.defaultArchiveName()
+        totalBytes = Archive.computeTarSize(files)
+        const tarStream = Archive.createTarStream(files)
+        const teed = tarStream.tee()
+        ufidStream = teed[0]
+        inputStream = teed[1]
+    }
     const progressUnits = ["B", "KiB", "MiB", "GiB", "PiB"] as const
     const pickProgressUnit = (n: number) => {
         let i = 0
@@ -1251,39 +1217,6 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
         if (progressBarText) {
             progressBarText.textContent = phaseText
         }
-    }
-
-    if (shouldRemuxForStreaming && remuxModule !== null && remuxKind !== null) {
-        const remuxPhaseLabel = `Remuxing ${file.name} for streaming`
-        const remuxStartMs = Date.now()
-        setProgressPhase(remuxPhaseLabel)
-        try {
-            file = await remuxModule.remuxToStreamingMp4(file, remuxKind, (progress) => {
-                updateProgressBar(Math.round((progress / 100) * totalBytes), remuxStartMs, remuxPhaseLabel)
-            })
-            files = [file]
-            displayName = file.name
-            totalBytes = file.size
-            console.log(`Remuxed upload for streaming: ${displayName}`)
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            alert(`Remux failed.\n\n${message}`)
-            restoreUploadUi()
-            return
-        }
-    }
-
-    if (single) {
-        displayName = file.name
-        totalBytes = file.size
-        inputStream = file.stream()
-    } else {
-        displayName = Archive.defaultArchiveName()
-        totalBytes = Archive.computeTarSize(files)
-        const tarStream = Archive.createTarStream(files)
-        const teed = tarStream.tee()
-        ufidStream = teed[0]
-        inputStream = teed[1]
     }
 
     const ufidPhaseLabel = `Calculating UFID for ${displayName}`
@@ -1687,7 +1620,17 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
         console.error(error)
     } finally {
         // Restore previous UI.
-        restoreUploadUi()
+        progressDiv?.setAttribute("hidden", "")
+        if (browserWasVisible) {
+            browserDiv?.removeAttribute("hidden")
+            document.body.classList.add("file-browser-active")
+        } else if (controlsWasVisible) {
+            controlsDiv?.removeAttribute("hidden")
+            document.body.classList.remove("file-browser-active")
+        } else {
+            controlsDiv?.removeAttribute("hidden")
+            document.body.classList.remove("file-browser-active")
+        }
     }
 }
 
