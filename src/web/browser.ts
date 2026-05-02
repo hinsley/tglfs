@@ -116,6 +116,12 @@ type BrowserChoiceOption = {
     detail?: string
 }
 
+type MoveDestination =
+    | { kind: "folder"; record: TglfsFolderRecord; label: string }
+    | { kind: "root"; label: string }
+
+const ROOT_MOVE_DESTINATION = "__tglfs-root__"
+
 function getExtension(name: string): string {
     const parts = name.toLowerCase().split(".")
     if (parts.length < 2) return ""
@@ -815,8 +821,23 @@ function entryMatchesQuery(entry: BrowserEntry, query: string) {
 }
 
 function folderRecordBelongsInGlobalView(entry: FolderBrowserEntry) {
-    if (state.query) return true
     return !entry.data.parentFolderId && entry.data.path === ""
+}
+
+async function collectFolderFileUfids(client: any, folderRecords: TglfsFolderRecord[]) {
+    const ufids = new Set<string>()
+    const manifests = await Promise.all(
+        folderRecords.map((record) => getFolderManifest(client, record.data.folderId).catch(() => null)),
+    )
+    for (const manifest of manifests) {
+        if (!manifest) continue
+        for (const entry of Object.values(manifest.data.entries)) {
+            if (!entry.deleted && entry.kind === "file" && entry.ufid) {
+                ufids.add(entry.ufid)
+            }
+        }
+    }
+    return ufids
 }
 
 function chunkEntries(items: BrowserEntry[]) {
@@ -828,13 +849,23 @@ function chunkEntries(items: BrowserEntry[]) {
 }
 
 async function loadRootPage(client: any, options: { offsetId?: number; includeFolders: boolean }) {
-    const [fileRecords, folderRecords] = await Promise.all([
+    const [fileRecords, allFolderRecords] = await Promise.all([
         listFileCards(client, { query: state.query, limit: state.pageSize, offsetId: options.offsetId }),
-        options.includeFolders ? listFolderRecords(client, { query: state.query, limit: 200 }) : Promise.resolve([]),
+        listFolderRecords(client, { limit: 500 }),
     ])
+    const folderFileUfids = await collectFolderFileUfids(client, allFolderRecords)
+    const folderEntries = options.includeFolders
+        ? allFolderRecords
+            .map(folderEntryFromRecord)
+            .filter(folderRecordBelongsInGlobalView)
+            .filter((entry) => entryMatchesQuery(entry, state.query))
+        : []
+    const topLevelFiles = fileRecords
+        .filter((record) => !folderFileUfids.has(record.data.ufid))
+        .map(fileEntryFromRecord)
     const items: BrowserEntry[] = [
-        ...folderRecords.map(folderEntryFromRecord).filter(folderRecordBelongsInGlobalView),
-        ...fileRecords.map(fileEntryFromRecord),
+        ...folderEntries,
+        ...topLevelFiles,
     ]
     applySort(items)
     return {
@@ -939,7 +970,12 @@ function currentFolderManifestFallback(now: string): TglfsFolderManifest | null 
 
 function rewritePathForMove(path: string, oldPrefix: string, newPrefix: string) {
     if (!oldPrefix) return path ? joinFolderPath(newPrefix, path) : newPrefix
-    return replacePathPrefix(path, oldPrefix, newPrefix)
+    if (path === oldPrefix) return newPrefix
+    if (path.startsWith(`${oldPrefix}/`)) {
+        const suffix = path.slice(oldPrefix.length + 1)
+        return newPrefix ? joinFolderPath(newPrefix, suffix) : suffix
+    }
+    return path
 }
 
 function folderDisplayPath(record: TglfsFolderRecord, recordsById: Map<string, TglfsFolderRecord>) {
@@ -1258,11 +1294,24 @@ async function requestMoveDestination(client: any, selectedEntries: BrowserEntry
     const folderRecords = await listFolderRecords(client, { limit: 200 })
     const recordsById = new Map(folderRecords.map((record) => [record.data.folderId, record]))
     const currentFolderId = state.currentFolder?.data.folderId
-    const destinations = folderRecords
+    const parentFolder = state.currentFolder?.data.parentFolderId
+        ? recordsById.get(state.currentFolder.data.parentFolderId) ?? await getFolderRecord(client, state.currentFolder.data.parentFolderId)
+        : null
+    const parentDestination: MoveDestination | null = state.currentFolder
+        ? parentFolder
+            ? { kind: "folder", record: parentFolder, label: `Parent directory: ${parentFolder.data.name}` }
+            : { kind: "root", label: "Parent directory: All files" }
+        : null
+    if (parentFolder) recordsById.set(parentFolder.data.folderId, parentFolder)
+
+    const folderDestinations: MoveDestination[] = folderRecords
         .filter((record) => !record.data.deleted)
         .filter((record) => record.data.folderId !== currentFolderId)
+        .filter((record) => record.data.folderId !== parentFolder?.data.folderId)
         .filter((record) => selectedFolders.every((folder) => !folderIsSameOrDescendant(record, folder, recordsById)))
         .sort((a, b) => folderDisplayPath(a, recordsById).localeCompare(folderDisplayPath(b, recordsById)))
+        .map((record) => ({ kind: "folder", record, label: folderDisplayPath(record, recordsById) }))
+    const destinations = parentDestination ? [parentDestination, ...folderDestinations] : folderDestinations
 
     if (destinations.length === 0) {
         showUfidToast("No destination folders available")
@@ -1274,15 +1323,26 @@ async function requestMoveDestination(client: any, selectedEntries: BrowserEntry
         message: selectedEntries.length === 1 ? `Move "${getEntryName(selectedEntries[0])}"` : `Move ${selectedEntries.length} items`,
         label: "Destination folder",
         confirmLabel: "Move",
-        choices: destinations.map((record) => {
-            const displayPath = folderDisplayPath(record, recordsById)
-            return {
-                value: record.data.folderId,
-                label: displayPath,
-            }
-        }),
+        choices: destinations.map((destination) => ({
+            value: destination.kind === "root" ? ROOT_MOVE_DESTINATION : destination.record.data.folderId,
+            label: destination.label,
+        })),
     })
-    return choice ? recordsById.get(choice) ?? null : null
+    if (!choice) return null
+    if (choice === ROOT_MOVE_DESTINATION) return parentDestination?.kind === "root" ? parentDestination : null
+    const destination = destinations.find((candidate): candidate is MoveDestination & { kind: "folder" } =>
+        candidate.kind === "folder" && candidate.record.data.folderId === choice,
+    )
+    return destination ?? null
+}
+
+async function moveFileEntryToRoot(client: any, file: FileBrowserEntry, now: string) {
+    if (state.currentFolder) {
+        await tombstoneEntryInFolderManifest(client, state.currentFolder.data.folderId, now, (entry) =>
+            entry.kind === "file" && entry.ufid === file.data.ufid,
+        )
+    }
+    return true
 }
 
 async function moveFileEntryToFolder(client: any, file: FileBrowserEntry, destination: TglfsFolderRecord, now: string) {
@@ -1317,6 +1377,35 @@ async function moveFileEntryToFolder(client: any, file: FileBrowserEntry, destin
     if (state.currentFolder) {
         await tombstoneEntryInFolderManifest(client, state.currentFolder.data.folderId, now, (entry) =>
             entry.kind === "file" && entry.ufid === file.data.ufid,
+        )
+    }
+
+    return true
+}
+
+async function moveFolderEntryToRoot(client: any, folder: FolderBrowserEntry, now: string) {
+    const record = await resolveFolderRecordForMutation(client, folder)
+    if (!record) {
+        showUfidToast("Unable to find folder record")
+        return false
+    }
+    if (await topLevelFolderNameExists(client, record.data.name, record.data.folderId)) {
+        showUfidToast(`"${record.data.name}" already exists here`)
+        return false
+    }
+
+    await updateFolderTreeForRename(client, record, {
+        parentFolderId: undefined,
+        rootId: record.data.folderId,
+        oldPath: record.data.path,
+        newPath: "",
+        now,
+        includeEmptyPrefix: true,
+    })
+
+    if (record.data.parentFolderId) {
+        await tombstoneEntryInFolderManifest(client, record.data.parentFolderId, now, (entry) =>
+            entry.kind === "folder" && entry.folderId === record.data.folderId,
         )
     }
 
@@ -1387,10 +1476,18 @@ async function moveSelectedEntries(client: any) {
     let moved = 0
     for (const entry of movableEntries) {
         if (isFileEntry(entry)) {
-            if (await moveFileEntryToFolder(client, entry, destination, now)) moved++
+            if (destination.kind === "root") {
+                if (await moveFileEntryToRoot(client, entry, now)) moved++
+            } else if (await moveFileEntryToFolder(client, entry, destination.record, now)) {
+                moved++
+            }
             continue
         }
-        if (await moveFolderEntryToFolder(client, entry, destination, now)) moved++
+        if (destination.kind === "root") {
+            if (await moveFolderEntryToRoot(client, entry, now)) moved++
+        } else if (await moveFolderEntryToFolder(client, entry, destination.record, now)) {
+            moved++
+        }
     }
 
     clearSelection()
