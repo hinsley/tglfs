@@ -51,15 +51,15 @@ test("extractFileCardRecords skips malformed search results", () => {
     ])
 })
 
-test("legacy unversioned file cards read as explicit v1 records", () => {
+test("unversioned file cards read as v1 records", () => {
     const parsed = parseFileCardMessage(
-        'tglfs:file\n{"name":"legacy.txt","ufid":"u1","size":10,"uploadComplete":true,"chunks":[1],"IV":"iv"}',
+        'tglfs:file\n{"name":"v1.txt","ufid":"u1","size":10,"uploadComplete":true,"chunks":[1],"IV":"iv"}',
     )
 
     assert.deepEqual(parsed, {
         type: "tglfs:file",
         version: 1,
-        name: "legacy.txt",
+        name: "v1.txt",
         ufid: "u1",
         size: 10,
         uploadComplete: true,
@@ -78,11 +78,11 @@ test("new file-card serialization writes explicit current protocol metadata", ()
         IV: "iv",
     })
 
-    assert.equal(FILE_CARD_CURRENT_VERSION, 1)
+    assert.equal(FILE_CARD_CURRENT_VERSION, 2)
     assert.match(message, /^tglfs:file\n/)
     assert.deepEqual(JSON.parse(message.substring(message.indexOf("{"))), {
         type: "tglfs:file",
-        version: 1,
+        version: 2,
         name: "current.txt",
         ufid: "u2",
         size: 20,
@@ -95,7 +95,13 @@ test("new file-card serialization writes explicit current protocol metadata", ()
 test("unsupported future file-card versions are refused instead of guessed", () => {
     assert.equal(
         parseFileCardMessage(
-            'tglfs:file\n{"type":"tglfs:file","version":2,"name":"future.txt","ufid":"u3","size":30,"uploadComplete":true,"chunks":[3],"IV":"iv"}',
+            'tglfs:file\n{"type":"tglfs:file","version":3,"name":"future.txt","ufid":"u3","size":30,"uploadComplete":true,"chunks":[3],"IV":"iv"}',
+        ),
+        null,
+    )
+    assert.equal(
+        parseFileCardMessage(
+            'tglfs:file\n{"type":"tglfs:file","version":1,"name":"typed-v1.txt","ufid":"u5","size":50,"uploadComplete":true,"chunks":[5],"IV":"iv"}',
         ),
         null,
     )

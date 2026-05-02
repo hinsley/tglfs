@@ -1,9 +1,7 @@
-export const FILE_CARD_V1_TYPE = "tglfs:file" as const
+export const FILE_CARD_TYPE = "tglfs:file" as const
 export const FILE_CARD_V1_VERSION = 1 as const
 
-export type FileCardV1Data = {
-    type: typeof FILE_CARD_V1_TYPE
-    version: typeof FILE_CARD_V1_VERSION
+export type FileCardV1StoredData = {
     name: string
     ufid: string
     size: number
@@ -12,19 +10,25 @@ export type FileCardV1Data = {
     IV: string
 }
 
-export type LegacyFileCardV1Data = Omit<FileCardV1Data, "type" | "version">
+export type NormalizedFileCardV1Data = FileCardV1StoredData & {
+    type: typeof FILE_CARD_TYPE
+    version: typeof FILE_CARD_V1_VERSION
+}
 
-export type FileCardV1Input = FileCardV1Data | LegacyFileCardV1Data
-
-type FileCardV1Candidate = Partial<FileCardV1Data>
+type FileCardV1Candidate = FileCardV1StoredData & {
+    type?: unknown
+    version?: unknown
+}
 
 function hasFileCardV1Shape(value: unknown): value is FileCardV1Candidate {
     if (!value || typeof value !== "object") {
         return false
     }
 
-    const candidate = value as Partial<FileCardV1Data>
+    const candidate = value as FileCardV1Candidate
     return (
+        candidate.type === undefined &&
+        candidate.version === undefined &&
         typeof candidate.name === "string" &&
         typeof candidate.ufid === "string" &&
         typeof candidate.size === "number" &&
@@ -35,26 +39,13 @@ function hasFileCardV1Shape(value: unknown): value is FileCardV1Candidate {
     )
 }
 
-export function isFileCardV1Data(value: unknown): value is FileCardV1Data {
+export function normalizeFileCardV1Data(value: unknown): NormalizedFileCardV1Data | null {
     if (!hasFileCardV1Shape(value)) {
-        return false
-    }
-    const legacyV1 = value.type === undefined && value.version === undefined
-    const explicitV1 = value.type === FILE_CARD_V1_TYPE && value.version === FILE_CARD_V1_VERSION
-
-    return (
-        legacyV1 ||
-        explicitV1
-    )
-}
-
-export function normalizeFileCardV1Data(value: unknown): FileCardV1Data | null {
-    if (!isFileCardV1Data(value)) {
         return null
     }
 
     return {
-        type: FILE_CARD_V1_TYPE,
+        type: FILE_CARD_TYPE,
         version: FILE_CARD_V1_VERSION,
         name: value.name,
         ufid: value.ufid,
@@ -63,17 +54,4 @@ export function normalizeFileCardV1Data(value: unknown): FileCardV1Data | null {
         chunks: value.chunks.slice(),
         IV: value.IV,
     }
-}
-
-export function serializeFileCardV1Data(data: FileCardV1Input): string {
-    return JSON.stringify({
-        type: FILE_CARD_V1_TYPE,
-        version: FILE_CARD_V1_VERSION,
-        name: data.name,
-        ufid: data.ufid,
-        size: data.size,
-        uploadComplete: data.uploadComplete,
-        chunks: data.chunks,
-        IV: data.IV,
-    })
 }

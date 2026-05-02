@@ -52,9 +52,9 @@ bd sync               # Sync with git
 TGLFS stores user data as Telegram messages. Treat every serialized record that can be written to Telegram, read from Telegram, or persisted in local sync state as a durable protocol surface. This includes file cards, chunk metadata, future sync roots, sync entries, sync journals, tombstones, local ledger formats, and any import/export or repair records.
 
 **Protocol changes require explicit compatibility work:**
-- The existing unversioned `tglfs:file` Telegram records are legacy protocol version 1. Readers must treat missing `type`/`version` on otherwise valid current file cards as `type: "tglfs:file"` and `version: 1`.
-- Before any further durable protocol change, add explicit `type` and `version` fields to newly written records. New record types MUST include explicit `type` and `version` from the start.
-- Do not invent a separate version 0 for existing records. The compatibility boundary is: missing version means legacy v1 only for the already-shipped file-card shape.
+- The existing unversioned `tglfs:file` Telegram records are protocol version 1. Readers must treat missing `type`/`version` on otherwise valid current file cards as v1, without calling that format "legacy" because "legacy" already means the older download/decryption pipeline in this project.
+- Newly written file-card records use protocol version 2, the first file-card protocol with explicit `type` and `version` fields. New record types MUST include explicit `type` and `version` from the start.
+- Do not invent a separate version 0 for existing records. The compatibility boundary is: missing version means v1 only for the already-shipped unversioned file-card shape.
 - Before introducing a new durable protocol version or changing a version-specific storage algorithm, stop and discuss the compatibility design with the user. Do not silently choose a migration strategy.
 - When changing the meaning, required fields, validation rules, encryption parameters, compression parameters, chunk semantics, sync conflict semantics, or deletion/rename semantics of a durable record, bump that record's protocol version in the same change.
 - Add or update parser/serializer tests and fixture records for every supported protocol version. Tests must cover old records, new records, unknown future versions, and malformed records.
