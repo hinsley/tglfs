@@ -55,6 +55,9 @@ Inspect file-card metadata and chunk references; use
 .B --probe
 for a full current-vs-legacy integrity check.
 .TP
+.B sync <command>
+Initialize, push, pull, list, and inspect folder sync roots backed by TGLFS sync manifests.
+.TP
 .B help [command]
 Display help for a command.
 .SH FILES
@@ -71,4 +74,5 @@ The CLI stores config and session files in OS-standard per-user app directories.
 .BR tglfs-send (1),
 .BR tglfs-receive (1),
 .BR tglfs-unsend (1),
-.BR tglfs-inspect (1)
+.BR tglfs-inspect (1),
+.BR tglfs-sync (1)

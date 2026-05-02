@@ -17,6 +17,7 @@ tglfs help login
 tglfs help search
 tglfs help download
 tglfs help inspect
+tglfs help sync
 tglfs upload ./file.bin
 tglfs upload ./a.txt ./b.txt
 tglfs login
@@ -29,6 +30,11 @@ tglfs send <ufid...> --to alice
 tglfs receive alice <ufid...>
 tglfs unsend alice <ufid...> --yes
 tglfs inspect <ufid>
+tglfs sync init ./folder --name "My Folder"
+tglfs sync push ./folder
+tglfs sync pull <root-id> ./restore
+tglfs sync status ./folder
+tglfs sync list
 tglfs logout
 tglfs download <ufid>
 tglfs download <ufid> --legacy
@@ -48,6 +54,7 @@ man tglfs-send
 man tglfs-receive
 man tglfs-unsend
 man tglfs-inspect
+man tglfs-sync
 ```
 
 ## Auth Flow
@@ -130,6 +137,36 @@ tglfs search --sort name_asc --json
 
 Plain-text output shows a table of `Name`, `Size`, `Date`, `UFID`, and `Status`. If a result page is full, the CLI prints the exact `--offset-id` command for the next page.
 
+## Folder Sync
+
+The first sync milestone supports backup and restore, not a background daemon. Initialize a folder once:
+
+```sh
+tglfs sync init ./Documents --name "Documents"
+```
+
+Push local changes into Telegram-backed storage:
+
+```sh
+tglfs sync push ./Documents
+TGLFS_SYNC_PASSWORD='secret' tglfs sync push ./Documents
+```
+
+Restore a sync root elsewhere:
+
+```sh
+tglfs sync pull <root-id> ./restore
+```
+
+Sync stores one `tglfs:sync-manifest` record per root in Saved Messages. File contents remain ordinary immutable TGLFS file cards. Pulls never silently overwrite divergent local files; they write conflict copies with deterministic `TGLFS conflict` names.
+
+Useful sync inspection commands:
+
+```sh
+tglfs sync status ./Documents
+tglfs sync list
+```
+
 ## Peer Transfer And Inspection
 
 Peer values for `--to`, `<source>`, and `--peer` are passed directly to Telegram/GramJS entity resolution. Users, groups, and channels can all work. In practice, use one of:
@@ -194,12 +231,17 @@ Inspect:
 
 - `TGLFS_INSPECT_PASSWORD`
 
+Sync:
+
+- `TGLFS_SYNC_PASSWORD`
+
 ## AI-Agent Use
 
 The CLI is designed to work with interactive agents and terminal tools:
 
 - Prefer direct subcommands instead of menus when automating.
 - Use `--json` for machine-readable `status`, `search`, `upload`, `rename`, `delete`, `send`, `receive`, `unsend`, `inspect`, and `download` output. In JSON mode, the CLI prints one success object to stdout, prints failures to stderr, and disables prompts.
+- Use `--json` for sync commands when automating folder backup/restore.
 - Use `--no-interactive` on TTY runs when you want prompt-free behavior without JSON output.
 - Use stdin or env vars for secrets in non-interactive runs.
 - Pass `--yes` for destructive commands such as `delete` and `unsend` in non-interactive runs.

@@ -1,0 +1,71 @@
+.TH TGLFS-SYNC 1 "May 2026" "tglfs 0.1.2" "User Commands"
+.SH NAME
+tglfs-sync \- back up and restore local folders with TGLFS sync manifests
+.SH SYNOPSIS
+.B tglfs sync init
+\fIfolder\fR \fB--name\fR \fIname\fR
+.br
+.B tglfs sync push
+[\fIOPTIONS\fR] \fIfolder-or-root-id\fR
+.br
+.B tglfs sync pull
+[\fIOPTIONS\fR] \fIroot-id\fR \fIdestination\fR
+.br
+.B tglfs sync status
+[\fIOPTIONS\fR] \fIfolder-or-root-id\fR
+.br
+.B tglfs sync list
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+The
+.B sync
+command group implements the first TGLFS folder-sync milestone: backup and restore. It stores one
+.B tglfs:sync-manifest
+record per sync root in Telegram Saved Messages. File contents remain ordinary immutable
+.B tglfs:file
+records; the manifest maps normalized relative paths to UFIDs and file metadata.
+.SH COMMANDS
+.TP
+.B init <folder> --name <name>
+Create a local sync-root ledger entry and publish an empty remote manifest.
+.TP
+.B push <folder-or-root-id>
+Scan the configured local folder, upload new or changed files, mark deleted paths as tombstones, and publish the updated manifest after uploads complete.
+.TP
+.B pull <root-id> <destination>
+Restore non-deleted manifest entries into the destination folder. Existing divergent files are preserved by writing the remote file to a deterministic conflict path.
+.TP
+.B status <folder-or-root-id>
+Compare the configured local folder against the remote manifest and print added, modified, deleted, and unchanged counts.
+.TP
+.B list
+List locally configured sync roots.
+.SH OPTIONS
+.TP
+.B --no-interactive
+Disable interactive prompts and fail instead of prompting.
+.TP
+.B --password <password>
+Encryption password for
+.B push
+or decryption password for
+.B pull.
+.TP
+.B --password-env [name]
+Read the sync password from an environment variable. If no name is provided, the command uses
+.B TGLFS_SYNC_PASSWORD.
+.TP
+.B --password-stdin
+Read the sync password from standard input.
+.TP
+.B --json
+Emit machine-readable JSON.
+.SH ENVIRONMENT
+.TP
+.B TGLFS_SYNC_PASSWORD
+Default environment variable for sync upload and restore passwords.
+.SH FILES
+Sync roots are stored in the CLI data directory in
+.B sync-roots.json.
+.SH AI AGENT NOTES
+This sync milestone is backup/restore only. It does not install a daemon, watch the filesystem, or provide a GUI. Do not overwrite conflicts: preserve both files and report the conflict path.

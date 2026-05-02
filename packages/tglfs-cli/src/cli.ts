@@ -28,6 +28,7 @@ import {
     sendFiles,
     unsendFiles,
 } from "./file-ops.js"
+import { getGramJs } from "./gramjs.js"
 import {
     isInteractiveSession,
     promptConfirm,
@@ -43,6 +44,14 @@ import { resolveOptionalPassword } from "./secrets.js"
 import { FILE_CARD_SEARCH_SORT_VALUES, formatSearchResultsTable, searchFileCards } from "./search.js"
 import { formatFileCardDate, formatFileCardSize } from "./shared/file-cards.js"
 import { storePaths } from "./store.js"
+import {
+    initSyncRoot,
+    listSyncRoots,
+    pullSyncRoot,
+    pushSyncRoot,
+    resolveSyncRootOrThrow,
+    statusSyncRoot,
+} from "./sync.js"
 import { CLI_RUNTIME_OVERRIDE_SYMBOL } from "./test-hooks.js"
 import { uploadPaths } from "./upload.js"
 
@@ -76,6 +85,12 @@ type CliRuntime = {
     resolveOptionalPassword: typeof resolveOptionalPassword
     searchFileCards: typeof searchFileCards
     uploadPaths: typeof uploadPaths
+    initSyncRoot: typeof initSyncRoot
+    listSyncRoots: typeof listSyncRoots
+    pullSyncRoot: typeof pullSyncRoot
+    pushSyncRoot: typeof pushSyncRoot
+    resolveSyncRootOrThrow: typeof resolveSyncRootOrThrow
+    statusSyncRoot: typeof statusSyncRoot
 }
 
 const DEFAULT_RUNTIME: CliRuntime = {
@@ -98,6 +113,12 @@ const DEFAULT_RUNTIME: CliRuntime = {
     resolveOptionalPassword,
     searchFileCards,
     uploadPaths,
+    initSyncRoot,
+    listSyncRoots,
+    pullSyncRoot,
+    pushSyncRoot,
+    resolveSyncRootOrThrow,
+    statusSyncRoot,
 }
 
 function getCliRuntime(): CliRuntime {
@@ -233,6 +254,12 @@ function createProgram(runtime = getCliRuntime()) {
         resolveOptionalPassword,
         searchFileCards,
         uploadPaths,
+        initSyncRoot,
+        listSyncRoots,
+        pullSyncRoot,
+        pushSyncRoot,
+        resolveSyncRootOrThrow,
+        statusSyncRoot,
     } = runtime
 
     program
@@ -433,6 +460,166 @@ function createProgram(runtime = getCliRuntime()) {
                 } catch (error) {
                     await persistAndDisconnectClient(client, session).catch(() => {})
                     throw error
+                }
+            })
+        })
+
+    const sync = program
+        .command("sync")
+        .description("Back up and restore local folders using TGLFS sync manifests.")
+
+    addInteractiveOption(
+        sync
+            .command("init")
+            .description("Initialize a local folder as a TGLFS sync root.")
+            .argument("<folder>", "Folder to sync")
+            .requiredOption("--name <name>", "Human-readable sync root name"),
+    )
+        .option("--json", "Output machine-readable JSON")
+        .action(async (folder: string, options: InteractiveFlag & { name: string }) => {
+            const interactiveOptions = withGlobalInteractive(options)
+            await runJsonAware(interactiveOptions, async () => {
+                const { Api } = getGramJs()
+                const { client, session } = await connectAuthorizedClient()
+                try {
+                    const result = await initSyncRoot(client, {
+                        Api,
+                        folderPath: folder,
+                        rootName: interactiveOptions.name,
+                    })
+                    await persistAndDisconnectClient(client, session)
+                    return {
+                        text: result.created
+                            ? `Initialized sync root ${result.root.rootName} (${result.root.rootId}).`
+                            : `Sync root already exists: ${result.root.rootName} (${result.root.rootId}).`,
+                        data: result,
+                    }
+                } catch (error) {
+                    await persistAndDisconnectClient(client, session).catch(() => {})
+                    throw error
+                }
+            })
+        })
+
+    addInteractiveOption(
+        sync
+            .command("push")
+            .description("Upload local changes for a configured sync root.")
+            .argument("<folder-or-root-id>", "Configured folder path or sync root id"),
+    )
+        .option("--password <password>", "Encryption password for uploaded files")
+        .option("--password-env [name]", "Read encryption password from an environment variable")
+        .option("--password-stdin", "Read encryption password from stdin")
+        .option("--json", "Output machine-readable JSON")
+        .action(async (folderOrRootId: string, options: InteractiveFlag & { password?: string; passwordEnv?: string | boolean; passwordStdin?: boolean }) => {
+            const interactiveOptions = withGlobalInteractive(options)
+            await runJsonAware(interactiveOptions, async () => {
+                const { Api } = getGramJs()
+                const root = await resolveSyncRootOrThrow(folderOrRootId)
+                const password =
+                    (await resolveOptionalPassword({
+                        ...interactiveOptions,
+                        defaultEnv: "TGLFS_SYNC_PASSWORD",
+                        promptMessage: "Sync upload encryption password (leave empty if none)",
+                        stdinMessage: "Sync upload encryption password is required on stdin.",
+                        fallbackValue: "",
+                        promptOnInteractive: false,
+                    })) ?? ""
+                const { client, config, session } = await connectAuthorizedClient()
+                try {
+                    const result = await pushSyncRoot(client, {
+                        Api,
+                        root,
+                        password,
+                        chunkSize: config.chunkSize,
+                    })
+                    await persistAndDisconnectClient(client, session)
+                    return {
+                        text: formatSyncPushResult(result),
+                        data: result,
+                    }
+                } catch (error) {
+                    await persistAndDisconnectClient(client, session).catch(() => {})
+                    throw error
+                }
+            })
+        })
+
+    addInteractiveOption(
+        sync
+            .command("pull")
+            .description("Restore a sync root into a destination folder.")
+            .argument("<root-id>", "Sync root id")
+            .argument("<destination>", "Destination folder"),
+    )
+        .option("--password <password>", "Decryption password for restored files")
+        .option("--password-env [name]", "Read decryption password from an environment variable")
+        .option("--password-stdin", "Read decryption password from stdin")
+        .option("--json", "Output machine-readable JSON")
+        .action(async (rootId: string, destination: string, options: InteractiveFlag & { password?: string; passwordEnv?: string | boolean; passwordStdin?: boolean }) => {
+            const interactiveOptions = withGlobalInteractive(options)
+            await runJsonAware(interactiveOptions, async () => {
+                const password =
+                    (await resolveOptionalPassword({
+                        ...interactiveOptions,
+                        defaultEnv: "TGLFS_SYNC_PASSWORD",
+                        promptMessage: "Sync restore decryption password (leave empty if none)",
+                        stdinMessage: "Sync restore decryption password is required on stdin.",
+                        fallbackValue: "",
+                        promptOnInteractive: canPrompt(interactiveOptions),
+                    })) ?? ""
+                const { client, session } = await connectAuthorizedClient()
+                try {
+                    const result = await pullSyncRoot(client, {
+                        rootId,
+                        destination,
+                        password,
+                    })
+                    await persistAndDisconnectClient(client, session)
+                    return {
+                        text: formatSyncPullResult(result),
+                        data: result,
+                    }
+                } catch (error) {
+                    await persistAndDisconnectClient(client, session).catch(() => {})
+                    throw error
+                }
+            })
+        })
+
+    sync
+        .command("status")
+        .description("Show local-vs-remote status for a configured sync root.")
+        .argument("<folder-or-root-id>", "Configured folder path or sync root id")
+        .option("--json", "Output machine-readable JSON")
+        .action(async (folderOrRootId: string, options: JsonFlag) => {
+            await runJsonAware(options, async () => {
+                const root = await resolveSyncRootOrThrow(folderOrRootId)
+                const { client, session } = await connectAuthorizedClient()
+                try {
+                    const result = await statusSyncRoot(client, root)
+                    await persistAndDisconnectClient(client, session)
+                    return {
+                        text: formatSyncStatusResult(result),
+                        data: result,
+                    }
+                } catch (error) {
+                    await persistAndDisconnectClient(client, session).catch(() => {})
+                    throw error
+                }
+            })
+        })
+
+    sync
+        .command("list")
+        .description("List locally configured sync roots.")
+        .option("--json", "Output machine-readable JSON")
+        .action(async (options: JsonFlag) => {
+            await runJsonAware(options, async () => {
+                const result = await listSyncRoots()
+                return {
+                    text: formatSyncListResult(result),
+                    data: result,
                 }
             })
         })
@@ -728,6 +915,58 @@ const TELEGRAM_SOURCE_HELP = [
     "  It is not necessarily the original uploader's personal account.",
 ].join("\n")
 
+function formatSyncPushResult(result: Awaited<ReturnType<typeof pushSyncRoot>>) {
+    return [
+        `Pushed sync root ${result.rootName} (${result.rootId}).`,
+        `Manifest message: ${result.manifestMsgId}`,
+        `Added: ${result.added}`,
+        `Modified: ${result.modified}`,
+        `Deleted: ${result.deleted}`,
+        `Unchanged: ${result.unchanged}`,
+    ].join("\n")
+}
+
+function formatSyncPullResult(result: Awaited<ReturnType<typeof pullSyncRoot>>) {
+    const lines = [
+        `Pulled sync root ${result.rootName} (${result.rootId}) to ${result.destination}.`,
+        `Downloaded: ${result.downloaded.length}`,
+        `Skipped: ${result.skipped.length}`,
+        `Conflicts: ${result.conflicts.length}`,
+    ]
+    if (result.conflicts.length > 0) {
+        lines.push("", "Conflicts:")
+        for (const conflict of result.conflicts) {
+            lines.push(`  ${conflict.path} -> ${conflict.conflictPath}`)
+        }
+    }
+    return lines.join("\n")
+}
+
+function formatSyncStatusResult(result: Awaited<ReturnType<typeof statusSyncRoot>>) {
+    return [
+        `Sync root: ${result.rootName} (${result.rootId})`,
+        `Folder: ${result.folderPath}`,
+        `Manifest message: ${result.manifestMsgId ?? "not published"}`,
+        `Added: ${result.added}`,
+        `Modified: ${result.modified}`,
+        `Deleted: ${result.deleted}`,
+        `Unchanged: ${result.unchanged}`,
+    ].join("\n")
+}
+
+function formatSyncListResult(result: Awaited<ReturnType<typeof listSyncRoots>>) {
+    if (result.roots.length === 0) {
+        return "No sync roots configured."
+    }
+    return result.roots
+        .map((root) => [
+            `${root.rootName} (${root.rootId})`,
+            `  Folder: ${root.folderPath}`,
+            `  Manifest message: ${root.manifestMsgId ?? "not published"}`,
+        ].join("\n"))
+        .join("\n\n")
+}
+
 function formatInspectResult(result: Awaited<ReturnType<typeof inspectFileCard>>) {
     const lines = [
         `Peer: ${result.peer === "me" ? "Saved Messages" : result.peer}`,
@@ -775,6 +1014,7 @@ async function runInteractiveMenu(program: Command) {
         { title: "Receive", value: "receive", description: "Receive files from another peer into Saved Messages." },
         { title: "Unsend", value: "unsend", description: "Delete received files from another peer mailbox." },
         { title: "Inspect", value: "inspect", description: "Inspect a file card. Use --probe for a full format check." },
+        { title: "Sync", value: "sync", description: "Show sync command help." },
         { title: "Logout", value: "logout", description: "Remove the saved Telegram session." },
         { title: "Help", value: "help", description: "Show general CLI help." },
         { title: "Exit", value: "exit", description: "Quit without doing anything." },
@@ -841,6 +1081,9 @@ async function runInteractiveMenu(program: Command) {
             await dispatchInteractiveCommand(program, ["inspect", ufid])
             return
         }
+        case "sync":
+            await dispatchInteractiveCommand(program, ["sync", "--help"])
+            return
         case "logout":
             await dispatchInteractiveCommand(program, ["logout"])
             return

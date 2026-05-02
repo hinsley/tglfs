@@ -39,7 +39,8 @@
         "./man/tglfs-send.1",
         "./man/tglfs-receive.1",
         "./man/tglfs-unsend.1",
-        "./man/tglfs-inspect.1"
+        "./man/tglfs-inspect.1",
+        "./man/tglfs-sync.1"
     ],
     "files": [
         "dist",
