@@ -424,6 +424,33 @@ div#offline {
     padding: 16px 12px 20px;
 }
 
+.fx-breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 4px 0;
+    color: var(--fx-text-muted);
+    font-size: 0.88rem;
+    min-height: 32px;
+}
+
+.fx-breadcrumb-root {
+    color: var(--fx-accent);
+    font-weight: 600;
+    text-decoration: none;
+    padding: 2px 4px;
+}
+
+.fx-breadcrumb-root:hover {
+    text-decoration: underline;
+}
+
+.fx-breadcrumb-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 #fileBrowser .fx-footer {
     margin-top: auto;
     padding: 0;
@@ -496,6 +523,19 @@ div#offline {
 #browserTable td {
     padding: 14px 16px;
     border-bottom: 1px solid var(--fx-border);
+}
+
+.entry-name-cell {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.entry-subtitle {
+    color: var(--fx-text-muted);
+    font-size: 0.78rem;
+    line-height: 1.2;
+    margin-top: 2px;
 }
 
 /* UFID truncation and narrow column. */
@@ -612,6 +652,16 @@ div#offline {
 .pill.incomplete {
     color: #b45309;
     border-color: rgba(180, 83, 9, .25);
+}
+
+.pill.folder {
+    color: #0369a1;
+    border-color: rgba(3, 105, 161, .25);
+}
+
+.pill.missing {
+    color: #b91c1c;
+    border-color: rgba(185, 28, 28, .25);
 }
 
 .fade-in {

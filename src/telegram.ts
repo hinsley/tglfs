@@ -20,6 +20,14 @@ import {
     serializeFileCardMessage,
 } from "../packages/tglfs-cli/src/shared/file-cards"
 import {
+    TGLFS_FOLDER_TYPE,
+    buildFolderManifestSearchQuery,
+    buildFolderSearchQuery,
+    extractTglfsFolderManifestRecord,
+    extractTglfsFolderRecord,
+} from "../packages/tglfs-cli/src/folders"
+import type { TglfsFolderManifestRecord, TglfsFolderRecord } from "../packages/tglfs-cli/src/folders"
+import {
     deleteFileCardMessages as sharedDeleteFileCardMessages,
     listFileCards as sharedListFileCards,
     lookupFileCardByUfid as sharedLookupFileCardByUfid,
@@ -1703,6 +1711,67 @@ export async function getFileCardByUfid(
 ): Promise<{ msgId: number; date: number; data: FileCardData } | null> {
     await gramJsReady
     return sharedLookupFileCardByUfid(client, ufid)
+}
+
+export async function listFolderRecords(
+    client: TelegramClient,
+    opts?: { query?: string; limit?: number; offsetId?: number },
+): Promise<TglfsFolderRecord[]> {
+    await gramJsReady
+    const query = (opts?.query || "").trim()
+    const search = query ? `${TGLFS_FOLDER_TYPE} ${query}` : buildFolderSearchQuery()
+    const messages = await client.getMessages("me", {
+        search,
+        limit: opts?.limit ?? 50,
+        offsetId: opts?.offsetId,
+        waitTime: 0,
+    } as any)
+    const records: TglfsFolderRecord[] = []
+    for (const message of messages) {
+        const record = extractTglfsFolderRecord(message as any)
+        if (record && !record.data.deleted) {
+            records.push(record)
+        }
+    }
+    return records
+}
+
+export async function getFolderRecord(
+    client: TelegramClient,
+    folderId: string,
+): Promise<TglfsFolderRecord | null> {
+    await gramJsReady
+    const messages = await client.getMessages("me", {
+        search: buildFolderSearchQuery(folderId),
+        limit: 10,
+        waitTime: 0,
+    } as any)
+    for (const message of messages) {
+        const record = extractTglfsFolderRecord(message as any)
+        if (record?.data.folderId === folderId && !record.data.deleted) {
+            return record
+        }
+    }
+    return null
+}
+
+export async function getFolderManifest(
+    client: TelegramClient,
+    folderId: string,
+): Promise<TglfsFolderManifestRecord | null> {
+    await gramJsReady
+    const messages = await client.getMessages("me", {
+        search: buildFolderManifestSearchQuery(folderId),
+        limit: 10,
+        waitTime: 0,
+    } as any)
+    for (const message of messages) {
+        const record = extractTglfsFolderManifestRecord(message as any)
+        if (record?.data.folderId === folderId) {
+            return record
+        }
+    }
+    return null
 }
 
 export async function renameFileCard(
