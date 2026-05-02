@@ -158,7 +158,7 @@ Restore a sync root elsewhere:
 tglfs sync pull <root-id> ./restore
 ```
 
-Sync stores one `tglfs:sync-manifest` record per root in Saved Messages. File contents remain ordinary immutable TGLFS file cards. Pulls never silently overwrite divergent local files; they write conflict copies with deterministic `TGLFS conflict` names.
+Sync stores one `tglfs:sync-manifest` record per root in Saved Messages. New sync roots write sync-manifest v2, which links the local root to a first-class TGLFS folder. Folder structure is represented with searchable `tglfs:folder` and `tglfs:folder-manifest` records, while file contents remain ordinary immutable TGLFS file cards. Pulls never silently overwrite divergent local files; they write conflict copies with deterministic `TGLFS conflict` names.
 
 Useful sync inspection commands:
 

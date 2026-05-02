@@ -7,15 +7,28 @@ import type { TelegramClient } from "telegram/client/TelegramClient.js"
 
 import { downloadFileCard } from "./download.js"
 import { CliError, EXIT_CODES } from "./errors.js"
+import {
+    buildFolderManifestSearchQuery,
+    buildFolderSearchQuery,
+    createTglfsFolder,
+    createTglfsFolderManifest,
+    extractTglfsFolderManifestRecord,
+    extractTglfsFolderRecord,
+    serializeTglfsFolderManifestMessage,
+    serializeTglfsFolderMessage,
+} from "./folders.js"
+import type { TglfsFolder, TglfsFolderManifest, TglfsFolderManifestRecord, TglfsFolderRecord } from "./folders.js"
 import { getGramJs } from "./gramjs.js"
 import { getFileCardByUfid } from "./protocol.js"
 import {
     buildSyncManifestSearchQuery,
     createEmptySyncManifest,
     extractSyncManifestRecords,
+    getSyncManifestFolderId,
+    SYNC_MANIFEST_VERSION,
     serializeSyncManifestMessage,
 } from "./sync-manifest.js"
-import type { SyncManifest, SyncManifestEntry, SyncManifestRecord } from "./sync-manifest.js"
+import type { SyncManifest, SyncManifestEntry, SyncManifestRecord, SyncManifestV2 } from "./sync-manifest.js"
 import { scanSyncFolder } from "./sync-scan.js"
 import type { LocalSyncFile } from "./sync-scan.js"
 import { loadSyncLedger, resolveLedgerRoot, saveSyncLedger } from "./sync-store.js"
@@ -49,6 +62,7 @@ export type SyncDiff = {
 export type SyncPushResult = {
     rootId: string
     rootName: string
+    folderId: string
     manifestMsgId: number
     added: number
     modified: number
@@ -60,6 +74,7 @@ export type SyncPushResult = {
 export type SyncPullResult = {
     rootId: string
     rootName: string
+    folderId?: string
     destination: string
     downloaded: Array<{ path: string; ufid: string; outputPath: string }>
     skipped: Array<{ path: string; reason: string }>
@@ -69,6 +84,7 @@ export type SyncPullResult = {
 export type SyncStatusResult = {
     rootId: string
     rootName: string
+    folderId?: string
     folderPath: string
     manifestMsgId?: number
     added: number
@@ -165,6 +181,210 @@ export async function writeSyncManifest(
     }
 }
 
+async function findTglfsFolder(client: SyncClient, folderId: string): Promise<TglfsFolderRecord | null> {
+    const messages = await client.getMessages("me", {
+        search: buildFolderSearchQuery(folderId),
+        limit: 10,
+        waitTime: 0,
+    } as any)
+    for (const message of messages) {
+        const record = extractTglfsFolderRecord(message)
+        if (record?.data.folderId === folderId) {
+            return record
+        }
+    }
+    return null
+}
+
+async function findTglfsFolderManifest(client: SyncClient, folderId: string): Promise<TglfsFolderManifestRecord | null> {
+    const messages = await client.getMessages("me", {
+        search: buildFolderManifestSearchQuery(folderId),
+        limit: 10,
+        waitTime: 0,
+    } as any)
+    for (const message of messages) {
+        const record = extractTglfsFolderManifestRecord(message)
+        if (record?.data.folderId === folderId) {
+            return record
+        }
+    }
+    return null
+}
+
+async function writeTglfsFolder(
+    client: SyncClient,
+    options: {
+        Api: ApiLike
+        folder: TglfsFolder
+        existing?: TglfsFolderRecord | null
+    },
+): Promise<TglfsFolderRecord> {
+    const message = serializeTglfsFolderMessage(options.folder)
+    if (!options.existing) {
+        const result = await client.sendMessage("me", { message })
+        return { msgId: result.id, date: result.date, peerId: result.peerId, data: options.folder }
+    }
+    await client.invoke(
+        new options.Api.messages.EditMessage({
+            peer: options.existing.peerId ?? "me",
+            id: options.existing.msgId,
+            message,
+        }),
+    )
+    return { ...options.existing, data: options.folder }
+}
+
+async function writeTglfsFolderManifest(
+    client: SyncClient,
+    options: {
+        Api: ApiLike
+        manifest: TglfsFolderManifest
+        existing?: TglfsFolderManifestRecord | null
+    },
+): Promise<TglfsFolderManifestRecord> {
+    const message = serializeTglfsFolderManifestMessage(options.manifest)
+    if (!options.existing) {
+        const result = await client.sendMessage("me", { message })
+        return { msgId: result.id, date: result.date, peerId: result.peerId, data: options.manifest }
+    }
+    await client.invoke(
+        new options.Api.messages.EditMessage({
+            peer: options.existing.peerId ?? "me",
+            id: options.existing.msgId,
+            message,
+        }),
+    )
+    return { ...options.existing, data: options.manifest }
+}
+
+function createChildFolderId(rootFolderId: string, folderPath: string) {
+    if (folderPath === "") {
+        return rootFolderId
+    }
+    return createHash("sha256").update(`${rootFolderId}\0folder\0${folderPath}`).digest("hex")
+}
+
+function parentFolderPath(folderPath: string) {
+    const index = folderPath.lastIndexOf("/")
+    return index === -1 ? "" : folderPath.slice(0, index)
+}
+
+function entryName(path: string) {
+    const index = path.lastIndexOf("/")
+    return index === -1 ? path : path.slice(index + 1)
+}
+
+function folderPathForFile(path: string) {
+    const index = path.lastIndexOf("/")
+    return index === -1 ? "" : path.slice(0, index)
+}
+
+function upgradeSyncManifestToV2(manifest: SyncManifest, folderId: string): SyncManifestV2 {
+    return {
+        ...manifest,
+        version: SYNC_MANIFEST_VERSION,
+        folderId,
+    }
+}
+
+function buildFolderTreeFromManifest(manifest: SyncManifestV2, timestamp: string) {
+    const folderPaths = new Set<string>([""])
+    for (const entry of Object.values(manifest.entries)) {
+        const folderPath = folderPathForFile(entry.path)
+        if (folderPath === "") {
+            continue
+        }
+        const parts = folderPath.split("/")
+        for (let index = 1; index <= parts.length; index += 1) {
+            folderPaths.add(parts.slice(0, index).join("/"))
+        }
+    }
+
+    const folders = new Map<string, TglfsFolder>()
+    const manifests = new Map<string, TglfsFolderManifest>()
+    for (const folderPath of [...folderPaths].sort((a, b) => a.localeCompare(b))) {
+        const folderId = createChildFolderId(manifest.folderId, folderPath)
+        const parentPath = folderPath === "" ? undefined : parentFolderPath(folderPath)
+        const name = folderPath === "" ? manifest.rootName : entryName(folderPath)
+        folders.set(folderPath, createTglfsFolder({
+            folderId,
+            parentFolderId: parentPath === undefined ? undefined : createChildFolderId(manifest.folderId, parentPath),
+            rootId: manifest.rootId,
+            name,
+            path: folderPath,
+            now: timestamp,
+        }))
+        manifests.set(folderPath, createTglfsFolderManifest({
+            folderId,
+            rootId: manifest.rootId,
+            path: folderPath,
+            now: timestamp,
+        }))
+    }
+
+    for (const folderPath of folderPaths) {
+        if (folderPath === "") {
+            continue
+        }
+        const parentPath = parentFolderPath(folderPath)
+        const parentManifest = manifests.get(parentPath)
+        if (!parentManifest) {
+            continue
+        }
+        const name = entryName(folderPath)
+        parentManifest.entries[name] = {
+            entryId: createEntryId(manifest.rootId, `${folderPath}/`),
+            name,
+            path: folderPath,
+            kind: "folder",
+            folderId: createChildFolderId(manifest.folderId, folderPath),
+            deleted: false,
+            updatedAt: timestamp,
+        }
+    }
+
+    for (const entry of Object.values(manifest.entries)) {
+        const folderPath = folderPathForFile(entry.path)
+        const folderManifest = manifests.get(folderPath)
+        if (!folderManifest) {
+            continue
+        }
+        const name = entryName(entry.path)
+        folderManifest.entries[name] = {
+            entryId: entry.entryId,
+            name,
+            path: entry.path,
+            kind: "file",
+            ufid: entry.ufid,
+            size: entry.size,
+            mtimeMs: entry.mtimeMs,
+            mode: entry.mode,
+            deleted: entry.deleted,
+            updatedAt: entry.updatedAt,
+        }
+    }
+
+    return { folders, manifests }
+}
+
+async function publishFolderTree(client: SyncClient, options: { Api: ApiLike; manifest: SyncManifestV2; timestamp: string }) {
+    const tree = buildFolderTreeFromManifest(options.manifest, options.timestamp)
+    for (const folder of tree.folders.values()) {
+        const existing = await findTglfsFolder(client, folder.folderId)
+        const nextFolder = existing
+            ? { ...folder, createdAt: existing.data.createdAt, updatedAt: options.timestamp }
+            : folder
+        await writeTglfsFolder(client, { Api: options.Api, folder: nextFolder, existing })
+    }
+    for (const manifest of tree.manifests.values()) {
+        const existing = await findTglfsFolderManifest(client, manifest.folderId)
+        const nextManifest = existing
+            ? { ...manifest, createdAt: existing.data.createdAt, updatedAt: options.timestamp }
+            : manifest
+        await writeTglfsFolderManifest(client, { Api: options.Api, manifest: nextManifest, existing })
+    }
+}
+
 async function defaultUploadFile(client: TelegramClient, chunkSize: number, password: string, file: LocalSyncFile) {
     const { Api } = getGramJs()
     const blob = await openAsBlob(file.absolutePath)
@@ -230,11 +450,17 @@ export async function initSyncRoot(
     }
 
     const rootId = randomUUID()
-    const manifest = createEmptySyncManifest({ rootId, rootName })
+    const folderId = randomUUID()
+    const manifest = createEmptySyncManifest({ rootId, rootName, folderId })
+    if (manifest.version !== SYNC_MANIFEST_VERSION) {
+        throw new CliError("invalid_sync_manifest", "New sync roots must write sync-manifest v2.", EXIT_CODES.GENERAL_ERROR)
+    }
+    await publishFolderTree(client, { Api: options.Api, manifest, timestamp: manifest.createdAt })
     const record = await writeSyncManifest(client, { Api: options.Api, manifest })
     const root: SyncLedgerRoot = {
         rootId,
         rootName,
+        folderId,
         folderPath: absolutePath,
         manifestMsgId: record.msgId,
         lastManifestHash: hashManifest(manifest),
@@ -293,7 +519,14 @@ export async function pushSyncRoot(
     },
 ): Promise<SyncPushResult> {
     const existing = await findSyncManifest(client, options.root.rootId)
-    const manifest = existing?.data ?? createEmptySyncManifest({ rootId: options.root.rootId, rootName: options.root.rootName })
+    const folderId = getSyncManifestFolderId(existing?.data ?? createEmptySyncManifest({
+        rootId: options.root.rootId,
+        rootName: options.root.rootName,
+    })) ?? options.root.folderId ?? randomUUID()
+    const manifest = upgradeSyncManifestToV2(
+        existing?.data ?? createEmptySyncManifest({ rootId: options.root.rootId, rootName: options.root.rootName, folderId }),
+        folderId,
+    )
     const files = await scanSyncFolder(options.root.folderPath)
     const diff = diffSyncFiles(files, manifest)
     const uploadFile =
@@ -316,6 +549,7 @@ export async function pushSyncRoot(
     }
 
     manifest.updatedAt = timestamp
+    await publishFolderTree(client, { Api: options.Api, manifest, timestamp })
     const record = await writeSyncManifest(client, {
         Api: options.Api,
         manifest,
@@ -324,6 +558,7 @@ export async function pushSyncRoot(
 
     const ledger = await loadSyncLedger()
     const root = ledger.roots[options.root.rootId] ?? options.root
+    root.folderId = folderId
     updateRootFromManifest(root, record)
     ledger.roots[root.rootId] = root
     await saveSyncLedger(ledger)
@@ -331,6 +566,7 @@ export async function pushSyncRoot(
     return {
         rootId: root.rootId,
         rootName: root.rootName,
+        folderId,
         manifestMsgId: record.msgId,
         added: diff.added.length,
         modified: diff.modified.length,
@@ -416,6 +652,7 @@ export async function pullSyncRoot(
     ledger.roots[record.data.rootId] = {
         rootId: record.data.rootId,
         rootName: record.data.rootName,
+        folderId: getSyncManifestFolderId(record.data),
         folderPath: destination,
         manifestMsgId: record.msgId,
         lastManifestHash: hashManifest(record.data),
@@ -436,6 +673,7 @@ export async function pullSyncRoot(
     return {
         rootId: record.data.rootId,
         rootName: record.data.rootName,
+        folderId: getSyncManifestFolderId(record.data),
         destination,
         downloaded,
         skipped,
@@ -451,6 +689,7 @@ export async function statusSyncRoot(client: SyncClient, root: SyncLedgerRoot): 
     return {
         rootId: root.rootId,
         rootName: root.rootName,
+        folderId: getSyncManifestFolderId(record?.data ?? createEmptySyncManifest({ rootId: root.rootId, rootName: root.rootName })) ?? root.folderId,
         folderPath: root.folderPath,
         manifestMsgId: record?.msgId ?? root.manifestMsgId,
         added: diff.added.length,

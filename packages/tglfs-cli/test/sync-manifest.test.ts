@@ -28,8 +28,26 @@ test("sync manifest v1 messages parse successfully", () => {
     assert.deepEqual(parseSyncManifestMessage(serializeSyncManifestMessage(manifest)), manifest)
 })
 
+test("sync manifest v2 messages include a root folder id", () => {
+    const manifest = createEmptySyncManifest({
+        rootId: "root-1",
+        rootName: "Documents",
+        folderId: "folder-1",
+        now: "2026-05-02T12:00:00.000Z",
+    })
+
+    assert.deepEqual(parseSyncManifestMessage(serializeSyncManifestMessage(manifest)), manifest)
+    assert.equal(manifest.version, 2)
+})
+
 test("sync manifest parser refuses malformed and future-version records", () => {
     assert.equal(parseSyncManifestMessage("tglfs:sync-manifest\n{}"), null)
+    assert.equal(
+        parseSyncManifestMessage(
+            'tglfs:sync-manifest\n{"type":"tglfs:sync-manifest","version":2,"rootId":"root","rootName":"Docs","createdAt":"2026-05-02T12:00:00.000Z","updatedAt":"2026-05-02T12:00:00.000Z","entries":{}}',
+        ),
+        null,
+    )
     assert.equal(
         parseSyncManifestMessage(
             'tglfs:sync-manifest\n{"type":"tglfs:sync-manifest","version":2,"rootId":"root","rootName":"Docs","createdAt":"2026-05-02T12:00:00.000Z","updatedAt":"2026-05-02T12:00:00.000Z","entries":{}}',

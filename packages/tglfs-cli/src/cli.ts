@@ -918,6 +918,7 @@ const TELEGRAM_SOURCE_HELP = [
 function formatSyncPushResult(result: Awaited<ReturnType<typeof pushSyncRoot>>) {
     return [
         `Pushed sync root ${result.rootName} (${result.rootId}).`,
+        `TGLFS folder: ${result.folderId}`,
         `Manifest message: ${result.manifestMsgId}`,
         `Added: ${result.added}`,
         `Modified: ${result.modified}`,
@@ -929,6 +930,7 @@ function formatSyncPushResult(result: Awaited<ReturnType<typeof pushSyncRoot>>) 
 function formatSyncPullResult(result: Awaited<ReturnType<typeof pullSyncRoot>>) {
     const lines = [
         `Pulled sync root ${result.rootName} (${result.rootId}) to ${result.destination}.`,
+        `TGLFS folder: ${result.folderId ?? "not recorded"}`,
         `Downloaded: ${result.downloaded.length}`,
         `Skipped: ${result.skipped.length}`,
         `Conflicts: ${result.conflicts.length}`,
@@ -945,6 +947,7 @@ function formatSyncPullResult(result: Awaited<ReturnType<typeof pullSyncRoot>>) 
 function formatSyncStatusResult(result: Awaited<ReturnType<typeof statusSyncRoot>>) {
     return [
         `Sync root: ${result.rootName} (${result.rootId})`,
+        `TGLFS folder: ${result.folderId ?? "not recorded"}`,
         `Folder: ${result.folderPath}`,
         `Manifest message: ${result.manifestMsgId ?? "not published"}`,
         `Added: ${result.added}`,
@@ -961,6 +964,7 @@ function formatSyncListResult(result: Awaited<ReturnType<typeof listSyncRoots>>)
     return result.roots
         .map((root) => [
             `${root.rootName} (${root.rootId})`,
+            `  TGLFS folder: ${root.folderId ?? "not recorded"}`,
             `  Folder: ${root.folderPath}`,
             `  Manifest message: ${root.manifestMsgId ?? "not published"}`,
         ].join("\n"))

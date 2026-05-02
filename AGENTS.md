@@ -54,6 +54,8 @@ TGLFS stores user data as Telegram messages. Treat every serialized record that 
 **Protocol changes require explicit compatibility work:**
 - The existing unversioned `tglfs:file` Telegram records are protocol version 1. Readers must treat missing `type`/`version` on otherwise valid current file cards as v1, without calling that format "legacy" because "legacy" already means the older download/decryption pipeline in this project.
 - Newly written file-card records use protocol version 2, the first file-card protocol with explicit `type` and `version` fields. New record types MUST include explicit `type` and `version` from the start.
+- Folder-backed sync roots write `tglfs:sync-manifest` version 2. Readers must continue to parse sync-manifest v1 records, where no `folderId` exists, but newly initialized or upgraded sync roots must link to a `tglfs:folder` v1 record through `folderId`.
+- TGLFS folder structure uses `tglfs:folder` v1 records for folder identity and `tglfs:folder-manifest` v1 records for folder contents. Folder manifests reference immutable `tglfs:file` blobs by UFID; do not move blob/chunk metadata into folder records.
 - Do not invent a separate version 0 for existing records. The compatibility boundary is: missing version means v1 only for the already-shipped unversioned file-card shape.
 - Before introducing a new durable protocol version or changing a version-specific storage algorithm, stop and discuss the compatibility design with the user. Do not silently choose a migration strategy.
 - When changing the meaning, required fields, validation rules, encryption parameters, compression parameters, chunk semantics, sync conflict semantics, or deletion/rename semantics of a durable record, bump that record's protocol version in the same change.
@@ -70,6 +72,7 @@ TGLFS stores user data as Telegram messages. Treat every serialized record that 
 
 **Future sync design rules:**
 - Sync must use explicit sync protocol records rather than inferring folder state only from ordinary file cards.
+- Sync roots should point at first-class TGLFS folders. Do not introduce a new sync mode that creates a private path universe disconnected from `tglfs:folder` / `tglfs:folder-manifest` records.
 - Track stable logical file identity separately from path. Renames, moves, deletes, and conflicts must not be represented only by disappearing or reappearing paths.
 - Deletes require tombstones or explicit deletion records. Absence from a listing is not proof of deletion.
 - Prefer append-only sync journals plus optional compacted checkpoints over in-place replacement of the only folder manifest.

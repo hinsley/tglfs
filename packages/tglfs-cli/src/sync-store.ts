@@ -14,6 +14,7 @@ export type SyncLedgerFileStats = {
 export type SyncLedgerRoot = {
     rootId: string
     rootName: string
+    folderId?: string
     folderPath: string
     manifestMsgId?: number
     lastManifestHash?: string

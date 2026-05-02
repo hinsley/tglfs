@@ -21,13 +21,17 @@ The
 .B sync
 command group implements the first TGLFS folder-sync milestone: backup and restore. It stores one
 .B tglfs:sync-manifest
-record per sync root in Telegram Saved Messages. File contents remain ordinary immutable
+record per sync root in Telegram Saved Messages. New sync roots write sync-manifest v2 records that point at first-class
+.B tglfs:folder
+records. Folder contents are represented by searchable
+.B tglfs:folder-manifest
+records. File contents remain ordinary immutable
 .B tglfs:file
-records; the manifest maps normalized relative paths to UFIDs and file metadata.
+records; the sync manifest maps normalized relative paths to UFIDs and file metadata for backup/restore compatibility.
 .SH COMMANDS
 .TP
 .B init <folder> --name <name>
-Create a local sync-root ledger entry and publish an empty remote manifest.
+Create a local sync-root ledger entry and publish an empty remote folder, folder manifest, and sync manifest.
 .TP
 .B push <folder-or-root-id>
 Scan the configured local folder, upload new or changed files, mark deleted paths as tombstones, and publish the updated manifest after uploads complete.
@@ -68,4 +72,4 @@ Default environment variable for sync upload and restore passwords.
 Sync roots are stored in the CLI data directory in
 .B sync-roots.json.
 .SH AI AGENT NOTES
-This sync milestone is backup/restore only. It does not install a daemon, watch the filesystem, or provide a GUI. Do not overwrite conflicts: preserve both files and report the conflict path.
+This sync milestone is backup/restore only. It does not install a daemon, watch the filesystem, or provide a GUI. New sync protocol work must preserve sync-manifest v1 reads, write sync-manifest v2 for folder-backed roots, and keep folder metadata separate from immutable file cards. Do not overwrite conflicts: preserve both files and report the conflict path.

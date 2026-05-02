@@ -1,5 +1,6 @@
 export const SYNC_MANIFEST_TYPE = "tglfs:sync-manifest" as const
-export const SYNC_MANIFEST_VERSION = 1 as const
+export const SYNC_MANIFEST_V1_VERSION = 1 as const
+export const SYNC_MANIFEST_VERSION = 2 as const
 
 export type SyncManifestEntry = {
     entryId: string
@@ -12,15 +13,22 @@ export type SyncManifestEntry = {
     updatedAt: string
 }
 
-export type SyncManifest = {
+export type SyncManifestV1 = {
     type: typeof SYNC_MANIFEST_TYPE
-    version: typeof SYNC_MANIFEST_VERSION
+    version: typeof SYNC_MANIFEST_V1_VERSION
     rootId: string
     rootName: string
     createdAt: string
     updatedAt: string
     entries: Record<string, SyncManifestEntry>
 }
+
+export type SyncManifestV2 = Omit<SyncManifestV1, "version"> & {
+    version: typeof SYNC_MANIFEST_VERSION
+    folderId: string
+}
+
+export type SyncManifest = SyncManifestV1 | SyncManifestV2
 
 export type SyncManifestRecord = {
     msgId: number
@@ -71,10 +79,10 @@ export function normalizeSyncManifest(value: unknown): SyncManifest | null {
         return null
     }
 
-    const candidate = value as Partial<SyncManifest>
+    const candidate = value as Partial<SyncManifestV1> & { folderId?: unknown }
     if (
         candidate.type !== SYNC_MANIFEST_TYPE ||
-        candidate.version !== SYNC_MANIFEST_VERSION ||
+        (candidate.version !== SYNC_MANIFEST_V1_VERSION && candidate.version !== SYNC_MANIFEST_VERSION) ||
         typeof candidate.rootId !== "string" ||
         candidate.rootId.trim() === "" ||
         typeof candidate.rootName !== "string" ||
@@ -105,6 +113,20 @@ export function normalizeSyncManifest(value: unknown): SyncManifest | null {
         }
     }
 
+    if (candidate.version === SYNC_MANIFEST_V1_VERSION) {
+        return {
+            type: SYNC_MANIFEST_TYPE,
+            version: SYNC_MANIFEST_V1_VERSION,
+            rootId: candidate.rootId,
+            rootName: candidate.rootName,
+            createdAt: candidate.createdAt,
+            updatedAt: candidate.updatedAt,
+            entries,
+        }
+    }
+    if (typeof candidate.folderId !== "string" || candidate.folderId.trim() === "") {
+        return null
+    }
     return {
         type: SYNC_MANIFEST_TYPE,
         version: SYNC_MANIFEST_VERSION,
@@ -112,6 +134,7 @@ export function normalizeSyncManifest(value: unknown): SyncManifest | null {
         rootName: candidate.rootName,
         createdAt: candidate.createdAt,
         updatedAt: candidate.updatedAt,
+        folderId: candidate.folderId,
         entries,
     }
 }
@@ -158,15 +181,27 @@ export function extractSyncManifestRecords(messages: Iterable<SyncManifestMessag
     return records
 }
 
-export function createEmptySyncManifest(options: { rootId: string; rootName: string; now?: string }): SyncManifest {
+export function createEmptySyncManifest(options: { rootId: string; rootName: string; folderId?: string; now?: string }): SyncManifest {
     const now = options.now ?? new Date().toISOString()
-    return {
+    const base: SyncManifestV1 = {
         type: SYNC_MANIFEST_TYPE,
-        version: SYNC_MANIFEST_VERSION,
+        version: SYNC_MANIFEST_V1_VERSION,
         rootId: options.rootId,
         rootName: options.rootName,
         createdAt: now,
         updatedAt: now,
         entries: {},
     }
+    if (!options.folderId) {
+        return base
+    }
+    return {
+        ...base,
+        version: SYNC_MANIFEST_VERSION,
+        folderId: options.folderId,
+    }
+}
+
+export function getSyncManifestFolderId(manifest: SyncManifest) {
+    return manifest.version === SYNC_MANIFEST_VERSION ? manifest.folderId : undefined
 }

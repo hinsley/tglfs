@@ -117,11 +117,22 @@ test("pushSyncRoot uploads blobs before publishing the manifest", async () => {
             async getMessages() {
                 return [{ id: 44, date: 1, peerId: "me-peer", message: serializeSyncManifestMessage(manifest) }]
             },
-            async sendMessage() {
+            async sendMessage(_peer: string, options: { message: string }) {
+                if (options.message.startsWith("tglfs:folder-manifest")) {
+                    events.push("send-folder-manifest")
+                    return { id: 46, date: 1, peerId: "me-peer" }
+                }
+                if (options.message.startsWith("tglfs:folder")) {
+                    events.push("send-folder")
+                    return { id: 45, date: 1, peerId: "me-peer" }
+                }
                 throw new Error("unexpected send")
             },
             async invoke(request: any) {
                 events.push(`manifest:${request.args.id}`)
+                const data = JSON.parse(request.args.message.substring(request.args.message.indexOf("{")))
+                assert.equal(data.version, 2)
+                assert.equal(data.folderId, "folder-root")
                 return true
             },
         } as any
@@ -131,6 +142,7 @@ test("pushSyncRoot uploads blobs before publishing the manifest", async () => {
             root: {
                 rootId: "root-1",
                 rootName: "Docs",
+                folderId: "folder-root",
                 folderPath: dir,
                 manifestMsgId: 44,
                 lastSyncedFiles: {},
@@ -143,9 +155,10 @@ test("pushSyncRoot uploads blobs before publishing the manifest", async () => {
             },
         })
 
-        assert.deepEqual(events, ["upload:new.txt", "manifest:44"])
+        assert.deepEqual(events, ["upload:new.txt", "send-folder", "send-folder-manifest", "manifest:44"])
         assert.equal(result.added, 1)
         assert.equal(result.deleted, 1)
+        assert.equal(result.folderId, "folder-root")
         assert.equal(result.uploaded[0]?.ufid, "ufid-new.txt")
     })
 })
