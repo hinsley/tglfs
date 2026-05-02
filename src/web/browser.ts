@@ -23,7 +23,7 @@ import {
     TGLFS_FOLDER_TYPE,
     TGLFS_FOLDER_VERSION,
 } from "../../packages/tglfs-cli/src/folders"
-import type { TglfsFolder, TglfsFolderManifest, TglfsFolderManifestEntry, TglfsFolderRecord } from "../../packages/tglfs-cli/src/folders"
+import type { TglfsFolder, TglfsFolderManifest, TglfsFolderManifestEntry, TglfsFolderManifestRecord, TglfsFolderRecord } from "../../packages/tglfs-cli/src/folders"
 import { PreviewModal, type PreviewEntry } from "./preview"
 
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"])
@@ -108,6 +108,12 @@ type BrowserDialogOptions = {
     inputType?: string
     allowEmpty?: boolean
     danger?: boolean
+}
+
+type BrowserChoiceOption = {
+    value: string
+    label: string
+    detail?: string
 }
 
 function getExtension(name: string): string {
@@ -255,6 +261,48 @@ function requestBrowserConfirm(options: BrowserDialogOptions): Promise<boolean> 
             }
         })
         window.setTimeout(() => confirmButton?.focus(), 0)
+    })
+}
+
+function requestBrowserChoice(options: BrowserDialogOptions & { choices: BrowserChoiceOption[] }): Promise<string | null> {
+    return new Promise((resolve) => {
+        const dialog = document.createElement("div")
+        dialog.className = "browser-dialog-backdrop"
+        const choices = options.choices.map((choice) => `
+            <option value="${escapeHtml(choice.value)}">${escapeHtml(choice.detail ? `${choice.label} - ${choice.detail}` : choice.label)}</option>
+        `).join("")
+        dialog.innerHTML = `
+            <div class="browser-dialog" role="dialog" aria-modal="true" aria-labelledby="browserDialogTitle">
+                <h2 id="browserDialogTitle">${escapeHtml(options.title)}</h2>
+                ${options.message ? `<p>${escapeHtml(options.message)}</p>` : ""}
+                <label class="form-label" for="browserDialogSelect">${escapeHtml(options.label ?? "Destination")}</label>
+                <select id="browserDialogSelect" class="form-select">${choices}</select>
+                <div class="browser-dialog-actions">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-dialog-cancel>${escapeHtml(options.cancelLabel ?? "Cancel")}</button>
+                    <button type="button" class="btn btn-sm btn-primary" data-dialog-confirm>${escapeHtml(options.confirmLabel ?? "Choose")}</button>
+                </div>
+            </div>`
+        document.body.appendChild(dialog)
+        const select = dialog.querySelector<HTMLSelectElement>("#browserDialogSelect")
+        const confirmButton = dialog.querySelector<HTMLButtonElement>("[data-dialog-confirm]")
+        const cancelButton = dialog.querySelector<HTMLButtonElement>("[data-dialog-cancel]")
+        const finish = (value: string | null) => {
+            closeBrowserDialog(dialog)
+            resolve(value)
+        }
+        confirmButton?.addEventListener("click", () => finish(select?.value ?? null))
+        cancelButton?.addEventListener("click", () => finish(null))
+        dialog.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                event.preventDefault()
+                finish(null)
+            }
+            if (event.key === "Enter") {
+                event.preventDefault()
+                finish(select?.value ?? null)
+            }
+        })
+        window.setTimeout(() => select?.focus(), 0)
     })
 }
 
@@ -632,6 +680,7 @@ function updateActionStates() {
     setButtonVisible("browserActionPreview", previewEnabled)
     setButtonVisible("browserActionRename", hasSingle && (isFileEntry(selectedEntry as BrowserEntry) || isFolderEntry(selectedEntry as BrowserEntry)))
     setButtonVisible("browserActionDownload", hasSingle && isFileEntry(selectedEntry as BrowserEntry))
+    setButtonVisible("browserActionMove", hasAny && allSelectedFilesOrFolders)
     setButtonVisible("browserActionDelete", hasAny && allSelectedFilesOrFolders)
     setButtonVisible("browserActionSend", hasAny && allSelectedFiles)
 
@@ -650,6 +699,7 @@ function updateActionStates() {
     setDropdownVisible("actionPreviewItem", previewEnabled)
     setDropdownVisible("actionRenameItem", hasSingle && (isFileEntry(selectedEntry as BrowserEntry) || isFolderEntry(selectedEntry as BrowserEntry)))
     setDropdownVisible("actionDownloadItem", hasSingle && isFileEntry(selectedEntry as BrowserEntry))
+    setDropdownVisible("actionMoveItem", hasAny && allSelectedFilesOrFolders)
     setDropdownVisible("actionDeleteItem", hasAny && allSelectedFilesOrFolders)
     setDropdownVisible("actionSendItem", hasAny && allSelectedFiles)
     const previewItem = document.getElementById("actionPreviewItem")
@@ -887,6 +937,63 @@ function currentFolderManifestFallback(now: string): TglfsFolderManifest | null 
     })
 }
 
+function rewritePathForMove(path: string, oldPrefix: string, newPrefix: string) {
+    if (!oldPrefix) return path ? joinFolderPath(newPrefix, path) : newPrefix
+    return replacePathPrefix(path, oldPrefix, newPrefix)
+}
+
+function folderDisplayPath(record: TglfsFolderRecord, recordsById: Map<string, TglfsFolderRecord>) {
+    const names: string[] = []
+    const seen = new Set<string>()
+    let current: TglfsFolderRecord | undefined = record
+    while (current && !seen.has(current.data.folderId)) {
+        seen.add(current.data.folderId)
+        names.unshift(current.data.name)
+        const parentId = current.data.parentFolderId
+        current = parentId ? recordsById.get(parentId) : undefined
+    }
+    return names.length ? names.join("/") : record.data.name
+}
+
+function folderIsSameOrDescendant(
+    candidate: TglfsFolderRecord,
+    folder: FolderBrowserEntry,
+    recordsById: Map<string, TglfsFolderRecord>,
+) {
+    if (candidate.data.folderId === folder.data.folderId) return true
+
+    const seen = new Set<string>()
+    let parentId = candidate.data.parentFolderId
+    while (parentId && !seen.has(parentId)) {
+        if (parentId === folder.data.folderId) return true
+        seen.add(parentId)
+        parentId = recordsById.get(parentId)?.data.parentFolderId
+    }
+
+    const candidateRootId = candidate.data.rootId ?? candidate.data.folderId
+    const folderRootId = folder.data.rootId ?? folder.data.folderId
+    if (candidateRootId !== folderRootId) return false
+    if (!folder.data.path) return true
+    return candidate.data.path === folder.data.path || candidate.data.path.startsWith(`${folder.data.path}/`)
+}
+
+async function getFolderManifestForMutation(
+    client: any,
+    folder: TglfsFolder,
+    now: string,
+): Promise<{ record: TglfsFolderManifestRecord | null; manifest: TglfsFolderManifest }> {
+    const record = await getFolderManifest(client, folder.folderId)
+    return {
+        record,
+        manifest: record?.data ?? createTglfsFolderManifest({
+            folderId: folder.folderId,
+            rootId: folder.rootId ?? folder.folderId,
+            path: folder.path,
+            now,
+        }),
+    }
+}
+
 async function createFolderInCurrentLocation(client: any) {
     const name = validateFolderName(await requestBrowserText({
         title: "New Folder",
@@ -954,13 +1061,32 @@ async function createFolderInCurrentLocation(client: any) {
 async function updateFolderTreeForRename(
     client: any,
     record: TglfsFolderRecord,
-    options: { name?: string; oldPath: string; newPath: string; now: string },
+    options: {
+        name?: string
+        parentFolderId?: string
+        rootId?: string
+        oldPath: string
+        newPath: string
+        now: string
+        includeEmptyPrefix?: boolean
+    },
 ): Promise<void> {
+    const rewritePath = options.includeEmptyPrefix ? rewritePathForMove : replacePathPrefix
     const nextFolder = {
         ...record.data,
         name: options.name ?? record.data.name,
-        path: replacePathPrefix(record.data.path, options.oldPath, options.newPath),
+        path: rewritePath(record.data.path, options.oldPath, options.newPath),
         updatedAt: options.now,
+    }
+    if ("parentFolderId" in options) {
+        if (options.parentFolderId) {
+            nextFolder.parentFolderId = options.parentFolderId
+        } else {
+            delete nextFolder.parentFolderId
+        }
+    }
+    if (options.rootId !== undefined) {
+        nextFolder.rootId = options.rootId
     }
     await writeFolderRecord(client, nextFolder, record)
 
@@ -971,13 +1097,14 @@ async function updateFolderTreeForRename(
     for (const [key, entry] of Object.entries(manifestRecord.data.entries)) {
         nextEntries[key] = {
             ...entry,
-            path: replacePathPrefix(entry.path, options.oldPath, options.newPath),
+            path: rewritePath(entry.path, options.oldPath, options.newPath),
             updatedAt: entry.deleted ? entry.updatedAt : options.now,
         }
     }
     await writeFolderManifest(client, {
         ...manifestRecord.data,
-        path: replacePathPrefix(manifestRecord.data.path, options.oldPath, options.newPath),
+        rootId: options.rootId ?? manifestRecord.data.rootId,
+        path: rewritePath(manifestRecord.data.path, options.oldPath, options.newPath),
         updatedAt: options.now,
         entries: nextEntries,
     }, manifestRecord)
@@ -1098,6 +1225,181 @@ async function tombstoneFolderInParentManifest(client: any, record: TglfsFolderR
     }, parentManifestRecord)
 }
 
+async function tombstoneEntryInFolderManifest(
+    client: any,
+    folderId: string,
+    now: string,
+    matches: (entry: TglfsFolderManifestEntry) => boolean,
+) {
+    const manifestRecord = await getFolderManifest(client, folderId)
+    if (!manifestRecord) return
+
+    let changed = false
+    const entries: Record<string, TglfsFolderManifestEntry> = {}
+    for (const [key, entry] of Object.entries(manifestRecord.data.entries)) {
+        if (!entry.deleted && matches(entry)) {
+            entries[key] = { ...entry, deleted: true, updatedAt: now }
+            changed = true
+        } else {
+            entries[key] = entry
+        }
+    }
+    if (!changed) return
+
+    await writeFolderManifest(client, {
+        ...manifestRecord.data,
+        updatedAt: now,
+        entries,
+    }, manifestRecord)
+}
+
+async function requestMoveDestination(client: any, selectedEntries: BrowserEntry[]) {
+    const selectedFolders = selectedEntries.filter(isFolderEntry)
+    const folderRecords = await listFolderRecords(client, { limit: 200 })
+    const recordsById = new Map(folderRecords.map((record) => [record.data.folderId, record]))
+    const currentFolderId = state.currentFolder?.data.folderId
+    const destinations = folderRecords
+        .filter((record) => !record.data.deleted)
+        .filter((record) => record.data.folderId !== currentFolderId)
+        .filter((record) => selectedFolders.every((folder) => !folderIsSameOrDescendant(record, folder, recordsById)))
+        .sort((a, b) => folderDisplayPath(a, recordsById).localeCompare(folderDisplayPath(b, recordsById)))
+
+    if (destinations.length === 0) {
+        showUfidToast("No destination folders available")
+        return null
+    }
+
+    const choice = await requestBrowserChoice({
+        title: "Move to Folder",
+        message: selectedEntries.length === 1 ? `Move "${getEntryName(selectedEntries[0])}"` : `Move ${selectedEntries.length} items`,
+        label: "Destination folder",
+        confirmLabel: "Move",
+        choices: destinations.map((record) => {
+            const displayPath = folderDisplayPath(record, recordsById)
+            return {
+                value: record.data.folderId,
+                label: displayPath,
+            }
+        }),
+    })
+    return choice ? recordsById.get(choice) ?? null : null
+}
+
+async function moveFileEntryToFolder(client: any, file: FileBrowserEntry, destination: TglfsFolderRecord, now: string) {
+    const { record: destinationManifestRecord, manifest: destinationManifest } = await getFolderManifestForMutation(client, destination.data, now)
+    if (!assertFolderNameAvailable(file.data.name, activeManifestEntryNames(destinationManifest))) {
+        return false
+    }
+
+    const path = joinFolderPath(destination.data.path, file.data.name)
+    await writeFolderManifest(client, {
+        ...destinationManifest,
+        rootId: destination.data.rootId ?? destination.data.folderId,
+        path: destination.data.path,
+        updatedAt: now,
+        entries: {
+            ...destinationManifest.entries,
+            [file.data.name]: {
+                entryId: createRecordId("entry"),
+                name: file.data.name,
+                path,
+                kind: "file",
+                ufid: file.data.ufid,
+                size: file.data.size,
+                mtimeMs: Date.parse(now),
+                mode: 0o644,
+                deleted: false,
+                updatedAt: now,
+            },
+        },
+    }, destinationManifestRecord)
+
+    if (state.currentFolder) {
+        await tombstoneEntryInFolderManifest(client, state.currentFolder.data.folderId, now, (entry) =>
+            entry.kind === "file" && entry.ufid === file.data.ufid,
+        )
+    }
+
+    return true
+}
+
+async function moveFolderEntryToFolder(client: any, folder: FolderBrowserEntry, destination: TglfsFolderRecord, now: string) {
+    const record = await resolveFolderRecordForMutation(client, folder)
+    if (!record) {
+        showUfidToast("Unable to find folder record")
+        return false
+    }
+
+    const { record: destinationManifestRecord, manifest: destinationManifest } = await getFolderManifestForMutation(client, destination.data, now)
+    if (!assertFolderNameAvailable(record.data.name, activeManifestEntryNames(destinationManifest))) {
+        return false
+    }
+
+    const rootId = destination.data.rootId ?? destination.data.folderId
+    const oldPath = record.data.path
+    const newPath = joinFolderPath(destination.data.path, record.data.name)
+    await writeFolderManifest(client, {
+        ...destinationManifest,
+        rootId,
+        path: destination.data.path,
+        updatedAt: now,
+        entries: {
+            ...destinationManifest.entries,
+            [record.data.name]: {
+                entryId: createRecordId("entry"),
+                name: record.data.name,
+                path: newPath,
+                kind: "folder",
+                folderId: record.data.folderId,
+                deleted: false,
+                updatedAt: now,
+            },
+        },
+    }, destinationManifestRecord)
+
+    await updateFolderTreeForRename(client, record, {
+        parentFolderId: destination.data.folderId,
+        rootId,
+        oldPath,
+        newPath,
+        now,
+        includeEmptyPrefix: true,
+    })
+
+    if (record.data.parentFolderId) {
+        await tombstoneEntryInFolderManifest(client, record.data.parentFolderId, now, (entry) =>
+            entry.kind === "folder" && entry.folderId === record.data.folderId,
+        )
+    }
+
+    return true
+}
+
+async function moveSelectedEntries(client: any) {
+    const selectedEntries = Array.from(state.selected.values())
+    const movableEntries = selectedEntries.filter((entry) => isFileEntry(entry) || isFolderEntry(entry))
+    if (selectedEntries.length === 0 || movableEntries.length !== selectedEntries.length) return
+
+    const destination = await requestMoveDestination(client, selectedEntries)
+    if (!destination) return
+
+    const now = new Date().toISOString()
+    let moved = 0
+    for (const entry of movableEntries) {
+        if (isFileEntry(entry)) {
+            if (await moveFileEntryToFolder(client, entry, destination, now)) moved++
+            continue
+        }
+        if (await moveFolderEntryToFolder(client, entry, destination, now)) moved++
+    }
+
+    clearSelection()
+    await refreshBrowser?.()
+    if (moved > 0) {
+        showUfidToast(moved === 1 ? "Moved 1 item" : `Moved ${moved} items`)
+    }
+}
+
 async function runSingleOpenAction(selected: BrowserEntry | null) {
     if (!selected) return
     if (isFolderEntry(selected)) {
@@ -1125,6 +1427,7 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     const actionPreview = document.getElementById("browserActionPreview") as HTMLButtonElement
     const actionDownload = document.getElementById("browserActionDownload") as HTMLButtonElement
     const actionRename = document.getElementById("browserActionRename") as HTMLButtonElement
+    const actionMove = document.getElementById("browserActionMove") as HTMLButtonElement
     const actionDelete = document.getElementById("browserActionDelete") as HTMLButtonElement
     const actionSend = document.getElementById("browserActionSend") as HTMLButtonElement
     const actionUpload = document.getElementById("browserActionUpload") as HTMLButtonElement
@@ -1142,6 +1445,7 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     const actionPreviewItem = document.getElementById("actionPreviewItem") as HTMLAnchorElement
     const actionDownloadItem = document.getElementById("actionDownloadItem") as HTMLAnchorElement
     const actionRenameItem = document.getElementById("actionRenameItem") as HTMLAnchorElement
+    const actionMoveItem = document.getElementById("actionMoveItem") as HTMLAnchorElement
     const actionDeleteItem = document.getElementById("actionDeleteItem") as HTMLAnchorElement
     const actionSendItem = document.getElementById("actionSendItem") as HTMLAnchorElement
     const actionUnsendItem = document.getElementById("actionUnsendItem") as HTMLAnchorElement | null
@@ -1374,6 +1678,9 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     actionDelete.addEventListener("click", async () => {
         await deleteSelectedEntries()
     })
+    actionMove.addEventListener("click", async () => {
+        await moveSelectedEntries(client)
+    })
     actionSend.addEventListener("click", async () => {
         const entries = getSelectedFileEntries()
         if (entries.length === 0) return
@@ -1462,6 +1769,10 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     actionDeleteItem.addEventListener("click", async (e) => {
         e.preventDefault()
         await deleteSelectedEntries()
+    })
+    actionMoveItem.addEventListener("click", async (e) => {
+        e.preventDefault()
+        await moveSelectedEntries(client)
     })
     actionSendItem.addEventListener("click", async (e) => {
         e.preventDefault()
