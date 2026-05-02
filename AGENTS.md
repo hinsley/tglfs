@@ -52,7 +52,9 @@ bd sync               # Sync with git
 TGLFS stores user data as Telegram messages. Treat every serialized record that can be written to Telegram, read from Telegram, or persisted in local sync state as a durable protocol surface. This includes file cards, chunk metadata, future sync roots, sync entries, sync journals, tombstones, local ledger formats, and any import/export or repair records.
 
 **Protocol changes require explicit compatibility work:**
-- Every durable record MUST include an explicit `type` and `version` before it is introduced or changed. Do not rely on field-presence guessing for protocol behavior.
+- The existing unversioned `tglfs:file` Telegram records are legacy protocol version 1. Readers must treat missing `type`/`version` on otherwise valid current file cards as `type: "tglfs:file"` and `version: 1`.
+- Before any further durable protocol change, add explicit `type` and `version` fields to newly written records. New record types MUST include explicit `type` and `version` from the start.
+- Do not invent a separate version 0 for existing records. The compatibility boundary is: missing version means legacy v1 only for the already-shipped file-card shape.
 - When changing the meaning, required fields, validation rules, encryption parameters, compression parameters, chunk semantics, sync conflict semantics, or deletion/rename semantics of a durable record, bump that record's protocol version in the same change.
 - Add or update parser/serializer tests and fixture records for every supported protocol version. Tests must cover old records, new records, unknown future versions, and malformed records.
 - Old clients must fail closed on unsupported versions instead of rewriting records they do not understand.
