@@ -70,6 +70,28 @@ async function maybeUploadSharedFiles() {
     await Telegram.fileUpload(activeClient, activeConfig, files)
 }
 
+function isLocalMockFolderBrowserUrl() {
+    const url = new URL(window.location.href)
+    const localHost = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname)
+    return localHost && url.searchParams.get("mock") === "folder-browser"
+}
+
+async function startMockFolderBrowser() {
+    const { createMockFolderBrowserSession } = await import("./mockFolderBrowser")
+    const { client, config } = createMockFolderBrowserSession()
+    await finalizeLogin(client, config, "mock-folder-browser")
+    document.cookie = "phone=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT"
+
+    const controlsDiv = document.getElementById("controls")
+    const fileBrowserDiv = document.getElementById("fileBrowser")
+    controlsDiv?.setAttribute("hidden", "")
+    fileBrowserDiv?.removeAttribute("hidden")
+    document.body.classList.add("file-browser-active")
+    const { initFileBrowser } = await getBrowserModule()
+    await initFileBrowser(client, config)
+    window.dispatchEvent(new Event("tglfs:refresh-browser"))
+}
+
 function clearShareTargetQuery() {
     if (!window.location.search.includes("share-target")) {
         return
@@ -841,6 +863,15 @@ function wireLoginHandlers() {
 wireLoginHandlers()
 
 window.addEventListener("load", async () => {
+    if (isLocalMockFolderBrowserUrl()) {
+        const splashDiv = document.getElementById("splash")
+        if (splashDiv) {
+            splashDiv.remove()
+        }
+        await startMockFolderBrowser()
+        return
+    }
+
     if ("serviceWorker" in navigator) {
         try {
             const registration = await navigator.serviceWorker.register(
