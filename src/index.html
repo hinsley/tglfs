@@ -109,6 +109,7 @@
                     </select>
                     <div class="fx-actions">
                         <button id="browserActionUpload" class="btn btn-sm btn-primary fx-action-btn">+ Upload</button>
+                        <button id="browserActionNewFolder" class="btn btn-sm btn-outline-primary fx-action-btn">+ Folder</button>
                         <button id="browserActionReceive" class="btn btn-sm btn-outline-primary fx-action-btn">Receive</button>
                         <div class="dropdown fx-actions-dropdown">
                             <button id="browserQuickActionsBtn" class="btn btn-sm btn-primary dropdown-toggle" type="button"
@@ -117,6 +118,7 @@
                             </button>
                             <ul class="dropdown-menu dropdown-menu-end">
                                 <li><a class="dropdown-item" href="#" id="browserActionUploadItem">+ Upload</a></li>
+                                <li><a class="dropdown-item" href="#" id="browserActionNewFolderItem">+ Folder</a></li>
                                 <li><a class="dropdown-item" href="#" id="browserActionReceiveItem">Receive</a></li>
                             </ul>
                         </div>
@@ -152,7 +154,7 @@
                 </div>
             </div>
             <div class="fx-footer">
-                <!-- File actions (shown when files selected) -->
+                <!-- Selection actions (shown when files or folders are selected) -->
                 <div class="browser-actions" id="fileActionsBar" hidden>
                     <div class="d-flex flex-wrap gap-2 align-items-center">
                         <span id="selectionInfo" class="text-muted small"></span>

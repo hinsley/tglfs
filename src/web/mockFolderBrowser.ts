@@ -1,10 +1,13 @@
 import { serializeFileCardMessage } from "../../packages/tglfs-cli/src/shared/file-cards"
 import {
+    TGLFS_FOLDER_MANIFEST_TYPE,
+    TGLFS_FOLDER_TYPE,
     createTglfsFolder,
     createTglfsFolderManifest,
     serializeTglfsFolderManifestMessage,
     serializeTglfsFolderMessage,
 } from "../../packages/tglfs-cli/src/folders"
+import { FILE_CARD_PREFIX } from "../../packages/tglfs-cli/src/shared/file-cards"
 
 function now(offsetSeconds = 0) {
     return new Date(Date.UTC(2026, 4, 2, 17, 0, offsetSeconds)).toISOString()
@@ -155,8 +158,41 @@ function textMatches(message: string, search: string) {
 }
 
 export function createMockFolderBrowserSession() {
+    const mutableFileCards = fileCards.map((record) => ({ ...record }))
+    const mutableFolderRecords = folderRecords.map((record) => ({ ...record }))
+    const mutableFolderManifestRecords = folderManifestRecords.map((record) => ({ ...record }))
+    let nextMessageId = Math.max(
+        ...mutableFileCards.map((record) => record.id),
+        ...mutableFolderRecords.map((record) => record.id),
+        ...mutableFolderManifestRecords.map((record) => record.id),
+    ) + 1
+
+    const allRecords = () => [
+        ...mutableFileCards,
+        ...mutableFolderRecords,
+        ...mutableFolderManifestRecords,
+    ]
+    const mutableRecordsForMessage = (message: string) => {
+        if (message.startsWith(TGLFS_FOLDER_MANIFEST_TYPE)) return mutableFolderManifestRecords
+        if (message.startsWith(TGLFS_FOLDER_TYPE)) return mutableFolderRecords
+        if (message.startsWith(FILE_CARD_PREFIX)) return mutableFileCards
+        return mutableFileCards
+    }
+    const removeIds = (ids: number[]) => {
+        for (const records of [mutableFileCards, mutableFolderRecords, mutableFolderManifestRecords]) {
+            for (const id of ids) {
+                const index = records.findIndex((record) => record.id === id)
+                if (index !== -1) records.splice(index, 1)
+            }
+        }
+    }
+
     const client = {
-        async getMessages(_peer: string, options: { search?: string; limit?: number; maxId?: number; offsetId?: number }) {
+        async getMessages(_peer: string, options: { ids?: number[]; search?: string; limit?: number; maxId?: number; offsetId?: number }) {
+            if (Array.isArray(options.ids)) {
+                const ids = new Set(options.ids)
+                return allRecords().filter((record) => ids.has(record.id))
+            }
             const search = options.search ?? ""
             const limit = options.limit ?? 50
             const maxId = options.maxId ?? options.offsetId ?? 0
@@ -165,18 +201,18 @@ export function createMockFolderBrowserSession() {
             if (search.startsWith("tglfs:folder-manifest")) {
                 const folderId = quotedValue(search, "folderId")
                 records = folderId
-                    ? folderManifestRecords.filter((record) => record.message.includes(`"folderId":"${folderId}"`))
-                    : folderManifestRecords
+                    ? mutableFolderManifestRecords.filter((record) => record.message.includes(`"folderId":"${folderId}"`))
+                    : mutableFolderManifestRecords
             } else if (search.startsWith("tglfs:folder")) {
                 const folderId = quotedValue(search, "folderId")
                 records = folderId
-                    ? folderRecords.filter((record) => record.message.includes(`"folderId":"${folderId}"`))
-                    : folderRecords.filter((record) => textMatches(record.message, search))
+                    ? mutableFolderRecords.filter((record) => record.message.includes(`"folderId":"${folderId}"`))
+                    : mutableFolderRecords.filter((record) => textMatches(record.message, search))
             } else if (search.startsWith("tglfs:file")) {
                 const ufid = quotedValue(search, "ufid")
                 records = ufid
-                    ? fileCards.filter((record) => record.message.includes(`"ufid":"${ufid}"`))
-                    : fileCards.filter((record) => textMatches(record.message, search))
+                    ? mutableFileCards.filter((record) => record.message.includes(`"ufid":"${ufid}"`))
+                    : mutableFileCards.filter((record) => textMatches(record.message, search))
             }
 
             const sorted = records
@@ -184,6 +220,31 @@ export function createMockFolderBrowserSession() {
                 .sort((a, b) => b.id - a.id)
                 .slice(0, limit)
             return sorted
+        },
+        async sendMessage(_peer: string, options: { message: string }) {
+            const record = {
+                id: nextMessageId++,
+                date: Math.floor(Date.now() / 1000),
+                message: options.message,
+            }
+            mutableRecordsForMessage(options.message).push(record)
+            return { ...record, peerId: "me" }
+        },
+        async invoke(request: any) {
+            const ids = Array.isArray(request?.id) ? request.id : []
+            if (ids.length > 0 && typeof request?.message !== "string") {
+                removeIds(ids)
+                return { updates: [] }
+            }
+            if (typeof request?.id === "number" && typeof request?.message === "string") {
+                const record = allRecords().find((candidate) => candidate.id === request.id)
+                if (record) {
+                    record.message = request.message
+                    record.date = Math.floor(Date.now() / 1000)
+                }
+                return { updates: [{ id: request.id }] }
+            }
+            return { updates: [] }
         },
         async disconnect() {},
         async logOut() {},

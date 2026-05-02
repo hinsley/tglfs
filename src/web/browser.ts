@@ -13,13 +13,17 @@ import {
     renameFileCard,
     deleteFileCard,
     sendFileCard,
+    writeFolderManifest,
+    writeFolderRecord,
 } from "../telegram"
 import type { FileCardData } from "../types/models"
 import {
+    createTglfsFolder,
+    createTglfsFolderManifest,
     TGLFS_FOLDER_TYPE,
     TGLFS_FOLDER_VERSION,
 } from "../../packages/tglfs-cli/src/folders"
-import type { TglfsFolder, TglfsFolderManifestEntry } from "../../packages/tglfs-cli/src/folders"
+import type { TglfsFolder, TglfsFolderManifest, TglfsFolderManifestEntry, TglfsFolderRecord } from "../../packages/tglfs-cli/src/folders"
 import { PreviewModal, type PreviewEntry } from "./preview"
 
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"])
@@ -94,6 +98,18 @@ let ufidToastTimer: number | undefined
 let activeBrowserClient: any = null
 let refreshBrowser: (() => Promise<void>) | null = null
 
+type BrowserDialogOptions = {
+    title: string
+    message?: string
+    label?: string
+    initialValue?: string
+    confirmLabel?: string
+    cancelLabel?: string
+    inputType?: string
+    allowEmpty?: boolean
+    danger?: boolean
+}
+
 function getExtension(name: string): string {
     const parts = name.toLowerCase().split(".")
     if (parts.length < 2) return ""
@@ -148,6 +164,98 @@ function showUfidToast(message: string) {
         toast.classList.remove("is-visible")
         toast.setAttribute("aria-hidden", "true")
     }, 1200)
+}
+
+function closeBrowserDialog(dialog: HTMLElement) {
+    dialog.remove()
+}
+
+function requestBrowserText(options: BrowserDialogOptions): Promise<string | null> {
+    return new Promise((resolve) => {
+        const dialog = document.createElement("div")
+        dialog.className = "browser-dialog-backdrop"
+        dialog.innerHTML = `
+            <div class="browser-dialog" role="dialog" aria-modal="true" aria-labelledby="browserDialogTitle">
+                <h2 id="browserDialogTitle">${escapeHtml(options.title)}</h2>
+                ${options.message ? `<p>${escapeHtml(options.message)}</p>` : ""}
+                <label class="form-label" for="browserDialogInput">${escapeHtml(options.label ?? "Value")}</label>
+                <input id="browserDialogInput" class="form-control" type="${escapeHtml(options.inputType ?? "text")}" value="${escapeHtml(options.initialValue ?? "")}" />
+                <div class="browser-dialog-actions">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-dialog-cancel>${escapeHtml(options.cancelLabel ?? "Cancel")}</button>
+                    <button type="button" class="btn btn-sm btn-primary" data-dialog-confirm>${escapeHtml(options.confirmLabel ?? "Save")}</button>
+                </div>
+            </div>`
+        document.body.appendChild(dialog)
+        const input = dialog.querySelector<HTMLInputElement>("#browserDialogInput")
+        const confirmButton = dialog.querySelector<HTMLButtonElement>("[data-dialog-confirm]")
+        const cancelButton = dialog.querySelector<HTMLButtonElement>("[data-dialog-cancel]")
+
+        const finish = (value: string | null) => {
+            closeBrowserDialog(dialog)
+            resolve(value)
+        }
+        const submit = () => {
+            const value = input?.value ?? ""
+            if (!options.allowEmpty && value.trim() === "") {
+                input?.focus()
+                return
+            }
+            finish(value)
+        }
+
+        confirmButton?.addEventListener("click", submit)
+        cancelButton?.addEventListener("click", () => finish(null))
+        dialog.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                event.preventDefault()
+                finish(null)
+            }
+            if (event.key === "Enter") {
+                event.preventDefault()
+                submit()
+            }
+        })
+        window.setTimeout(() => {
+            input?.focus()
+            input?.select()
+        }, 0)
+    })
+}
+
+function requestBrowserConfirm(options: BrowserDialogOptions): Promise<boolean> {
+    return new Promise((resolve) => {
+        const dialog = document.createElement("div")
+        dialog.className = "browser-dialog-backdrop"
+        dialog.innerHTML = `
+            <div class="browser-dialog" role="dialog" aria-modal="true" aria-labelledby="browserDialogTitle">
+                <h2 id="browserDialogTitle">${escapeHtml(options.title)}</h2>
+                ${options.message ? `<p>${escapeHtml(options.message)}</p>` : ""}
+                <div class="browser-dialog-actions">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-dialog-cancel>${escapeHtml(options.cancelLabel ?? "Cancel")}</button>
+                    <button type="button" class="btn btn-sm ${options.danger ? "btn-danger" : "btn-primary"}" data-dialog-confirm>${escapeHtml(options.confirmLabel ?? "Confirm")}</button>
+                </div>
+            </div>`
+        document.body.appendChild(dialog)
+        const confirmButton = dialog.querySelector<HTMLButtonElement>("[data-dialog-confirm]")
+        const cancelButton = dialog.querySelector<HTMLButtonElement>("[data-dialog-cancel]")
+        const finish = (value: boolean) => {
+            closeBrowserDialog(dialog)
+            resolve(value)
+        }
+        confirmButton?.addEventListener("click", () => finish(true))
+        cancelButton?.addEventListener("click", () => finish(false))
+        dialog.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") {
+                event.preventDefault()
+                finish(false)
+            }
+            if (event.key === "Enter") {
+                event.preventDefault()
+                finish(true)
+            }
+        })
+        window.setTimeout(() => confirmButton?.focus(), 0)
+    })
 }
 
 function clearViews() {
@@ -279,6 +387,55 @@ async function openGlobalView() {
     const searchInput = document.getElementById("browserSearchInput") as HTMLInputElement | null
     if (searchInput) searchInput.value = ""
     await refreshBrowser?.()
+}
+
+function createRecordId(prefix: string) {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        return crypto.randomUUID()
+    }
+    return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+function validateFolderName(value: string | null): string | null {
+    const name = value?.trim() ?? ""
+    if (!name) return null
+    if (name === "." || name === ".." || /[\\/]/.test(name) || /[\u0000-\u001f]/.test(name)) {
+        showUfidToast("Invalid folder name")
+        return null
+    }
+    return name
+}
+
+function joinFolderPath(parentPath: string, name: string) {
+    return parentPath ? `${parentPath}/${name}` : name
+}
+
+function replacePathPrefix(path: string, oldPrefix: string, newPrefix: string) {
+    if (!oldPrefix) return path
+    if (path === oldPrefix) return newPrefix
+    if (path.startsWith(`${oldPrefix}/`)) {
+        return `${newPrefix}${path.slice(oldPrefix.length)}`
+    }
+    return path
+}
+
+function activeManifestEntryNames(manifest: TglfsFolderManifest) {
+    return new Set(
+        Object.values(manifest.entries)
+            .filter((entry) => !entry.deleted)
+            .map((entry) => entry.name.toLowerCase()),
+    )
+}
+
+function assertFolderNameAvailable(name: string, entries: Iterable<string>) {
+    const lower = name.toLowerCase()
+    for (const entry of entries) {
+        if (entry.toLowerCase() === lower) {
+            showUfidToast(`"${name}" already exists here`)
+            return false
+        }
+    }
+    return true
 }
 
 function attachSelectionHandlers(root: HTMLElement, entry: BrowserEntry, index: number) {
@@ -457,7 +614,9 @@ function updateActionStates() {
     const hasSingle = selectedCount === 1
     const selectedEntry = hasSingle ? selectedEntries[0] : null
     const selectedFiles = selectedEntries.filter(isFileEntry)
+    const selectedFolders = selectedEntries.filter(isFolderEntry)
     const allSelectedFiles = selectedFiles.length === selectedEntries.length
+    const allSelectedFilesOrFolders = selectedFiles.length + selectedFolders.length === selectedEntries.length
     const previewEnabled = !!selectedEntry && (
         isFolderEntry(selectedEntry) ||
         (isFileEntry(selectedEntry) && isPreviewableName(selectedEntry.data.name))
@@ -471,9 +630,9 @@ function updateActionStates() {
         }
     }
     setButtonVisible("browserActionPreview", previewEnabled)
-    setButtonVisible("browserActionRename", hasSingle && isFileEntry(selectedEntry as BrowserEntry))
+    setButtonVisible("browserActionRename", hasSingle && (isFileEntry(selectedEntry as BrowserEntry) || isFolderEntry(selectedEntry as BrowserEntry)))
     setButtonVisible("browserActionDownload", hasSingle && isFileEntry(selectedEntry as BrowserEntry))
-    setButtonVisible("browserActionDelete", hasAny && allSelectedFiles)
+    setButtonVisible("browserActionDelete", hasAny && allSelectedFilesOrFolders)
     setButtonVisible("browserActionSend", hasAny && allSelectedFiles)
 
     const previewBtn = document.getElementById("browserActionPreview") as HTMLButtonElement | null
@@ -489,9 +648,9 @@ function updateActionStates() {
         if (li) li.classList.toggle("d-none", !visible)
     }
     setDropdownVisible("actionPreviewItem", previewEnabled)
-    setDropdownVisible("actionRenameItem", hasSingle && isFileEntry(selectedEntry as BrowserEntry))
+    setDropdownVisible("actionRenameItem", hasSingle && (isFileEntry(selectedEntry as BrowserEntry) || isFolderEntry(selectedEntry as BrowserEntry)))
     setDropdownVisible("actionDownloadItem", hasSingle && isFileEntry(selectedEntry as BrowserEntry))
-    setDropdownVisible("actionDeleteItem", hasAny && allSelectedFiles)
+    setDropdownVisible("actionDeleteItem", hasAny && allSelectedFilesOrFolders)
     setDropdownVisible("actionSendItem", hasAny && allSelectedFiles)
     const previewItem = document.getElementById("actionPreviewItem")
     if (previewItem) previewItem.textContent = selectedEntry && isFolderEntry(selectedEntry) ? "Open" : "Preview"
@@ -696,6 +855,249 @@ async function loadNextPage(client: any) {
     return page.items
 }
 
+async function resolveFolderRecordForMutation(client: any, entry: FolderBrowserEntry): Promise<TglfsFolderRecord | null> {
+    if (entry.msgId > 0) {
+        return {
+            msgId: entry.msgId,
+            date: entry.date,
+            data: entry.data,
+        }
+    }
+    return await getFolderRecord(client, entry.data.folderId)
+}
+
+async function topLevelFolderNameExists(client: any, name: string, ignoreFolderId?: string) {
+    const records = await listFolderRecords(client, { query: name, limit: 200 })
+    return records.some((record) =>
+        record.data.folderId !== ignoreFolderId &&
+        !record.data.parentFolderId &&
+        record.data.path === "" &&
+        !record.data.deleted &&
+        record.data.name.toLowerCase() === name.toLowerCase(),
+    )
+}
+
+function currentFolderManifestFallback(now: string): TglfsFolderManifest | null {
+    if (!state.currentFolder) return null
+    return createTglfsFolderManifest({
+        folderId: state.currentFolder.data.folderId,
+        rootId: state.currentFolder.data.rootId ?? state.currentFolder.data.folderId,
+        path: state.currentFolder.data.path,
+        now,
+    })
+}
+
+async function createFolderInCurrentLocation(client: any) {
+    const name = validateFolderName(await requestBrowserText({
+        title: "New Folder",
+        label: "Folder name",
+        confirmLabel: "Create",
+    }))
+    if (!name) return
+
+    const now = new Date().toISOString()
+    const parent = state.currentFolder
+    if (!parent && await topLevelFolderNameExists(client, name)) {
+        showUfidToast(`"${name}" already exists here`)
+        return
+    }
+
+    const parentManifestRecord = parent ? await getFolderManifest(client, parent.data.folderId) : null
+    const parentManifest = parent ? (parentManifestRecord?.data ?? currentFolderManifestFallback(now)) : null
+    if (parentManifest && !assertFolderNameAvailable(name, activeManifestEntryNames(parentManifest))) {
+        return
+    }
+
+    const folderId = createRecordId("folder")
+    const rootId = parent ? (parent.data.rootId ?? parent.data.folderId) : folderId
+    const path = parent ? joinFolderPath(parent.data.path, name) : ""
+    const folder = createTglfsFolder({
+        folderId,
+        parentFolderId: parent?.data.folderId,
+        rootId,
+        name,
+        path,
+        now,
+    })
+    const manifest = createTglfsFolderManifest({
+        folderId,
+        rootId,
+        path,
+        now,
+    })
+
+    await writeFolderRecord(client, folder)
+    await writeFolderManifest(client, manifest)
+
+    if (parentManifest) {
+        await writeFolderManifest(client, {
+            ...parentManifest,
+            updatedAt: now,
+            entries: {
+                ...parentManifest.entries,
+                [name]: {
+                    entryId: createRecordId("entry"),
+                    name,
+                    path,
+                    kind: "folder",
+                    folderId,
+                    deleted: false,
+                    updatedAt: now,
+                },
+            },
+        }, parentManifestRecord)
+    }
+
+    await refreshBrowser?.()
+}
+
+async function updateFolderTreeForRename(
+    client: any,
+    record: TglfsFolderRecord,
+    options: { name?: string; oldPath: string; newPath: string; now: string },
+): Promise<void> {
+    const nextFolder = {
+        ...record.data,
+        name: options.name ?? record.data.name,
+        path: replacePathPrefix(record.data.path, options.oldPath, options.newPath),
+        updatedAt: options.now,
+    }
+    await writeFolderRecord(client, nextFolder, record)
+
+    const manifestRecord = await getFolderManifest(client, record.data.folderId)
+    if (!manifestRecord) return
+
+    const nextEntries: Record<string, TglfsFolderManifestEntry> = {}
+    for (const [key, entry] of Object.entries(manifestRecord.data.entries)) {
+        nextEntries[key] = {
+            ...entry,
+            path: replacePathPrefix(entry.path, options.oldPath, options.newPath),
+            updatedAt: entry.deleted ? entry.updatedAt : options.now,
+        }
+    }
+    await writeFolderManifest(client, {
+        ...manifestRecord.data,
+        path: replacePathPrefix(manifestRecord.data.path, options.oldPath, options.newPath),
+        updatedAt: options.now,
+        entries: nextEntries,
+    }, manifestRecord)
+
+    for (const entry of Object.values(manifestRecord.data.entries)) {
+        if (entry.kind !== "folder" || entry.deleted || !entry.folderId) continue
+        const childRecord = await getFolderRecord(client, entry.folderId)
+        if (childRecord) {
+            await updateFolderTreeForRename(client, childRecord, options)
+        }
+    }
+}
+
+async function renameFolderEntry(client: any, entry: FolderBrowserEntry) {
+    const newName = validateFolderName(await requestBrowserText({
+        title: "Rename Folder",
+        label: "Folder name",
+        initialValue: entry.data.name,
+        confirmLabel: "Rename",
+    }))
+    if (!newName || newName === entry.data.name) return
+
+    const record = await resolveFolderRecordForMutation(client, entry)
+    if (!record) {
+        showUfidToast("Unable to find folder record")
+        return
+    }
+
+    const now = new Date().toISOString()
+    const parentId = record.data.parentFolderId
+    const parentManifestRecord = parentId ? await getFolderManifest(client, parentId) : null
+    if (parentManifestRecord) {
+        const activeNames = [...activeManifestEntryNames(parentManifestRecord.data)].filter((name) => name !== record.data.name.toLowerCase())
+        if (!assertFolderNameAvailable(newName, activeNames)) return
+    } else if (!parentId && await topLevelFolderNameExists(client, newName, record.data.folderId)) {
+        showUfidToast(`"${newName}" already exists here`)
+        return
+    }
+
+    const parentPath = parentManifestRecord?.data.path ?? ""
+    const newPath = parentId ? joinFolderPath(parentPath, newName) : record.data.path
+
+    await updateFolderTreeForRename(client, record, {
+        name: newName,
+        oldPath: record.data.path,
+        newPath,
+        now,
+    })
+
+    if (parentManifestRecord) {
+        const nextEntries = { ...parentManifestRecord.data.entries }
+        const currentEntry = Object.values(nextEntries).find((candidate) =>
+            candidate.kind === "folder" &&
+            candidate.folderId === record.data.folderId &&
+            !candidate.deleted,
+        )
+        if (currentEntry) {
+            delete nextEntries[currentEntry.name]
+            nextEntries[newName] = {
+                ...currentEntry,
+                name: newName,
+                path: newPath,
+                updatedAt: now,
+            }
+            await writeFolderManifest(client, {
+                ...parentManifestRecord.data,
+                updatedAt: now,
+                entries: nextEntries,
+            }, parentManifestRecord)
+        }
+    }
+
+    await refreshBrowser?.()
+}
+
+async function tombstoneFolderTree(client: any, record: TglfsFolderRecord, now: string): Promise<void> {
+    const manifestRecord = await getFolderManifest(client, record.data.folderId)
+    if (manifestRecord) {
+        for (const entry of Object.values(manifestRecord.data.entries)) {
+            if (entry.kind !== "folder" || entry.deleted || !entry.folderId) continue
+            const childRecord = await getFolderRecord(client, entry.folderId)
+            if (childRecord) {
+                await tombstoneFolderTree(client, childRecord, now)
+            }
+        }
+        const entries: Record<string, TglfsFolderManifestEntry> = {}
+        for (const [key, entry] of Object.entries(manifestRecord.data.entries)) {
+            entries[key] = { ...entry, deleted: true, updatedAt: now }
+        }
+        await writeFolderManifest(client, {
+            ...manifestRecord.data,
+            updatedAt: now,
+            entries,
+        }, manifestRecord)
+    }
+    await writeFolderRecord(client, {
+        ...record.data,
+        deleted: true,
+        updatedAt: now,
+    }, record)
+}
+
+async function tombstoneFolderInParentManifest(client: any, record: TglfsFolderRecord, now: string) {
+    if (!record.data.parentFolderId) return
+    const parentManifestRecord = await getFolderManifest(client, record.data.parentFolderId)
+    if (!parentManifestRecord) return
+
+    const entries: Record<string, TglfsFolderManifestEntry> = {}
+    for (const [key, entry] of Object.entries(parentManifestRecord.data.entries)) {
+        entries[key] = entry.kind === "folder" && entry.folderId === record.data.folderId
+            ? { ...entry, deleted: true, updatedAt: now }
+            : entry
+    }
+    await writeFolderManifest(client, {
+        ...parentManifestRecord.data,
+        updatedAt: now,
+        entries,
+    }, parentManifestRecord)
+}
+
 async function runSingleOpenAction(selected: BrowserEntry | null) {
     if (!selected) return
     if (isFolderEntry(selected)) {
@@ -726,8 +1128,10 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     const actionDelete = document.getElementById("browserActionDelete") as HTMLButtonElement
     const actionSend = document.getElementById("browserActionSend") as HTMLButtonElement
     const actionUpload = document.getElementById("browserActionUpload") as HTMLButtonElement
+    const actionNewFolder = document.getElementById("browserActionNewFolder") as HTMLButtonElement
     const actionReceive = document.getElementById("browserActionReceive") as HTMLButtonElement
     const actionUploadItem = document.getElementById("browserActionUploadItem") as HTMLAnchorElement | null
+    const actionNewFolderItem = document.getElementById("browserActionNewFolderItem") as HTMLAnchorElement | null
     const actionReceiveItem = document.getElementById("browserActionReceiveItem") as HTMLAnchorElement | null
     const actionUnsend = document.getElementById("browserActionUnsend") as HTMLButtonElement
     const homeButton = document.getElementById("browserHomeButton") as HTMLButtonElement
@@ -751,6 +1155,51 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         const page = state.pages[state.currentPage]
         if (!page) return
         state.pages[state.currentPage] = page.filter((entry) => !isFileEntry(entry) || !ids.has(entry.msgId))
+    }
+    const deleteSelectedEntries = async () => {
+        const selectedEntries = Array.from(state.selected.values())
+        const files = selectedEntries.filter(isFileEntry)
+        const folders = selectedEntries.filter(isFolderEntry)
+        if (selectedEntries.length === 0 || files.length + folders.length !== selectedEntries.length) return
+
+        if (selectedEntries.length === 1) {
+            const selected = selectedEntries[0]
+            const kind = isFolderEntry(selected) ? "folder" : "file"
+            const ok = await requestBrowserConfirm({
+                title: `Delete ${kind}`,
+                message: `Delete "${getEntryName(selected)}"?`,
+                confirmLabel: "Delete",
+                danger: true,
+            })
+            if (!ok) return
+        } else {
+            const names = selectedEntries.slice(0, 5).map(getEntryName).join(", ")
+            const more = selectedEntries.length > 5 ? ` and ${selectedEntries.length - 5} more` : ""
+            const ok = await requestBrowserConfirm({
+                title: `Delete ${selectedEntries.length} items`,
+                message: `${names}${more}`,
+                confirmLabel: "Delete",
+                danger: true,
+            })
+            if (!ok) return
+        }
+
+        for (const file of files) {
+            await deleteFileCard(client, file.msgId, file.data)
+        }
+        const now = new Date().toISOString()
+        for (const folder of folders) {
+            const record = await resolveFolderRecordForMutation(client, folder)
+            if (!record) continue
+            await tombstoneFolderInParentManifest(client, record, now)
+            await tombstoneFolderTree(client, record, now)
+        }
+
+        if (files.length > 0 && folders.length === 0) {
+            removeFileEntriesFromPage(new Set(files.map((entry) => entry.msgId)))
+        }
+        clearSelection()
+        await refreshBrowser?.()
     }
 
     const doRefresh = async () => {
@@ -863,6 +1312,9 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         const uploadInput = document.getElementById("uploadFileInput") as HTMLInputElement | null
         if (uploadInput) uploadInput.click()
     })
+    actionNewFolder.addEventListener("click", async () => {
+        await createFolderInCurrentLocation(client)
+    })
     actionReceive.addEventListener("click", async () => {
         await (await import("../telegram")).fileReceive(client, config)
     })
@@ -870,6 +1322,10 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         e.preventDefault()
         const uploadInput = document.getElementById("uploadFileInput") as HTMLInputElement | null
         if (uploadInput) uploadInput.click()
+    })
+    actionNewFolderItem?.addEventListener("click", async (e) => {
+        e.preventDefault()
+        await createFolderInCurrentLocation(client)
     })
     actionReceiveItem?.addEventListener("click", async (e) => {
         e.preventDefault()
@@ -885,82 +1341,83 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     actionDownload.addEventListener("click", async () => {
         const selected = getSingleSelection()
         if (!selected || !isFileEntry(selected)) return
-        const password = prompt("(Optional) Decryption password:")
+        const password = await requestBrowserText({
+            title: "Download File",
+            label: "Optional decryption password",
+            inputType: "password",
+            allowEmpty: true,
+            confirmLabel: "Download",
+        })
         if (password === null) return
         await downloadFileCard(client, config, selected.data, password)
     })
     actionRename.addEventListener("click", async () => {
         const selected = getSingleSelection()
-        if (!selected || !isFileEntry(selected)) return
-        const newName = prompt(`Rename file:\n\n${selected.data.name}\n\nEnter new name:`)
-        if (!newName || newName.trim() === "") return
-        await renameFileCard(client, selected.msgId, "me", selected.data, newName.trim())
-        selected.data.name = newName.trim()
-        renderBrowser(state.pages[state.currentPage])
+        if (!selected) return
+        if (isFolderEntry(selected)) {
+            await renameFolderEntry(client, selected)
+            return
+        }
+        if (isFileEntry(selected)) {
+            const newName = await requestBrowserText({
+                title: "Rename File",
+                label: "File name",
+                initialValue: selected.data.name,
+                confirmLabel: "Rename",
+            })
+            if (!newName || newName.trim() === "") return
+            await renameFileCard(client, selected.msgId, "me", selected.data, newName.trim())
+            selected.data.name = newName.trim()
+            renderBrowser(state.pages[state.currentPage])
+        }
     })
     actionDelete.addEventListener("click", async () => {
-        const entries = getSelectedFileEntries()
-        if (entries.length === 0) return
-        if (entries.length === 1) {
-            const selected = entries[0]
-            const ok = confirm(`Delete file "${selected.data.name}"?`)
-            if (!ok) return
-            await deleteFileCard(client, selected.msgId, selected.data)
-            removeFileEntriesFromPage(new Set([selected.msgId]))
-        } else {
-            const names = entries.slice(0, 5).map((entry) => entry.data.name).join(", ")
-            const more = entries.length > 5 ? ` and ${entries.length - 5} more` : ""
-            const ok = confirm(`Delete ${entries.length} files?\n\n${names}${more}`)
-            if (!ok) return
-            for (const entry of entries) {
-                await deleteFileCard(client, entry.msgId, entry.data)
-            }
-            removeFileEntriesFromPage(new Set(entries.map((entry) => entry.msgId)))
-        }
-        clearSelection()
-        renderBrowser(state.pages[state.currentPage])
+        await deleteSelectedEntries()
     })
     actionSend.addEventListener("click", async () => {
         const entries = getSelectedFileEntries()
         if (entries.length === 0) return
-        const recipient = prompt("Enter recipient:")
+        const recipient = await requestBrowserText({
+            title: "Send Files",
+            label: "Recipient",
+            confirmLabel: "Send",
+        })
         if (!recipient || recipient.trim() === "") return
         for (const entry of entries) {
             await sendFileCard(client, entry.data, recipient.trim())
         }
-        alert(entries.length === 1 ? "File sent." : "Files sent.")
+        showUfidToast(entries.length === 1 ? "File sent" : "Files sent")
     })
 
     bulkDownload?.addEventListener("click", async () => {
         const selected = getSingleSelection()
         if (!selected || !isFileEntry(selected)) return
-        const password = prompt("(Optional) Decryption password:")
+        const password = await requestBrowserText({
+            title: "Download File",
+            label: "Optional decryption password",
+            inputType: "password",
+            allowEmpty: true,
+            confirmLabel: "Download",
+        })
         if (password === null) return
         await downloadFileCard(client, config, selected.data, password)
     })
     bulkDelete?.addEventListener("click", async () => {
-        const entries = getSelectedFileEntries()
-        if (entries.length === 0) return
-        const names = entries.slice(0, 5).map((entry) => entry.data.name).join(", ")
-        const more = entries.length > 5 ? ` and ${entries.length - 5} more` : ""
-        const ok = confirm(`Delete ${entries.length} file${entries.length === 1 ? "" : "s"}?\n\n${names}${more}`)
-        if (!ok) return
-        for (const entry of entries) {
-            await deleteFileCard(client, entry.msgId, entry.data)
-        }
-        removeFileEntriesFromPage(new Set(entries.map((entry) => entry.msgId)))
-        clearSelection()
-        renderBrowser(state.pages[state.currentPage])
+        await deleteSelectedEntries()
     })
     bulkSend?.addEventListener("click", async () => {
         const entries = getSelectedFileEntries()
         if (entries.length === 0) return
-        const recipient = prompt("Enter recipient:")
+        const recipient = await requestBrowserText({
+            title: "Send Files",
+            label: "Recipient",
+            confirmLabel: "Send",
+        })
         if (!recipient || recipient.trim() === "") return
         for (const entry of entries) {
             await sendFileCard(client, entry.data, recipient.trim())
         }
-        alert("Files sent.")
+        showUfidToast("Files sent")
     })
 
     actionPreviewItem.addEventListener("click", async (e) => {
@@ -971,53 +1428,55 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         e.preventDefault()
         const selected = getSingleSelection()
         if (!selected || !isFileEntry(selected)) return
-        const password = prompt("(Optional) Decryption password:")
+        const password = await requestBrowserText({
+            title: "Download File",
+            label: "Optional decryption password",
+            inputType: "password",
+            allowEmpty: true,
+            confirmLabel: "Download",
+        })
         if (password === null) return
         await downloadFileCard(client, config, selected.data, password)
     })
     actionRenameItem.addEventListener("click", async (e) => {
         e.preventDefault()
         const selected = getSingleSelection()
-        if (!selected || !isFileEntry(selected)) return
-        const newName = prompt(`Rename file:\n\n${selected.data.name}\n\nEnter new name:`)
-        if (!newName || newName.trim() === "") return
-        await renameFileCard(client, selected.msgId, "me", selected.data, newName.trim())
-        selected.data.name = newName.trim()
-        renderBrowser(state.pages[state.currentPage])
+        if (!selected) return
+        if (isFolderEntry(selected)) {
+            await renameFolderEntry(client, selected)
+            return
+        }
+        if (isFileEntry(selected)) {
+            const newName = await requestBrowserText({
+                title: "Rename File",
+                label: "File name",
+                initialValue: selected.data.name,
+                confirmLabel: "Rename",
+            })
+            if (!newName || newName.trim() === "") return
+            await renameFileCard(client, selected.msgId, "me", selected.data, newName.trim())
+            selected.data.name = newName.trim()
+            renderBrowser(state.pages[state.currentPage])
+        }
     })
     actionDeleteItem.addEventListener("click", async (e) => {
         e.preventDefault()
-        const entries = getSelectedFileEntries()
-        if (entries.length === 0) return
-        if (entries.length === 1) {
-            const selected = entries[0]
-            const ok = confirm(`Delete file "${selected.data.name}"?`)
-            if (!ok) return
-            await deleteFileCard(client, selected.msgId, selected.data)
-            removeFileEntriesFromPage(new Set([selected.msgId]))
-        } else {
-            const names = entries.slice(0, 5).map((entry) => entry.data.name).join(", ")
-            const more = entries.length > 5 ? ` and ${entries.length - 5} more` : ""
-            const ok = confirm(`Delete ${entries.length} files?\n\n${names}${more}`)
-            if (!ok) return
-            for (const entry of entries) {
-                await deleteFileCard(client, entry.msgId, entry.data)
-            }
-            removeFileEntriesFromPage(new Set(entries.map((entry) => entry.msgId)))
-        }
-        clearSelection()
-        renderBrowser(state.pages[state.currentPage])
+        await deleteSelectedEntries()
     })
     actionSendItem.addEventListener("click", async (e) => {
         e.preventDefault()
         const entries = getSelectedFileEntries()
         if (entries.length === 0) return
-        const recipient = prompt("Enter recipient:")
+        const recipient = await requestBrowserText({
+            title: "Send Files",
+            label: "Recipient",
+            confirmLabel: "Send",
+        })
         if (!recipient || recipient.trim() === "") return
         for (const entry of entries) {
             await sendFileCard(client, entry.data, recipient.trim())
         }
-        alert(entries.length === 1 ? "File sent." : "Files sent.")
+        showUfidToast(entries.length === 1 ? "File sent" : "Files sent")
     })
     actionUnsendItem?.addEventListener("click", async (e) => {
         e.preventDefault()
@@ -1043,10 +1502,10 @@ export async function initFileBrowser(client: any, config: Config.Config) {
             return
         }
         if (e.key === "Delete" && state.selected.size > 0) {
-            const files = getSelectedFileEntries()
-            if (files.length === state.selected.size) {
+            const entries = Array.from(state.selected.values())
+            if (entries.every((entry) => isFileEntry(entry) || isFolderEntry(entry))) {
                 e.preventDefault()
-                bulkDelete?.click()
+                await deleteSelectedEntries()
             }
             return
         }

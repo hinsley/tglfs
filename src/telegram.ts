@@ -23,10 +23,12 @@ import {
     TGLFS_FOLDER_TYPE,
     buildFolderManifestSearchQuery,
     buildFolderSearchQuery,
+    serializeTglfsFolderManifestMessage,
+    serializeTglfsFolderMessage,
     extractTglfsFolderManifestRecord,
     extractTglfsFolderRecord,
 } from "../packages/tglfs-cli/src/folders"
-import type { TglfsFolderManifestRecord, TglfsFolderRecord } from "../packages/tglfs-cli/src/folders"
+import type { TglfsFolder, TglfsFolderManifest, TglfsFolderManifestRecord, TglfsFolderRecord } from "../packages/tglfs-cli/src/folders"
 import {
     deleteFileCardMessages as sharedDeleteFileCardMessages,
     listFileCards as sharedListFileCards,
@@ -1772,6 +1774,48 @@ export async function getFolderManifest(
         }
     }
     return null
+}
+
+export async function writeFolderRecord(
+    client: TelegramClient,
+    folder: TglfsFolder,
+    existing?: TglfsFolderRecord | null,
+): Promise<TglfsFolderRecord> {
+    await gramJsReady
+    const message = serializeTglfsFolderMessage(folder)
+    if (!existing) {
+        const result = await client.sendMessage("me", { message })
+        return { msgId: result.id, date: result.date, peerId: result.peerId, data: folder }
+    }
+    await client.invoke(
+        new Api.messages.EditMessage({
+            peer: existing.peerId ?? "me",
+            id: existing.msgId,
+            message,
+        }),
+    )
+    return { ...existing, data: folder }
+}
+
+export async function writeFolderManifest(
+    client: TelegramClient,
+    manifest: TglfsFolderManifest,
+    existing?: TglfsFolderManifestRecord | null,
+): Promise<TglfsFolderManifestRecord> {
+    await gramJsReady
+    const message = serializeTglfsFolderManifestMessage(manifest)
+    if (!existing) {
+        const result = await client.sendMessage("me", { message })
+        return { msgId: result.id, date: result.date, peerId: result.peerId, data: manifest }
+    }
+    await client.invoke(
+        new Api.messages.EditMessage({
+            peer: existing.peerId ?? "me",
+            id: existing.msgId,
+            message,
+        }),
+    )
+    return { ...existing, data: manifest }
 }
 
 export async function renameFileCard(
