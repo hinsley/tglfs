@@ -12,9 +12,12 @@ import { getGramJs } from "./gramjs"
 import {
     buildFileCardSearchQuery,
     buildFileCardUfidLookupQuery,
+    createFileCardData,
     extractFileCardRecords,
     formatFileCardDate,
     formatFileCardSize,
+    parseFileCardMessage,
+    serializeFileCardMessage,
 } from "../packages/tglfs-cli/src/shared/file-cards"
 import {
     deleteFileCardMessages as sharedDeleteFileCardMessages,
@@ -53,6 +56,17 @@ const BATCH_LIMIT = 50 // How many messages to manipulate at a time with forward
 const BATCH_DELAY = 1000 // How many milliseconds to wait before processing the next batch (may prevent spam bans).
 
 // FileCardData is defined in src/types/models.ts.
+
+function parseTelegramFileCardMessage(message: unknown): FileCardData {
+    if (typeof message !== "string") {
+        throw new Error("File card message is missing.")
+    }
+    const data = parseFileCardMessage(message)
+    if (!data) {
+        throw new Error("File card message is malformed or unsupported.")
+    }
+    return data
+}
 
 // TODO: Move this function to a more appropriate place.
 function bytesToBase64(bytes: Uint8Array) {
@@ -200,13 +214,13 @@ export async function fileDelete(client: TelegramClient, config: Config.Config) 
         return
     }
     const msgs = await client.getMessages("me", {
-        search: 'tglfs:file "ufid":"' + fileUfid.trim() + '"',
+        search: buildFileCardUfidLookupQuery(fileUfid),
     })
     if (msgs.length === 0) {
         throw new Error("File not found.")
     }
 
-    const fileCardData: FileCardData = JSON.parse(msgs[0].message.substring(msgs[0].message.indexOf("{")))
+    const fileCardData = parseTelegramFileCardMessage(msgs[0].message)
 
     const humanReadableFileSize = humanReadableSize(fileCardData.size)
     const date = new Date(msgs[0].date * 1000)
@@ -250,14 +264,14 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
         return
     }
     const msgs = await client.getMessages("me", {
-        search: 'tglfs:file "ufid":"' + fileUfid.trim() + '"',
+        search: buildFileCardUfidLookupQuery(fileUfid),
     })
     if (msgs.length === 0) {
         alert("File not found.")
         return
     }
 
-    const fileCardData: FileCardData = JSON.parse(msgs[0].message.substring(msgs[0].message.indexOf("{")))
+    const fileCardData = parseTelegramFileCardMessage(msgs[0].message)
     // TODO: Verify that uploadComplete field is set to `true`.
 
     const humanReadableFileSize = humanReadableSize(fileCardData.size)
@@ -555,14 +569,14 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
         return
     }
     const msgs = await client.getMessages("me", {
-        search: 'tglfs:file "ufid":"' + fileUfid.trim() + '"',
+        search: buildFileCardUfidLookupQuery(fileUfid),
     })
     if (msgs.length === 0) {
         alert("File not found.")
         return
     }
 
-    const fileCardData: FileCardData = JSON.parse(msgs[0].message.substring(msgs[0].message.indexOf("{")))
+    const fileCardData = parseTelegramFileCardMessage(msgs[0].message)
     // TODO: Verify that uploadComplete field is set to `true`.
 
     const humanReadableFileSize = humanReadableSize(fileCardData.size)
@@ -853,8 +867,9 @@ export async function fileReceive(client: TelegramClient, config: Config.Config)
         waitTime: 0,
     })
     let response = `Available files from ${source}:`
+    const fileRecords = extractFileCardRecords(msgs)
     const fileCards: FileCardData[] = []
-    for (const record of extractFileCardRecords(msgs)) {
+    for (const record of fileRecords) {
         const fileCardData = record.data
         fileCards.push(fileCardData)
 
@@ -866,15 +881,16 @@ export async function fileReceive(client: TelegramClient, config: Config.Config)
     }
     response += `\n\nChoose a file (1-${fileCards.length}) to copy UFID to clipboard:`
     const selectionString = prompt(response)
-    let selection = NaN // Necessary to initialize to NaN for TypeScript not to complain.
-    if (selectionString !== null && selectionString.trim() !== "") {
-        selection = parseInt(selectionString, 10)
-        if (isNaN(selection) || selection < 1 || selection > fileCards.length) {
-            alert("Invalid selection. Aborting.")
-            return
-        }
-        selection-- // Adjust to 0-based index.
+    if (selectionString === null || selectionString.trim() === "") {
+        alert("No selection provided. Operation cancelled.")
+        return
     }
+    const parsedSelection = parseInt(selectionString, 10)
+    if (isNaN(parsedSelection) || parsedSelection < 1 || parsedSelection > fileCards.length) {
+        alert("Invalid selection. Aborting.")
+        return
+    }
+    const selection = parsedSelection - 1
     let result
     try {
         let newChunkIds: number[] = []
@@ -901,7 +917,7 @@ export async function fileReceive(client: TelegramClient, config: Config.Config)
         })()
         // Send updated file card to Saved Messages.
         fileCards[selection].chunks = newChunkIds
-        result = await client.sendMessage("me", { message: `tglfs:file\n${JSON.stringify(fileCards[selection])}` })
+        result = await client.sendMessage("me", { message: serializeFileCardMessage(fileCards[selection]) })
     } catch (error: any) {
         alert("Failed to receive file:" + error.message)
         return
@@ -921,13 +937,13 @@ export async function fileRename(client: TelegramClient, config: Config.Config) 
         return
     }
     const msgs = await client.getMessages("me", {
-        search: 'tglfs:file "ufid":"' + fileUfid.trim() + '"',
+        search: buildFileCardUfidLookupQuery(fileUfid),
     })
     if (msgs.length === 0) {
         throw new Error("File not found.")
     }
 
-    const fileCardData: FileCardData = JSON.parse(msgs[0].message.substring(msgs[0].message.indexOf("{")))
+    const fileCardData = parseTelegramFileCardMessage(msgs[0].message)
 
     const humanReadableFileSize = humanReadableSize(fileCardData.size)
     const date = new Date(msgs[0].date * 1000)
@@ -955,7 +971,7 @@ export async function fileRename(client: TelegramClient, config: Config.Config) 
         new Api.messages.EditMessage({
             peer: msgs[0].peerId,
             id: msgs[0].id,
-            message: `tglfs:file\n${JSON.stringify(fileCardData)}`,
+            message: serializeFileCardMessage(fileCardData),
         }),
     )
 
@@ -974,14 +990,14 @@ export async function fileSend(client: TelegramClient, config: Config.Config) {
         return
     }
     const msgs = await client.getMessages("me", {
-        search: 'tglfs:file "ufid":"' + fileUfid.trim() + '"',
+        search: buildFileCardUfidLookupQuery(fileUfid),
     })
     if (msgs.length === 0) {
         alert("File not found.")
         return
     }
 
-    const fileCardData: FileCardData = JSON.parse(msgs[0].message.substring(msgs[0].message.indexOf("{")))
+    const fileCardData = parseTelegramFileCardMessage(msgs[0].message)
 
     const humanReadableFileSize = humanReadableSize(fileCardData.size)
     const date = new Date(msgs[0].date * 1000)
@@ -1032,7 +1048,7 @@ export async function fileSend(client: TelegramClient, config: Config.Config) {
         })()
         // Send updated file card to recipient.
         fileCardData.chunks = newChunkIds
-        result = await client.sendMessage(fileRecipient, { message: `tglfs:file\n${JSON.stringify(fileCardData)}` })
+        result = await client.sendMessage(fileRecipient, { message: serializeFileCardMessage(fileCardData) })
     } catch (error: any) {
         alert("Failed to send file: " + error.message)
         return
@@ -1052,32 +1068,15 @@ export async function fileUnsend(client: TelegramClient, config: Config.Config) 
         return
     }
     const msgs = await client.getMessages(source, {
-        search: "tglfs:file",
+        search: buildFileCardSearchQuery(),
     })
     let response = `Available files from ${source}:`
     const fileCards: FileCardData[] = []
-    for (const msg of msgs) {
-        if (!msg.message.startsWith("tglfs:file")) {
-            continue
-        }
-        const fileCardData: FileCardData = JSON.parse(msg.message.substring(msg.message.indexOf("{")))
+    for (const record of extractFileCardRecords(msgs)) {
+        const fileCardData = record.data
         fileCards.push(fileCardData)
 
-        const humanReadableFileSize = humanReadableSize(fileCardData.size)
-        // TODO: DRY-ify datetime formatting.
-        const date = new Date(msg.date * 1000)
-        const formattedDate = date
-            .toLocaleString("en-US", {
-                year: "numeric",
-                month: "2-digit",
-                day: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-                hour12: false,
-            })
-            .replace(",", "") // Remove the comma between date and time.
-        response += `\n\nFile ${fileCards.length}\nName: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`
+        response += `\n\nFile ${fileCards.length}\nName: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${formatFileCardSize(fileCardData.size)}\nTimestamp: ${formatFileCardDate(record.date)}`
     }
     if (fileCards.length == 0) {
         alert(`No files found at ${source}.`)
@@ -1114,7 +1113,7 @@ export async function fileUnsend(client: TelegramClient, config: Config.Config) 
     // Unsend file card.
     let result = await client.invoke(
         new Api.messages.DeleteMessages({
-            id: [msgs[selection].id],
+            id: [fileRecords[selection].msgId],
         }),
     )
     if (result) {
@@ -1319,7 +1318,7 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
         let bytesProcessed = 0
 
         const existingMsgs = await client.getMessages("me", {
-            search: `tglfs:file "ufid":"${UFID}"`,
+            search: buildFileCardUfidLookupQuery(UFID),
         })
 
         if (existingMsgs.length > 0) {
@@ -1328,15 +1327,15 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
             return
         }
 
-        let fileCardData: FileCardData = {
+        let fileCardData: FileCardData = createFileCardData({
             name: displayName,
             ufid: UFID,
             size: totalBytes,
             uploadComplete: false,
             chunks: [],
             IV: IV,
-        }
-        const fileCardMessage = await client.sendMessage("me", { message: `tglfs:file\n${JSON.stringify(fileCardData)}` })
+        })
+        const fileCardMessage = await client.sendMessage("me", { message: serializeFileCardMessage(fileCardData) })
 
         const byteCounterStream = new TransformStream({
             transform(chunk, controller) {
@@ -1437,7 +1436,7 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
                                     new Api.messages.EditMessage({
                                         peer: fileCardMessage.peerId,
                                         id: fileCardMessage.id,
-                                        message: `tglfs:file\n${JSON.stringify(fileCardData)}`,
+                                        message: serializeFileCardMessage(fileCardData),
                                     }),
                                 )
 
@@ -1540,7 +1539,7 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
                             new Api.messages.EditMessage({
                                 peer: fileCardMessage.peerId,
                                 id: fileCardMessage.id,
-                                message: `tglfs:file\n${JSON.stringify(fileCardData)}`,
+                                message: serializeFileCardMessage(fileCardData),
                             }),
                         )
 
@@ -1611,7 +1610,7 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
                     new Api.messages.EditMessage({
                         peer: fileCardMessage.peerId,
                         id: fileCardMessage.id,
-                        message: `tglfs:file\n${JSON.stringify(fileCardData)}`,
+                        message: serializeFileCardMessage(fileCardData),
                     }),
                 )
 
@@ -1657,7 +1656,7 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
             new Api.messages.EditMessage({
                 peer: fileCardMessage.peerId,
                 id: fileCardMessage.id,
-                message: `tglfs:file\n${JSON.stringify(fileCardData)}`,
+                message: serializeFileCardMessage(fileCardData),
             }),
         )
 

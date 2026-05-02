@@ -60,6 +60,7 @@ test("uploadCurrentFormatSource uploads a small source and finalizes the file ca
 
     assert.equal(sentMessages.length, 1)
     assert.match(sentMessages[0].message, /^tglfs:file\n/)
+    assert.equal(JSON.parse(sentMessages[0].message.substring(sentMessages[0].message.indexOf("{"))).version, 1)
     assert.equal(chunkMessages.length, 1)
     assert.ok(invocations.length >= 2)
     assert.equal(result.data.name, "fixture.txt")

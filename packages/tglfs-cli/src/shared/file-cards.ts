@@ -1,11 +1,14 @@
-export type FileCardData = {
-    name: string
-    ufid: string
-    size: number
-    uploadComplete: boolean
-    chunks: number[]
-    IV: string
-}
+import {
+    FILE_CARD_V1_TYPE,
+    FILE_CARD_V1_VERSION,
+    isFileCardV1Data,
+    normalizeFileCardV1Data,
+    serializeFileCardV1Data,
+} from "./protocol/file-card-v1.js"
+import type { FileCardV1Data, FileCardV1Input } from "./protocol/file-card-v1.js"
+
+export type FileCardData = FileCardV1Data
+export type FileCardInput = FileCardV1Input
 
 export type FileCardRecord = {
     msgId: number
@@ -19,7 +22,8 @@ export type FileCardMessageLike = {
     message?: string | null
 }
 
-export const FILE_CARD_PREFIX = "tglfs:file"
+export const FILE_CARD_PREFIX = FILE_CARD_V1_TYPE
+export const FILE_CARD_CURRENT_VERSION = FILE_CARD_V1_VERSION
 
 export const FILE_CARD_SEARCH_SORT_VALUES = [
     "date_desc",
@@ -33,20 +37,15 @@ export const FILE_CARD_SEARCH_SORT_VALUES = [
 export type FileCardSearchSort = (typeof FILE_CARD_SEARCH_SORT_VALUES)[number]
 
 export function isFileCardData(value: unknown): value is FileCardData {
-    if (!value || typeof value !== "object") {
-        return false
-    }
+    return isFileCardV1Data(value)
+}
 
-    const candidate = value as Partial<FileCardData>
-    return (
-        typeof candidate.name === "string" &&
-        typeof candidate.ufid === "string" &&
-        typeof candidate.size === "number" &&
-        typeof candidate.uploadComplete === "boolean" &&
-        Array.isArray(candidate.chunks) &&
-        candidate.chunks.every((chunk) => typeof chunk === "number") &&
-        typeof candidate.IV === "string"
-    )
+export function createFileCardData(data: FileCardInput): FileCardData {
+    const normalized = normalizeFileCardV1Data(data)
+    if (!normalized) {
+        throw new Error("Unsupported file-card data.")
+    }
+    return normalized
 }
 
 export function parseFileCardMessage(message: string): FileCardData | null {
@@ -56,14 +55,14 @@ export function parseFileCardMessage(message: string): FileCardData | null {
 
     try {
         const payload = JSON.parse(message.substring(message.indexOf("{")))
-        return isFileCardData(payload) ? payload : null
+        return normalizeFileCardV1Data(payload)
     } catch {
         return null
     }
 }
 
-export function serializeFileCardMessage(data: FileCardData) {
-    return `${FILE_CARD_PREFIX}\n${JSON.stringify(data)}`
+export function serializeFileCardMessage(data: FileCardInput) {
+    return `${FILE_CARD_PREFIX}\n${serializeFileCardV1Data(data)}`
 }
 
 export function extractFileCardRecord(message: FileCardMessageLike): FileCardRecord | null {

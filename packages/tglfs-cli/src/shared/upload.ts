@@ -3,7 +3,7 @@ import { Buffer } from "buffer"
 import { deriveAESKeyFromPassword, ENCRYPTION_CHUNK_SIZE, incrementCounter64By } from "../crypto.js"
 import { computeUfidFromStream } from "../ufid.js"
 import { UPLOAD_PART_SIZE } from "./constants.js"
-import { serializeFileCardMessage } from "./file-cards.js"
+import { createFileCardData, serializeFileCardMessage } from "./file-cards.js"
 import { lookupFileCardByUfid } from "./telegram-files.js"
 import type { FileCardData, FileCardRecord } from "./file-cards.js"
 
@@ -98,14 +98,14 @@ export async function uploadCurrentFormatSource(
     const initialCounter = globalThis.crypto.getRandomValues(new Uint8Array(16))
     const aesKey = await deriveAESKeyFromPassword(options.password, salt)
     let encryptionCounter = new Uint8Array(initialCounter)
-    let fileCardData: FileCardData = {
+    let fileCardData: FileCardData = createFileCardData({
         name: options.source.name,
         ufid,
         size: totalBytes,
         uploadComplete: false,
         chunks: [],
         IV: Buffer.from(createIvBytes(salt, initialCounter)).toString("base64"),
-    }
+    })
 
     const fileCardMessage = await client.sendMessage(peer, {
         message: serializeFileCardMessage(fileCardData),
