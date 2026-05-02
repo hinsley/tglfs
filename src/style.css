@@ -578,64 +578,6 @@ div#offline {
     margin-right: 6px;
 }
 
-@media (max-width: 640px) {
-    #browserTable {
-        display: none;
-    }
-
-    #browserCards .file-card {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        background: rgba(255, 255, 255, 0.85);
-        border: 1px solid var(--fx-border);
-        border-radius: var(--fx-radius);
-        box-shadow: none;
-        padding: 12px;
-        margin-bottom: 10px;
-        transition: transform 120ms ease, box-shadow 120ms ease;
-    }
-
-    #browserCards .file-card:active {
-        transform: scale(0.997);
-    }
-
-    #browserCards .file-card.selected {
-        background: rgba(36, 161, 222, 0.18);
-    }
-
-    #browserCards .file-card .title {
-        font-weight: 600;
-    }
-
-    #browserCards .file-card .meta {
-        color: var(--fx-text-muted);
-        font-size: 0.9rem;
-        overflow: hidden;
-    }
-
-    #browserCards .file-card .meta code {
-        display: inline-block;
-        max-width: 6ch;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
-    #browserCards .file-card .actions {
-        margin-left: auto;
-        display: flex;
-        gap: 6px;
-    }
-
-    #browserCards .icon-btn {
-        border: 1px solid var(--fx-border);
-        background: transparent;
-        border-radius: var(--fx-radius-sm);
-        padding: 8px;
-    }
-}
-
 .pill {
     display: inline-block;
     padding: 2px 8px;
@@ -1105,10 +1047,6 @@ body>#app {
 #browserTable tbody tr.selected > td,
 #browserTable tbody tr.selected:hover > td {
     background-color: rgba(36, 161, 222, 0.18);
-}
-
-#browserCards .file-card.selected {
-    background: rgba(36, 161, 222, 0.18);
 }
 
 /* Mobile: collapse per-file actions into a dropdown. */

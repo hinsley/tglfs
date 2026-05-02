@@ -153,8 +153,6 @@ function showUfidToast(message: string) {
 function clearViews() {
     const tbody = document.querySelector<HTMLTableSectionElement>("#browserTable tbody")
     if (tbody) tbody.innerHTML = ""
-    const cards = document.getElementById("browserCards")
-    if (cards) cards.innerHTML = ""
     const grid = document.getElementById("browserGrid")
     if (grid) grid.innerHTML = ""
 }
@@ -315,7 +313,6 @@ async function attachCopyHandler(root: HTMLElement, entry: BrowserEntry) {
 
 function renderList(items: BrowserEntry[]) {
     const tbody = document.querySelector<HTMLTableSectionElement>("#browserTable tbody")
-    const cards = document.getElementById("browserCards")
     for (const [index, entry] of items.entries()) {
         const icon = getEntryIcon(entry)
         const name = escapeHtml(getEntryName(entry))
@@ -339,23 +336,6 @@ function renderList(items: BrowserEntry[]) {
             tbody.appendChild(tr)
             attachSelectionHandlers(tr, entry, index)
             void attachCopyHandler(tr, entry)
-        }
-
-        if (cards) {
-            const card = document.createElement("div")
-            card.className = "file-card"
-            card.dataset.browserId = entry.id
-            if (isFileEntry(entry)) card.dataset.msgid = String(entry.msgId)
-            card.innerHTML = `
-                <div class="flex-grow-1">
-                    <div class="title"><span class="file-type-icon">${icon}</span>${name}</div>
-                    <div class="meta">${getEntrySizeText(entry)} • ${date}</div>
-                    ${path ? `<div class="meta">${escapeHtml(path)}</div>` : ""}
-                    <div class="meta"><code title="Tap to copy ${copy.label}" data-copy-id>${escapeHtml(copy.value)}</code></div>
-                </div>`
-            cards.appendChild(card)
-            attachSelectionHandlers(card, entry, index)
-            void attachCopyHandler(card, entry)
         }
     }
 }
