@@ -99,6 +99,8 @@ let previewModal: PreviewModal | null = null
 let ufidToastTimer: number | undefined
 let activeBrowserClient: any = null
 let refreshBrowser: (() => Promise<void>) | null = null
+const locallyFiledUfids = new Set<string>()
+const locallyRootedUfids = new Set<string>()
 
 type BrowserDialogOptions = {
     title: string
@@ -521,6 +523,32 @@ function activeManifestEntryNames(manifest: TglfsFolderManifest) {
     )
 }
 
+function findActiveFileEntryByUfid(manifest: TglfsFolderManifest, ufid: string) {
+    return Object.values(manifest.entries).find((entry) =>
+        !entry.deleted &&
+        entry.kind === "file" &&
+        entry.ufid === ufid,
+    )
+}
+
+function findActiveEntryByName(manifest: TglfsFolderManifest, name: string) {
+    const lower = name.toLowerCase()
+    return Object.values(manifest.entries).find((entry) =>
+        !entry.deleted &&
+        entry.name.toLowerCase() === lower,
+    )
+}
+
+function markFileMovedToFolder(ufid: string) {
+    locallyFiledUfids.add(ufid)
+    locallyRootedUfids.delete(ufid)
+}
+
+function markFileMovedToRoot(ufid: string) {
+    locallyRootedUfids.add(ufid)
+    locallyFiledUfids.delete(ufid)
+}
+
 function assertFolderNameAvailable(name: string, entries: Iterable<string>) {
     const lower = name.toLowerCase()
     for (const entry of entries) {
@@ -925,7 +953,11 @@ async function loadRootPage(client: any, options: { offsetId?: number; includeFo
             .filter((entry) => entryMatchesQuery(entry, state.query))
         : []
     const topLevelFiles = fileRecords
-        .filter((record) => !folderFileUfids.has(record.data.ufid))
+        .filter((record) => {
+            const ufid = record.data.ufid
+            const filed = folderFileUfids.has(ufid) || locallyFiledUfids.has(ufid)
+            return !filed || locallyRootedUfids.has(ufid)
+        })
         .map(fileEntryFromRecord)
     const items: BrowserEntry[] = [
         ...folderEntries,
@@ -1406,12 +1438,26 @@ async function moveFileEntryToRoot(client: any, file: FileBrowserEntry, now: str
             entry.kind === "file" && entry.ufid === file.data.ufid,
         )
     }
+    markFileMovedToRoot(file.data.ufid)
     return true
 }
 
 async function moveFileEntryToFolder(client: any, file: FileBrowserEntry, destination: TglfsFolderRecord, now: string) {
     const { record: destinationManifestRecord, manifest: destinationManifest } = await getFolderManifestForMutation(client, destination.data, now)
-    if (!assertFolderNameAvailable(file.data.name, activeManifestEntryNames(destinationManifest))) {
+    const existingFile = findActiveFileEntryByUfid(destinationManifest, file.data.ufid)
+    if (existingFile) {
+        if (state.currentFolder) {
+            await tombstoneEntryInFolderManifest(client, state.currentFolder.data.folderId, now, (entry) =>
+                entry.kind === "file" && entry.ufid === file.data.ufid,
+            )
+        }
+        markFileMovedToFolder(file.data.ufid)
+        return true
+    }
+
+    const existingNamedEntry = findActiveEntryByName(destinationManifest, file.data.name)
+    if (existingNamedEntry) {
+        showUfidToast(`"${file.data.name}" already exists here`)
         return false
     }
 
@@ -1437,6 +1483,7 @@ async function moveFileEntryToFolder(client: any, file: FileBrowserEntry, destin
             },
         },
     }, destinationManifestRecord)
+    markFileMovedToFolder(file.data.ufid)
 
     if (state.currentFolder) {
         await tombstoneEntryInFolderManifest(client, state.currentFolder.data.folderId, now, (entry) =>
