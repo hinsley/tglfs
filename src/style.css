@@ -446,9 +446,37 @@ div#offline {
 }
 
 .fx-breadcrumb-path {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.fx-breadcrumb-separator {
+    color: var(--fx-text-muted);
+}
+
+.fx-breadcrumb-segment {
+    color: var(--fx-accent);
+    font-weight: 600;
+    text-decoration: none;
+    padding: 2px 4px;
+    min-width: 0;
+}
+
+.fx-breadcrumb-segment:hover {
+    text-decoration: underline;
+}
+
+.fx-breadcrumb-current {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--fx-text);
+    font-weight: 600;
 }
 
 #fileBrowser .fx-footer {

@@ -76,6 +76,7 @@ type BrowserState = {
     lastClickedIndex: number | null
     hasMore: boolean
     currentFolder: FolderBrowserEntry | null
+    currentFolderTrail: FolderBrowserEntry[]
 }
 
 const state: BrowserState = {
@@ -91,6 +92,7 @@ const state: BrowserState = {
     lastClickedIndex: null,
     hasMore: true,
     currentFolder: null,
+    currentFolderTrail: [],
 }
 
 let previewModal: PreviewModal | null = null
@@ -428,6 +430,43 @@ function applyGridMarquee(item: HTMLElement) {
 }
 
 async function openFolder(entry: FolderBrowserEntry) {
+    const trail = await buildFolderTrail(entry)
+    state.currentFolderTrail = trail.length ? trail : [entry]
+    state.currentFolder = state.currentFolderTrail[state.currentFolderTrail.length - 1] ?? entry
+    state.query = ""
+    const searchInput = document.getElementById("browserSearchInput") as HTMLInputElement | null
+    if (searchInput) searchInput.value = ""
+    await refreshBrowser?.()
+}
+
+async function buildFolderTrail(entry: FolderBrowserEntry): Promise<FolderBrowserEntry[]> {
+    const client = activeBrowserClient
+    if (!client) return [entry]
+
+    const records: TglfsFolderRecord[] = []
+    let current: TglfsFolderRecord | null = await resolveFolderRecordForMutation(client, entry)
+    if (!current) {
+        current = {
+            msgId: entry.msgId,
+            date: entry.date,
+            data: entry.data,
+        }
+    }
+
+    const seen = new Set<string>()
+    while (current && !seen.has(current.data.folderId)) {
+        records.unshift(current)
+        seen.add(current.data.folderId)
+        current = current.data.parentFolderId ? await getFolderRecord(client, current.data.parentFolderId) : null
+    }
+
+    return records.map(folderEntryFromRecord)
+}
+
+async function openBreadcrumbFolder(index: number) {
+    const entry = state.currentFolderTrail[index]
+    if (!entry) return
+    state.currentFolderTrail = state.currentFolderTrail.slice(0, index + 1)
     state.currentFolder = entry
     state.query = ""
     const searchInput = document.getElementById("browserSearchInput") as HTMLInputElement | null
@@ -437,6 +476,7 @@ async function openFolder(entry: FolderBrowserEntry) {
 
 async function openGlobalView() {
     state.currentFolder = null
+    state.currentFolderTrail = []
     state.query = ""
     const searchInput = document.getElementById("browserSearchInput") as HTMLInputElement | null
     if (searchInput) searchInput.value = ""
@@ -585,12 +625,36 @@ function updateFolderLocation() {
     const pathEl = document.getElementById("browserPathCrumbs")
     if (!breadcrumb || !pathEl) return
     breadcrumb.removeAttribute("hidden")
+    pathEl.textContent = ""
     if (!state.currentFolder) {
-        pathEl.textContent = ""
         return
     }
-    const path = state.currentFolder.data.path || state.currentFolder.data.name
-    pathEl.textContent = path ? `/ ${path}` : `/ ${state.currentFolder.data.name}`
+
+    const trail = state.currentFolderTrail.length ? state.currentFolderTrail : [state.currentFolder]
+    for (const [index, folder] of trail.entries()) {
+        const separator = document.createElement("span")
+        separator.className = "fx-breadcrumb-separator"
+        separator.textContent = "/"
+        pathEl.appendChild(separator)
+
+        const isCurrent = index === trail.length - 1
+        if (isCurrent) {
+            const current = document.createElement("span")
+            current.className = "fx-breadcrumb-current"
+            current.textContent = folder.data.name
+            pathEl.appendChild(current)
+            continue
+        }
+
+        const button = document.createElement("button")
+        button.type = "button"
+        button.className = "btn btn-sm btn-link fx-breadcrumb-segment"
+        button.textContent = folder.data.name
+        button.addEventListener("click", () => {
+            void openBreadcrumbFolder(index)
+        })
+        pathEl.appendChild(button)
+    }
 }
 
 function renderBrowser(items: BrowserEntry[]) {
