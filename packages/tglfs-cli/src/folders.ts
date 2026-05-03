@@ -217,6 +217,16 @@ export function serializeTglfsFolderManifestMessage(manifest: TglfsFolderManifes
     return `${TGLFS_FOLDER_MANIFEST_TYPE}\n${JSON.stringify(manifest)}`
 }
 
+export function compactTglfsFolderManifest(manifest: TglfsFolderManifest): TglfsFolderManifest {
+    const entries: Record<string, TglfsFolderManifestEntry> = {}
+    for (const [name, entry] of Object.entries(manifest.entries)) {
+        if (!entry.deleted) {
+            entries[name] = entry
+        }
+    }
+    return { ...manifest, entries }
+}
+
 export function extractTglfsFolderRecord(message: TelegramRecordMessageLike): TglfsFolderRecord | null {
     if (typeof message.message !== "string") {
         return null

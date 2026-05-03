@@ -9,6 +9,8 @@ import {
 } from "../../packages/tglfs-cli/src/folders"
 import { FILE_CARD_PREFIX } from "../../packages/tglfs-cli/src/shared/file-cards"
 
+const TELEGRAM_TEXT_MESSAGE_LIMIT = 4096
+
 function now(offsetSeconds = 0) {
     return new Date(Date.UTC(2026, 4, 2, 17, 0, offsetSeconds)).toISOString()
 }
@@ -222,6 +224,9 @@ export function createMockFolderBrowserSession() {
             return sorted
         },
         async sendMessage(_peer: string, options: { message: string }) {
+            if (options.message.length > TELEGRAM_TEXT_MESSAGE_LIMIT) {
+                throw new Error("400: MESSAGE_TOO_LONG (caused by messages.SendMessage)")
+            }
             const record = {
                 id: nextMessageId++,
                 date: Math.floor(Date.now() / 1000),
@@ -237,6 +242,9 @@ export function createMockFolderBrowserSession() {
                 return { updates: [] }
             }
             if (typeof request?.id === "number" && typeof request?.message === "string") {
+                if (request.message.length > TELEGRAM_TEXT_MESSAGE_LIMIT) {
+                    throw new Error("400: MESSAGE_TOO_LONG (caused by messages.EditMessage)")
+                }
                 const record = allRecords().find((candidate) => candidate.id === request.id)
                 if (record) {
                     record.message = request.message

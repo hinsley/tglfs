@@ -23,6 +23,7 @@ import {
     TGLFS_FOLDER_TYPE,
     buildFolderManifestSearchQuery,
     buildFolderSearchQuery,
+    compactTglfsFolderManifest,
     serializeTglfsFolderManifestMessage,
     serializeTglfsFolderMessage,
     extractTglfsFolderManifestRecord,
@@ -1803,10 +1804,11 @@ export async function writeFolderManifest(
     existing?: TglfsFolderManifestRecord | null,
 ): Promise<TglfsFolderManifestRecord> {
     await gramJsReady
-    const message = serializeTglfsFolderManifestMessage(manifest)
+    const compactManifest = compactTglfsFolderManifest(manifest)
+    const message = serializeTglfsFolderManifestMessage(compactManifest)
     if (!existing) {
         const result = await client.sendMessage("me", { message })
-        return { msgId: result.id, date: result.date, peerId: result.peerId, data: manifest }
+        return { msgId: result.id, date: result.date, peerId: result.peerId, data: compactManifest }
     }
     await client.invoke(
         new Api.messages.EditMessage({
@@ -1815,7 +1817,7 @@ export async function writeFolderManifest(
             message,
         }),
     )
-    return { ...existing, data: manifest }
+    return { ...existing, data: compactManifest }
 }
 
 export async function renameFileCard(

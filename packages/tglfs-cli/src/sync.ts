@@ -10,6 +10,7 @@ import { CliError, EXIT_CODES } from "./errors.js"
 import {
     buildFolderManifestSearchQuery,
     buildFolderSearchQuery,
+    compactTglfsFolderManifest,
     createTglfsFolder,
     createTglfsFolderManifest,
     extractTglfsFolderManifestRecord,
@@ -242,10 +243,11 @@ async function writeTglfsFolderManifest(
         existing?: TglfsFolderManifestRecord | null
     },
 ): Promise<TglfsFolderManifestRecord> {
-    const message = serializeTglfsFolderManifestMessage(options.manifest)
+    const compactManifest = compactTglfsFolderManifest(options.manifest)
+    const message = serializeTglfsFolderManifestMessage(compactManifest)
     if (!options.existing) {
         const result = await client.sendMessage("me", { message })
-        return { msgId: result.id, date: result.date, peerId: result.peerId, data: options.manifest }
+        return { msgId: result.id, date: result.date, peerId: result.peerId, data: compactManifest }
     }
     await client.invoke(
         new options.Api.messages.EditMessage({
@@ -254,7 +256,7 @@ async function writeTglfsFolderManifest(
             message,
         }),
     )
-    return { ...options.existing, data: options.manifest }
+    return { ...options.existing, data: compactManifest }
 }
 
 function createChildFolderId(rootFolderId: string, folderPath: string) {

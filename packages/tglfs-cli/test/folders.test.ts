@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+    compactTglfsFolderManifest,
     createTglfsFolder,
     createTglfsFolderManifest,
     parseTglfsFolderManifestMessage,
@@ -54,6 +55,46 @@ test("folder manifest v1 messages parse file and folder entries", () => {
     })
 
     assert.deepEqual(parseTglfsFolderManifestMessage(serializeTglfsFolderManifestMessage(manifest)), manifest)
+})
+
+test("folder manifest compaction drops deleted entries before storage writes", () => {
+    const manifest = createTglfsFolderManifest({
+        folderId: "folder-1",
+        rootId: "root-1",
+        path: "",
+        now: "2026-05-02T12:00:00.000Z",
+        entries: {
+            "active.txt": {
+                entryId: "entry-active",
+                name: "active.txt",
+                path: "active.txt",
+                kind: "file",
+                ufid: "ufid-active",
+                size: 1,
+                mtimeMs: 2,
+                mode: 0o644,
+                deleted: false,
+                updatedAt: "2026-05-02T12:00:00.000Z",
+            },
+            "old.txt": {
+                entryId: "entry-deleted",
+                name: "old.txt",
+                path: "old.txt",
+                kind: "file",
+                ufid: "ufid-old",
+                size: 1,
+                mtimeMs: 2,
+                mode: 0o644,
+                deleted: true,
+                updatedAt: "2026-05-02T12:00:00.000Z",
+            },
+        },
+    })
+
+    const compacted = compactTglfsFolderManifest(manifest)
+
+    assert.deepEqual(Object.keys(compacted.entries), ["active.txt"])
+    assert.equal(Object.keys(manifest.entries).length, 2)
 })
 
 test("folder parsers refuse malformed and future-version records", () => {
