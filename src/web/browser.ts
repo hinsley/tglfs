@@ -1444,19 +1444,10 @@ async function moveFileEntryToRoot(client: any, file: FileBrowserEntry, now: str
 
 async function moveFileEntryToFolder(client: any, file: FileBrowserEntry, destination: TglfsFolderRecord, now: string) {
     const { record: destinationManifestRecord, manifest: destinationManifest } = await getFolderManifestForMutation(client, destination.data, now)
-    const existingFile = findActiveFileEntryByUfid(destinationManifest, file.data.ufid)
-    if (existingFile) {
-        if (state.currentFolder) {
-            await tombstoneEntryInFolderManifest(client, state.currentFolder.data.folderId, now, (entry) =>
-                entry.kind === "file" && entry.ufid === file.data.ufid,
-            )
-        }
-        markFileMovedToFolder(file.data.ufid)
-        return true
-    }
-
-    const existingNamedEntry = findActiveEntryByName(destinationManifest, file.data.name)
-    if (existingNamedEntry) {
+    const existingDestinationEntry =
+        findActiveEntryByName(destinationManifest, file.data.name) ??
+        findActiveFileEntryByUfid(destinationManifest, file.data.ufid)
+    if (existingDestinationEntry) {
         showUfidToast(`"${file.data.name}" already exists here`)
         return false
     }
