@@ -126,6 +126,11 @@ type MoveDestination =
 
 const ROOT_MOVE_DESTINATION = "__tglfs-root__"
 
+type MoveResult = {
+    files: number
+    folders: number
+}
+
 type MoveTombstoneBatch = {
     fileUfids: Set<string>
     folderIds: Set<string>
@@ -178,7 +183,7 @@ function escapeHtml(value: string) {
     })
 }
 
-function showUfidToast(message: string) {
+function showUfidToast(message: string, options?: { durationMs?: number | null }) {
     const toast = document.getElementById("ufidToast")
     if (!toast) return
     toast.textContent = message
@@ -188,11 +193,14 @@ function showUfidToast(message: string) {
     toast.classList.add("is-visible")
     if (ufidToastTimer !== undefined) {
         window.clearTimeout(ufidToastTimer)
+        ufidToastTimer = undefined
     }
+    const durationMs = options?.durationMs === undefined ? 1200 : options.durationMs
+    if (durationMs === null) return
     ufidToastTimer = window.setTimeout(() => {
         toast.classList.remove("is-visible")
         toast.setAttribute("aria-hidden", "true")
-    }, 1200)
+    }, durationMs)
 }
 
 function closeBrowserDialog(dialog: HTMLElement) {
@@ -579,6 +587,32 @@ function addFileTombstone(batches: Map<string, MoveTombstoneBatch>, folderId: st
 
 function addFolderTombstone(batches: Map<string, MoveTombstoneBatch>, folderId: string, childFolderId: string) {
     getOrCreateMoveTombstoneBatch(batches, folderId).folderIds.add(childFolderId)
+}
+
+function countMoveEntries(entries: BrowserEntry[]): MoveResult {
+    return {
+        files: entries.filter(isFileEntry).length,
+        folders: entries.filter(isFolderEntry).length,
+    }
+}
+
+function formatMoveCount(result: MoveResult) {
+    const total = result.files + result.folders
+    if (result.files > 0 && result.folders === 0) {
+        return result.files === 1 ? "1 file" : `${result.files} files`
+    }
+    if (result.folders > 0 && result.files === 0) {
+        return result.folders === 1 ? "1 folder" : `${result.folders} folders`
+    }
+    return total === 1 ? "1 item" : `${total} items`
+}
+
+function totalMoved(result: MoveResult) {
+    return result.files + result.folders
+}
+
+function waitForNextFrame() {
+    return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
 }
 
 async function writeMoveTombstones(client: any, batches: Map<string, MoveTombstoneBatch>, now: string) {
@@ -1587,7 +1621,7 @@ async function moveEntriesToFolderInSinglePass(
     }
 
     const moved = movedFileUfids.length + preparedFolderMoves.length
-    if (moved === 0) return 0
+    if (moved === 0) return { files: 0, folders: 0 }
 
     await writeFolderManifest(client, {
         ...destinationManifest,
@@ -1611,7 +1645,7 @@ async function moveEntriesToFolderInSinglePass(
     for (const ufid of movedFileUfids) {
         markFileMovedToFolder(ufid)
     }
-    return moved
+    return { files: movedFileUfids.length, folders: preparedFolderMoves.length }
 }
 
 async function moveEntriesToRootInSinglePass(client: any, entries: BrowserEntry[], now: string) {
@@ -1658,7 +1692,7 @@ async function moveEntriesToRootInSinglePass(client: any, entries: BrowserEntry[
     }
 
     const moved = movedFileUfids.length + preparedFolderMoves.length
-    if (moved === 0) return 0
+    if (moved === 0) return { files: 0, folders: 0 }
 
     for (const folderMove of preparedFolderMoves) {
         await updateFolderTreeForRename(client, folderMove.record, {
@@ -1674,7 +1708,7 @@ async function moveEntriesToRootInSinglePass(client: any, entries: BrowserEntry[
     for (const ufid of movedFileUfids) {
         markFileMovedToRoot(ufid)
     }
-    return moved
+    return { files: movedFileUfids.length, folders: preparedFolderMoves.length }
 }
 
 async function moveSelectedEntries(client: any) {
@@ -1686,14 +1720,24 @@ async function moveSelectedEntries(client: any) {
     if (!destination) return
 
     const now = new Date().toISOString()
-    const moved = destination.kind === "root"
-        ? await moveEntriesToRootInSinglePass(client, movableEntries, now)
-        : await moveEntriesToFolderInSinglePass(client, movableEntries, destination.record, now)
+    const destinationLabel = destination.label
+    showUfidToast(`Moving ${formatMoveCount(countMoveEntries(movableEntries))} to ${destinationLabel}...`, { durationMs: null })
+    await waitForNextFrame()
+
+    let moved: MoveResult
+    try {
+        moved = destination.kind === "root"
+            ? await moveEntriesToRootInSinglePass(client, movableEntries, now)
+            : await moveEntriesToFolderInSinglePass(client, movableEntries, destination.record, now)
+    } catch (error) {
+        showUfidToast(`Move to ${destinationLabel} failed`)
+        throw error
+    }
 
     clearSelection()
     await refreshBrowser?.()
-    if (moved > 0) {
-        showUfidToast(moved === 1 ? "Moved 1 item" : `Moved ${moved} items`)
+    if (totalMoved(moved) > 0) {
+        showUfidToast(`Moved ${formatMoveCount(moved)} to ${destinationLabel}`)
     }
 }
 
