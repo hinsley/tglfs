@@ -596,7 +596,14 @@ div#offline {
 .entry-name-cell {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 2px;
+    min-width: 0;
+    text-align: center;
+}
+
+.entry-name-cell > span:last-child {
+    min-width: 0;
 }
 
 .entry-subtitle {
@@ -1196,6 +1203,7 @@ body>#app {
 #browserTable thead th.name,
 #browserTable tbody td.name {
     width: 40%;
+    text-align: center;
 }
 
 #browserTable thead th.size,
