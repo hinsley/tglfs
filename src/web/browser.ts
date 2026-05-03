@@ -1152,7 +1152,16 @@ async function loadRootPage(client: any, options: { folderIndex?: number; fileOf
         }
 
         if (fileRecords.length <= state.pageSize) {
-            break
+            const probe = await listFileCards(client, { query: state.query, limit: 1, offsetId: nextFileOffsetId })
+            if (probe.length === 0) {
+                break
+            }
+            if (items.length > 0) {
+                fileHasMore = true
+                break
+            }
+            fileOffsetId = nextFileOffsetId
+            continue
         }
 
         if (items.length > 0) {
