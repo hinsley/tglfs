@@ -963,6 +963,26 @@ async function collectFolderFileUfids(client: any, folderRecords: TglfsFolderRec
     return ufids
 }
 
+async function listAllFolderRecordsForBrowser(client: any) {
+    const records: TglfsFolderRecord[] = []
+    const seen = new Set<string>()
+    let offsetId: number | undefined
+    while (true) {
+        const page = await listFolderRecords(client, { limit: 500, offsetId })
+        for (const record of page) {
+            if (!seen.has(record.data.folderId)) {
+                seen.add(record.data.folderId)
+                records.push(record)
+            }
+        }
+        if (page.length < 500) break
+        const nextOffsetId = page[page.length - 1].msgId
+        if (nextOffsetId === offsetId) break
+        offsetId = nextOffsetId
+    }
+    return records
+}
+
 function chunkEntries(items: BrowserEntry[]) {
     const pages: BrowserEntry[][] = []
     for (let index = 0; index < items.length; index += state.pageSize) {
@@ -972,10 +992,7 @@ function chunkEntries(items: BrowserEntry[]) {
 }
 
 async function loadRootPage(client: any, options: { offsetId?: number; includeFolders: boolean }) {
-    const [fileRecords, allFolderRecords] = await Promise.all([
-        listFileCards(client, { query: state.query, limit: state.pageSize, offsetId: options.offsetId }),
-        listFolderRecords(client, { limit: 500 }),
-    ])
+    const allFolderRecords = await listAllFolderRecordsForBrowser(client)
     const folderFileUfids = await collectFolderFileUfids(client, allFolderRecords)
     const folderEntries = options.includeFolders
         ? allFolderRecords
@@ -983,13 +1000,37 @@ async function loadRootPage(client: any, options: { offsetId?: number; includeFo
             .filter(folderRecordBelongsInGlobalView)
             .filter((entry) => entryMatchesQuery(entry, state.query))
         : []
-    const topLevelFiles = fileRecords
-        .filter((record) => {
-            const ufid = record.data.ufid
-            const filed = folderFileUfids.has(ufid) || locallyFiledUfids.has(ufid)
-            return !filed || locallyRootedUfids.has(ufid)
-        })
-        .map(fileEntryFromRecord)
+
+    const topLevelFiles: FileBrowserEntry[] = []
+    let offsetId = options.offsetId
+    let lastOffsetId = options.offsetId
+    let hasMore = false
+    do {
+        const fileRecords = await listFileCards(client, { query: state.query, limit: state.pageSize, offsetId })
+        if (fileRecords.length === 0) {
+            hasMore = false
+            break
+        }
+
+        lastOffsetId = fileRecords[fileRecords.length - 1].msgId
+        hasMore = fileRecords.length === state.pageSize
+        topLevelFiles.push(
+            ...fileRecords
+                .filter((record) => {
+                    const ufid = record.data.ufid
+                    const filed = folderFileUfids.has(ufid) || locallyFiledUfids.has(ufid)
+                    return !filed || locallyRootedUfids.has(ufid)
+                })
+                .map(fileEntryFromRecord),
+        )
+
+        if (lastOffsetId === offsetId) {
+            hasMore = false
+            break
+        }
+        offsetId = lastOffsetId
+    } while (folderEntries.length + topLevelFiles.length === 0 && hasMore)
+
     const items: BrowserEntry[] = [
         ...folderEntries,
         ...topLevelFiles,
@@ -997,8 +1038,8 @@ async function loadRootPage(client: any, options: { offsetId?: number; includeFo
     applySort(items)
     return {
         items,
-        lastOffsetId: fileRecords.length > 0 ? fileRecords[fileRecords.length - 1].msgId : options.offsetId,
-        hasMore: fileRecords.length === state.pageSize,
+        lastOffsetId,
+        hasMore,
     }
 }
 
@@ -1058,8 +1099,10 @@ async function loadNextPage(client: any) {
     }
     const page = await loadRootPage(client, { offsetId: state.lastOffsetId, includeFolders: false })
     state.lastOffsetId = page.lastOffsetId
-    state.pages.push(page.items)
     state.hasMore = page.hasMore
+    if (page.items.length > 0) {
+        state.pages.push(page.items)
+    }
     return page.items
 }
 
@@ -1833,7 +1876,9 @@ export async function initFileBrowser(client: any, config: Config.Config) {
             state.currentPage++
             clearSelection()
             renderBrowser(items)
+            return
         }
+        renderBrowser(state.pages[state.currentPage] ?? [])
     })
 
     viewList.addEventListener("click", () => {

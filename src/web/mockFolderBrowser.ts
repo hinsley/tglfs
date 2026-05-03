@@ -181,10 +181,73 @@ function textMatches(message: string, search: string) {
     return extraTerms.every((term) => message.toLowerCase().includes(term.toLowerCase()))
 }
 
+function usePaginationFixture() {
+    if (typeof window === "undefined") return false
+    const url = new URL(window.location.href)
+    return url.searchParams.get("run")?.includes("pagination") ?? false
+}
+
 export function createMockFolderBrowserSession() {
     const mutableFileCards = fileCards.map((record) => ({ ...record }))
     const mutableFolderRecords = folderRecords.map((record) => ({ ...record }))
     const mutableFolderManifestRecords = folderManifestRecords.map((record) => ({ ...record }))
+    if (usePaginationFixture()) {
+        const sinkFolder = createTglfsFolder({
+            folderId: "mock-folder-pagination-sink",
+            rootId: "mock-folder-pagination-sink",
+            name: "Pagination Sink",
+            path: "",
+            now: now(20),
+        })
+        const sinkEntries = Object.fromEntries(
+            Array.from({ length: 105 }, (_, index) => {
+                const n = String(index + 1).padStart(3, "0")
+                const name = `hidden-page-${n}.txt`
+                const ufid = `mock-ufid-hidden-page-${n}`
+                mutableFileCards.push({
+                    id: 3000 - index,
+                    date: 1777741400 + index,
+                    message: serializeFileCardMessage({
+                        name,
+                        ufid,
+                        size: 64,
+                        uploadComplete: true,
+                        chunks: [2500 + index],
+                        IV: "mock-iv",
+                    }),
+                })
+                return [name, {
+                    entryId: `mock-entry-hidden-page-${n}`,
+                    name,
+                    path: name,
+                    kind: "file" as const,
+                    ufid,
+                    size: 64,
+                    mtimeMs: Date.parse(now(21)),
+                    mode: 0o644,
+                    deleted: false,
+                    updatedAt: now(21),
+                }]
+            }),
+        )
+        const sinkManifest = createTglfsFolderManifest({
+            folderId: sinkFolder.folderId,
+            rootId: sinkFolder.rootId,
+            path: "",
+            now: now(21),
+            entries: sinkEntries,
+        })
+        mutableFolderRecords.push({
+            id: 801,
+            date: 1777741220,
+            message: serializeTglfsFolderMessage(sinkFolder),
+        })
+        mutableFolderManifestRecords.push({
+            id: 901,
+            date: 1777741221,
+            message: serializeTglfsFolderManifestMessage(toLegacyTglfsFolderManifest(sinkManifest)),
+        })
+    }
     let nextMessageId = Math.max(
         ...mutableFileCards.map((record) => record.id),
         ...mutableFolderRecords.map((record) => record.id),
