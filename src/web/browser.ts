@@ -72,6 +72,7 @@ type BrowserState = {
     currentPage: number
     pages: BrowserEntry[][]
     lastOffsetId: number | undefined
+    rootFolderIndex: number
     selected: Map<string, BrowserEntry>
     lastClickedIndex: number | null
     hasMore: boolean
@@ -93,6 +94,7 @@ const state: BrowserState = {
     currentPage: 0,
     pages: [],
     lastOffsetId: undefined,
+    rootFolderIndex: 0,
     selected: new Map(),
     lastClickedIndex: null,
     hasMore: true,
@@ -354,6 +356,7 @@ function resetBrowserListingState() {
     state.pages = []
     state.currentPage = 0
     state.lastOffsetId = undefined
+    state.rootFolderIndex = 0
     state.selected.clear()
     state.lastClickedIndex = null
     state.hasMore = false
@@ -1087,55 +1090,85 @@ function chunkEntries(items: BrowserEntry[]) {
     return pages.length ? pages : [[]]
 }
 
-async function loadRootPage(client: any, options: { offsetId?: number; includeFolders: boolean }) {
+async function loadRootPage(client: any, options: { folderIndex?: number; fileOffsetId?: number } = {}) {
     const allFolderRecords = await listAllFolderRecordsForBrowser(client)
     const folderFileUfids = await collectFolderFileUfids(client, allFolderRecords)
-    const folderEntries = options.includeFolders
-        ? allFolderRecords
-            .map(folderEntryFromRecord)
-            .filter(folderRecordBelongsInGlobalView)
-            .filter((entry) => entryMatchesQuery(entry, state.query))
-        : []
+    const folderEntries = allFolderRecords
+        .map(folderEntryFromRecord)
+        .filter(folderRecordBelongsInGlobalView)
+        .filter((entry) => entryMatchesQuery(entry, state.query))
 
-    const topLevelFiles: FileBrowserEntry[] = []
-    let offsetId = options.offsetId
-    let lastOffsetId = options.offsetId
-    let hasMore = false
-    do {
-        const fileRecords = await listFileCards(client, { query: state.query, limit: state.pageSize, offsetId })
+    const items: BrowserEntry[] = []
+    let nextFolderIndex = Math.max(0, options.folderIndex ?? 0)
+    while (nextFolderIndex < folderEntries.length && items.length < state.pageSize) {
+        items.push(folderEntries[nextFolderIndex])
+        nextFolderIndex++
+    }
+
+    let fileOffsetId = options.fileOffsetId
+    let nextFileOffsetId = options.fileOffsetId
+    let fileHasMore = false
+    while (items.length < state.pageSize) {
+        const fileRecords = await listFileCards(client, { query: state.query, limit: state.pageSize + 1, offsetId: fileOffsetId })
         if (fileRecords.length === 0) {
-            hasMore = false
+            fileHasMore = false
             break
         }
 
-        lastOffsetId = fileRecords[fileRecords.length - 1].msgId
-        hasMore = fileRecords.length === state.pageSize
-        topLevelFiles.push(
-            ...fileRecords
-                .filter((record) => {
-                    const ufid = record.data.ufid
-                    const filed = folderFileUfids.has(ufid) || locallyFiledUfids.has(ufid)
-                    return !filed || locallyRootedUfids.has(ufid)
-                })
-                .map(fileEntryFromRecord),
-        )
+        let processedAny = false
+        for (const [index, record] of fileRecords.entries()) {
+            const ufid = record.data.ufid
+            const filed = folderFileUfids.has(ufid) || locallyFiledUfids.has(ufid)
+            if (filed && !locallyRootedUfids.has(ufid)) {
+                nextFileOffsetId = record.msgId
+                processedAny = true
+                continue
+            }
 
-        if (lastOffsetId === offsetId) {
-            hasMore = false
+            if (items.length >= state.pageSize) {
+                fileHasMore = true
+                processedAny = true
+                break
+            }
+
+            items.push(fileEntryFromRecord(record))
+            nextFileOffsetId = record.msgId
+            processedAny = true
+
+            const recordsRemainInBatch = index < fileRecords.length - 1
+            if (items.length >= state.pageSize && (recordsRemainInBatch || fileRecords.length > state.pageSize)) {
+                fileHasMore = true
+                break
+            }
+        }
+
+        if (fileHasMore) {
             break
         }
-        offsetId = lastOffsetId
-    } while (folderEntries.length + topLevelFiles.length === 0 && hasMore)
 
-    const items: BrowserEntry[] = [
-        ...folderEntries,
-        ...topLevelFiles,
-    ]
+        if (!processedAny || nextFileOffsetId === fileOffsetId) {
+            fileHasMore = false
+            break
+        }
+
+        if (fileRecords.length <= state.pageSize) {
+            break
+        }
+
+        if (items.length > 0) {
+            fileHasMore = true
+            break
+        }
+
+        fileOffsetId = nextFileOffsetId
+    }
+
     applySort(items)
     return {
         items,
-        lastOffsetId,
-        hasMore,
+        nextFolderIndex,
+        lastOffsetId: nextFileOffsetId,
+        hasMore: nextFolderIndex < folderEntries.length || fileHasMore,
     }
 }
 
@@ -1173,6 +1206,7 @@ async function loadFirstPage(client: any, refreshSequence = browserRefreshSequen
     state.pages = []
     state.currentPage = 0
     state.lastOffsetId = undefined
+    state.rootFolderIndex = 0
     state.selected.clear()
     state.lastClickedIndex = null
     if (state.currentFolder) {
@@ -1182,9 +1216,10 @@ async function loadFirstPage(client: any, refreshSequence = browserRefreshSequen
         state.hasMore = state.pages.length > 1
         return state.pages[0] ?? []
     }
-    const page = await loadRootPage(client, { includeFolders: true })
+    const page = await loadRootPage(client)
     if (refreshSequence !== browserRefreshSequence) return null
     state.lastOffsetId = page.lastOffsetId
+    state.rootFolderIndex = page.nextFolderIndex
     state.pages.push(page.items)
     state.hasMore = page.hasMore
     return page.items
@@ -1196,8 +1231,9 @@ async function loadNextPage(client: any) {
         state.hasMore = state.currentPage + 1 < state.pages.length - 1
         return next
     }
-    const page = await loadRootPage(client, { offsetId: state.lastOffsetId, includeFolders: false })
+    const page = await loadRootPage(client, { folderIndex: state.rootFolderIndex, fileOffsetId: state.lastOffsetId })
     state.lastOffsetId = page.lastOffsetId
+    state.rootFolderIndex = page.nextFolderIndex
     state.hasMore = page.hasMore
     if (page.items.length > 0) {
         state.pages.push(page.items)
