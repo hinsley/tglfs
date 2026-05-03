@@ -588,6 +588,14 @@ div#offline {
     background-color: rgba(36, 161, 222, 0.05);
 }
 
+#browserTable tbody tr.browser-loading-row {
+    cursor: default;
+}
+
+#browserTable tbody tr.browser-loading-row:hover {
+    background-color: transparent;
+}
+
 #browserTable td {
     padding: 14px 16px;
     border-bottom: 1px solid var(--fx-border);
@@ -651,6 +659,36 @@ div#offline {
     justify-content: center;
     width: 20px;
     margin-right: 6px;
+}
+
+.browser-loading-row td {
+    color: var(--fx-text-muted);
+    text-align: center;
+}
+
+.browser-loading-indicator,
+.browser-loading-state {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: var(--fx-text-muted);
+    font-weight: 600;
+}
+
+.browser-loading-state {
+    min-height: 180px;
+    grid-column: 1 / -1;
+    width: 100%;
+}
+
+.browser-loading-spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(36, 161, 222, 0.2);
+    border-top-color: var(--fx-accent);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
 }
 
 .pill {

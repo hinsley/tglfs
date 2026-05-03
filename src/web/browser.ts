@@ -79,6 +79,11 @@ type BrowserState = {
     currentFolderTrail: FolderBrowserEntry[]
 }
 
+type BrowserRefreshOptions = {
+    showLoading?: boolean
+    loadingMessage?: string
+}
+
 const state: BrowserState = {
     initialized: false,
     query: "",
@@ -98,7 +103,8 @@ const state: BrowserState = {
 let previewModal: PreviewModal | null = null
 let ufidToastTimer: number | undefined
 let activeBrowserClient: any = null
-let refreshBrowser: (() => Promise<void>) | null = null
+let refreshBrowser: ((options?: BrowserRefreshOptions) => Promise<void>) | null = null
+let browserRefreshSequence = 0
 const locallyFiledUfids = new Set<string>()
 const locallyRootedUfids = new Set<string>()
 
@@ -344,6 +350,51 @@ function clearViews() {
     if (grid) grid.innerHTML = ""
 }
 
+function resetBrowserListingState() {
+    state.pages = []
+    state.currentPage = 0
+    state.lastOffsetId = undefined
+    state.selected.clear()
+    state.lastClickedIndex = null
+    state.hasMore = false
+}
+
+function renderBrowserLoading(message = "Loading files...") {
+    resetBrowserListingState()
+    clearViews()
+    const safeMessage = escapeHtml(message)
+    const content = document.getElementById("browserContent")
+    content?.setAttribute("aria-busy", "true")
+
+    const tbody = document.querySelector<HTMLTableSectionElement>("#browserTable tbody")
+    if (tbody) {
+        const tr = document.createElement("tr")
+        tr.className = "browser-loading-row"
+        tr.innerHTML = `<td colspan="5"><span class="browser-loading-indicator"><span class="browser-loading-spinner" aria-hidden="true"></span><span>${safeMessage}</span></span></td>`
+        tbody.appendChild(tr)
+    }
+
+    const grid = document.getElementById("browserGrid")
+    if (grid) {
+        grid.innerHTML = `<div class="browser-loading-state"><span class="browser-loading-spinner" aria-hidden="true"></span><span>${safeMessage}</span></div>`
+    }
+
+    updateFolderLocation()
+    const pageInfo = document.getElementById("browserPageInfo")
+    if (pageInfo) pageInfo.textContent = safeMessage
+    const prevButton = document.getElementById("browserPrevPage") as HTMLButtonElement | null
+    const nextButton = document.getElementById("browserNextPage") as HTMLButtonElement | null
+    if (prevButton) prevButton.disabled = true
+    if (nextButton) nextButton.disabled = true
+    applyViewMode()
+    updateSelectionDisplay()
+}
+
+function beginBrowserNavigationLoading(message: string) {
+    browserRefreshSequence++
+    renderBrowserLoading(message)
+}
+
 function getVisibleItems() {
     return state.pages[state.currentPage] ?? []
 }
@@ -453,13 +504,22 @@ function applyGridMarquee(item: HTMLElement) {
 }
 
 async function openFolder(entry: FolderBrowserEntry) {
-    const trail = await buildFolderTrail(entry)
-    state.currentFolderTrail = trail.length ? trail : [entry]
-    state.currentFolder = state.currentFolderTrail[state.currentFolderTrail.length - 1] ?? entry
+    const loadingMessage = `Loading ${entry.data.name}...`
+    const immediateTrail = state.currentFolder
+        ? [...(state.currentFolderTrail.length ? state.currentFolderTrail : [state.currentFolder]), entry]
+        : [entry]
+    state.currentFolderTrail = immediateTrail
+    state.currentFolder = entry
     state.query = ""
     const searchInput = document.getElementById("browserSearchInput") as HTMLInputElement | null
     if (searchInput) searchInput.value = ""
-    await refreshBrowser?.()
+    beginBrowserNavigationLoading(loadingMessage)
+    const navigationSequence = browserRefreshSequence
+    const trail = await buildFolderTrail(entry)
+    if (navigationSequence !== browserRefreshSequence) return
+    state.currentFolderTrail = trail.length ? trail : [entry]
+    state.currentFolder = state.currentFolderTrail[state.currentFolderTrail.length - 1] ?? entry
+    await refreshBrowser?.({ showLoading: true, loadingMessage })
 }
 
 async function buildFolderTrail(entry: FolderBrowserEntry): Promise<FolderBrowserEntry[]> {
@@ -494,7 +554,7 @@ async function openBreadcrumbFolder(index: number) {
     state.query = ""
     const searchInput = document.getElementById("browserSearchInput") as HTMLInputElement | null
     if (searchInput) searchInput.value = ""
-    await refreshBrowser?.()
+    await refreshBrowser?.({ showLoading: true, loadingMessage: `Loading ${entry.data.name}...` })
 }
 
 async function openGlobalView() {
@@ -503,7 +563,7 @@ async function openGlobalView() {
     state.query = ""
     const searchInput = document.getElementById("browserSearchInput") as HTMLInputElement | null
     if (searchInput) searchInput.value = ""
-    await refreshBrowser?.()
+    await refreshBrowser?.({ showLoading: true, loadingMessage: "Loading all files..." })
 }
 
 function createRecordId(prefix: string) {
@@ -751,6 +811,8 @@ function updateFolderLocation() {
 }
 
 function renderBrowser(items: BrowserEntry[]) {
+    const content = document.getElementById("browserContent")
+    content?.setAttribute("aria-busy", "false")
     clearViews()
     applySort(items)
     renderList(items)
@@ -1107,18 +1169,21 @@ async function loadFolderPages(client: any) {
     return chunkEntries(items)
 }
 
-async function loadFirstPage(client: any) {
+async function loadFirstPage(client: any, refreshSequence = browserRefreshSequence): Promise<BrowserEntry[] | null> {
     state.pages = []
     state.currentPage = 0
     state.lastOffsetId = undefined
     state.selected.clear()
     state.lastClickedIndex = null
     if (state.currentFolder) {
-        state.pages = await loadFolderPages(client)
+        const pages = await loadFolderPages(client)
+        if (refreshSequence !== browserRefreshSequence) return null
+        state.pages = pages
         state.hasMore = state.pages.length > 1
         return state.pages[0] ?? []
     }
     const page = await loadRootPage(client, { includeFolders: true })
+    if (refreshSequence !== browserRefreshSequence) return null
     state.lastOffsetId = page.lastOffsetId
     state.pages.push(page.items)
     state.hasMore = page.hasMore
@@ -1847,9 +1912,14 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         await refreshBrowser?.()
     }
 
-    const doRefresh = async () => {
+    const doRefresh = async (options?: BrowserRefreshOptions) => {
         if (activeBrowserClient !== client) activeBrowserClient = client
-        const items = await loadFirstPage(client)
+        const refreshSequence = ++browserRefreshSequence
+        if (options?.showLoading) {
+            renderBrowserLoading(options.loadingMessage)
+        }
+        const items = await loadFirstPage(client, refreshSequence)
+        if (!items || refreshSequence !== browserRefreshSequence) return
         renderBrowser(items)
     }
     refreshBrowser = doRefresh
@@ -2182,6 +2252,5 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         }
     })
 
-    const items = await loadFirstPage(client)
-    renderBrowser(items)
+    await doRefresh({ showLoading: true, loadingMessage: "Loading files..." })
 }
