@@ -19,6 +19,7 @@ type GramJsModules = {
     Api: typeof import("telegram")["Api"]
     StringSession: typeof import("telegram/sessions/StringSession.js")["StringSession"]
     getFileInfo: typeof import("telegram/Utils.js")["getFileInfo"]
+    CustomFile: typeof import("telegram/client/uploads.js")["CustomFile"]
     Logger: typeof import("telegram/extensions/Logger.js")["Logger"]
     LogLevel: typeof import("telegram/extensions/Logger.js")["LogLevel"]
 }
@@ -67,6 +68,7 @@ function loadGramJsModules(): GramJsModules {
     const telegram = require("telegram") as typeof import("telegram")
     const stringSessionModule = require("telegram/sessions/StringSession.js") as typeof import("telegram/sessions/StringSession.js")
     const utilsModule = require("telegram/Utils.js") as typeof import("telegram/Utils.js")
+    const uploadsModule = require("telegram/client/uploads.js") as typeof import("telegram/client/uploads.js")
     const loggerModule = require("telegram/extensions/Logger.js") as typeof import("telegram/extensions/Logger.js")
 
     return {
@@ -74,6 +76,7 @@ function loadGramJsModules(): GramJsModules {
         Api: telegram.Api,
         StringSession: stringSessionModule.StringSession,
         getFileInfo: utilsModule.getFileInfo,
+        CustomFile: uploadsModule.CustomFile,
         Logger: loggerModule.Logger,
         LogLevel: loggerModule.LogLevel,
     }

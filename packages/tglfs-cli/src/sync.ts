@@ -8,15 +8,22 @@ import type { TelegramClient } from "telegram/client/TelegramClient.js"
 import { downloadFileCard } from "./download.js"
 import { CliError, EXIT_CODES } from "./errors.js"
 import {
+    TGLFS_FOLDER_ENTRIES_MIME_TYPE,
     buildFolderManifestSearchQuery,
     buildFolderSearchQuery,
     compactTglfsFolderManifest,
+    createTglfsFolderEntriesFileName,
     createTglfsFolder,
     createTglfsFolderManifest,
     extractTglfsFolderManifestRecord,
     extractTglfsFolderRecord,
+    hashTglfsFolderEntries,
+    parseTglfsFolderEntriesJson,
+    serializeTglfsFolderEntriesJson,
     serializeTglfsFolderManifestMessage,
     serializeTglfsFolderMessage,
+    toTglfsFolderEntriesManifest,
+    toLegacyTglfsFolderManifest,
 } from "./folders.js"
 import type { TglfsFolder, TglfsFolderManifest, TglfsFolderManifestRecord, TglfsFolderRecord } from "./folders.js"
 import { getGramJs } from "./gramjs.js"
@@ -39,6 +46,8 @@ import { DuplicateUfidError, uploadCurrentFormatSource } from "./shared/upload.j
 import type { UploadSource } from "./shared/upload.js"
 
 type ApiLike = {
+    InputMediaUploadedDocument?: new (args: any) => any
+    DocumentAttributeFilename?: new (args: any) => any
     messages: {
         EditMessage: new (args: any) => any
     }
@@ -47,6 +56,8 @@ type ApiLike = {
 type SyncClient = {
     getMessages(peer: string, options: unknown): Promise<any[]>
     sendMessage(peer: string, options: { message: string }): Promise<any>
+    uploadFile?(options: { file: any; workers: number }): Promise<any>
+    downloadMedia?(message: any, options?: unknown): Promise<unknown>
     invoke(request: any): Promise<any>
 }
 
@@ -197,7 +208,49 @@ async function findTglfsFolder(client: SyncClient, folderId: string): Promise<Tg
     return null
 }
 
+function downloadedMediaToText(media: unknown): string | null {
+    if (typeof media === "string") {
+        return media
+    }
+    if (media instanceof ArrayBuffer) {
+        return new TextDecoder().decode(new Uint8Array(media))
+    }
+    if (ArrayBuffer.isView(media)) {
+        return new TextDecoder().decode(new Uint8Array(media.buffer, media.byteOffset, media.byteLength))
+    }
+    if (media && typeof (media as { toString?: unknown }).toString === "function") {
+        const text = (media as { toString: (encoding?: BufferEncoding) => string }).toString("utf8")
+        return text === "[object Object]" ? null : text
+    }
+    return null
+}
+
+async function readAttachedFolderEntries(client: SyncClient, record: TglfsFolderRecord): Promise<TglfsFolderManifestRecord | null> {
+    if (!client.downloadMedia || !record.raw || !record.raw.media || !record.data.entriesHash) {
+        return null
+    }
+    const media = await client.downloadMedia(record.raw, {})
+    const text = downloadedMediaToText(media)
+    if (!text) {
+        return null
+    }
+    const entries = parseTglfsFolderEntriesJson(text)
+    if (!entries || entries.folderId !== record.data.folderId) {
+        return null
+    }
+    const hash = await hashTglfsFolderEntries(entries)
+    if (hash !== record.data.entriesHash) {
+        return null
+    }
+    return { msgId: record.msgId, date: record.date, peerId: record.peerId, data: entries, raw: record.raw }
+}
+
 async function findTglfsFolderManifest(client: SyncClient, folderId: string): Promise<TglfsFolderManifestRecord | null> {
+    const folderRecord = await findTglfsFolder(client, folderId)
+    if (folderRecord?.data.version === 2 && folderRecord.data.entriesHash) {
+        return readAttachedFolderEntries(client, folderRecord)
+    }
+
     const messages = await client.getMessages("me", {
         search: buildFolderManifestSearchQuery(folderId),
         limit: 10,
@@ -243,20 +296,59 @@ async function writeTglfsFolderManifest(
         existing?: TglfsFolderManifestRecord | null
     },
 ): Promise<TglfsFolderManifestRecord> {
-    const compactManifest = compactTglfsFolderManifest(options.manifest)
-    const message = serializeTglfsFolderManifestMessage(compactManifest)
-    if (!options.existing) {
-        const result = await client.sendMessage("me", { message })
-        return { msgId: result.id, date: result.date, peerId: result.peerId, data: compactManifest }
+    const folderRecord = await findTglfsFolder(client, options.manifest.folderId)
+    if (!folderRecord || !client.uploadFile || !options.Api.InputMediaUploadedDocument || !options.Api.DocumentAttributeFilename) {
+        const compactManifest = toLegacyTglfsFolderManifest(compactTglfsFolderManifest(options.manifest))
+        const message = serializeTglfsFolderManifestMessage(compactManifest)
+        if (!options.existing) {
+            const result = await client.sendMessage("me", { message })
+            return { msgId: result.id, date: result.date, peerId: result.peerId, data: compactManifest }
+        }
+        await client.invoke(
+            new options.Api.messages.EditMessage({
+                peer: options.existing.peerId ?? "me",
+                id: options.existing.msgId,
+                message,
+            }),
+        )
+        return { ...options.existing, data: compactManifest }
     }
+
+    const revision = Math.max(
+        folderRecord.data.entriesRevision ?? 0,
+        options.manifest.revision ?? 0,
+        options.existing?.data.revision ?? 0,
+    ) + 1
+    const compactManifest = toTglfsFolderEntriesManifest(compactTglfsFolderManifest(options.manifest), revision)
+    const entriesJson = serializeTglfsFolderEntriesJson(compactManifest)
+    const entriesHash = await hashTglfsFolderEntries(compactManifest)
+    const entriesFileName = createTglfsFolderEntriesFileName(options.manifest.folderId, revision)
+    const entriesBuffer = Buffer.from(entriesJson, "utf8")
+    const { CustomFile } = getGramJs()
+    const entriesFile = new CustomFile(entriesFileName, entriesBuffer.byteLength, "", entriesBuffer)
+    const uploadedEntries = await client.uploadFile({ file: entriesFile, workers: 1 })
+    const folder = {
+        ...folderRecord.data,
+        updatedAt: options.manifest.updatedAt,
+        entriesRevision: revision,
+        entriesHash,
+        entriesFileName,
+    }
+    const media = new options.Api.InputMediaUploadedDocument({
+        file: uploadedEntries,
+        mimeType: TGLFS_FOLDER_ENTRIES_MIME_TYPE,
+        attributes: [new options.Api.DocumentAttributeFilename({ fileName: entriesFileName })],
+        forceFile: true,
+    })
     await client.invoke(
         new options.Api.messages.EditMessage({
-            peer: options.existing.peerId ?? "me",
-            id: options.existing.msgId,
-            message,
+            peer: folderRecord.peerId ?? "me",
+            id: folderRecord.msgId,
+            message: serializeTglfsFolderMessage(folder),
+            media,
         }),
     )
-    return { ...options.existing, data: compactManifest }
+    return { msgId: folderRecord.msgId, date: folderRecord.date, peerId: folderRecord.peerId, data: compactManifest, raw: folderRecord.raw }
 }
 
 function createChildFolderId(rootFolderId: string, folderPath: string) {

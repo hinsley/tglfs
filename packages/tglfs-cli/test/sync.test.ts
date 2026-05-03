@@ -10,6 +10,12 @@ import { scanSyncFolder } from "../src/sync-scan.js"
 import { loadSyncLedger } from "../src/sync-store.js"
 
 const FakeApi = {
+    InputMediaUploadedDocument: class InputMediaUploadedDocument {
+        constructor(readonly args: any) {}
+    },
+    DocumentAttributeFilename: class DocumentAttributeFilename {
+        constructor(readonly args: any) {}
+    },
     messages: {
         EditMessage: class EditMessage {
             constructor(readonly args: any) {}
@@ -113,22 +119,60 @@ test("pushSyncRoot uploads blobs before publishing the manifest", async () => {
         }
 
         const events: string[] = []
+        const records: Array<{ id: number; date: number; peerId: string; message: string; media?: string }> = [
+            { id: 44, date: 1, peerId: "me-peer", message: serializeSyncManifestMessage(manifest) },
+        ]
         const client = {
-            async getMessages() {
-                return [{ id: 44, date: 1, peerId: "me-peer", message: serializeSyncManifestMessage(manifest) }]
+            async getMessages(_peer: string, options: { search?: string }) {
+                const search = options.search ?? ""
+                if (search.startsWith("tglfs:sync-manifest")) {
+                    return records.filter((record) => record.message.startsWith("tglfs:sync-manifest"))
+                }
+                if (search.startsWith("tglfs:folder-manifest")) {
+                    return []
+                }
+                if (search.startsWith("tglfs:folder")) {
+                    const match = search.match(/"folderId":"([^"]+)"/)
+                    const folderId = match?.[1]
+                    return records.filter((record) =>
+                        record.message.startsWith("tglfs:folder") &&
+                        (!folderId || record.message.includes(`"folderId":"${folderId}"`)),
+                    )
+                }
+                return []
             },
             async sendMessage(_peer: string, options: { message: string }) {
-                if (options.message.startsWith("tglfs:folder-manifest")) {
-                    events.push("send-folder-manifest")
-                    return { id: 46, date: 1, peerId: "me-peer" }
-                }
                 if (options.message.startsWith("tglfs:folder")) {
                     events.push("send-folder")
-                    return { id: 45, date: 1, peerId: "me-peer" }
+                    const record = { id: 45, date: 1, peerId: "me-peer", message: options.message }
+                    records.push(record)
+                    return record
                 }
                 throw new Error("unexpected send")
             },
+            async uploadFile(options: { file: any }) {
+                const text = options.file.buffer.toString("utf8")
+                const data = JSON.parse(text)
+                assert.equal(data.type, "tglfs:folder-entries")
+                assert.equal(data.version, 2)
+                assert.equal(data.folderId, "folder-root")
+                events.push("upload-folder-entries")
+                return { __mockText: text }
+            },
             async invoke(request: any) {
+                if (request.args.media) {
+                    events.push(`folder-entries:${request.args.id}`)
+                    const record = records.find((candidate) => candidate.id === request.args.id)
+                    assert.ok(record)
+                    record.message = request.args.message
+                    record.media = request.args.media.args.file.__mockText
+                    const folder = JSON.parse(request.args.message.substring(request.args.message.indexOf("{")))
+                    assert.equal(folder.version, 2)
+                    assert.equal(folder.folderId, "folder-root")
+                    assert.equal(folder.entriesRevision, 1)
+                    assert.match(folder.entriesHash, /^sha256:/)
+                    return true
+                }
                 events.push(`manifest:${request.args.id}`)
                 const data = JSON.parse(request.args.message.substring(request.args.message.indexOf("{")))
                 assert.equal(data.version, 2)
@@ -155,7 +199,7 @@ test("pushSyncRoot uploads blobs before publishing the manifest", async () => {
             },
         })
 
-        assert.deepEqual(events, ["upload:new.txt", "send-folder", "send-folder-manifest", "manifest:44"])
+        assert.deepEqual(events, ["upload:new.txt", "send-folder", "upload-folder-entries", "folder-entries:45", "manifest:44"])
         assert.equal(result.added, 1)
         assert.equal(result.deleted, 1)
         assert.equal(result.folderId, "folder-root")

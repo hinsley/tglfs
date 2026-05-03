@@ -20,12 +20,19 @@ import {
     serializeFileCardMessage,
 } from "../packages/tglfs-cli/src/shared/file-cards"
 import {
+    TGLFS_FOLDER_ENTRIES_MIME_TYPE,
     TGLFS_FOLDER_TYPE,
     buildFolderManifestSearchQuery,
     buildFolderSearchQuery,
     compactTglfsFolderManifest,
+    createTglfsFolderEntriesFileName,
     serializeTglfsFolderManifestMessage,
+    hashTglfsFolderEntries,
+    parseTglfsFolderEntriesJson,
+    serializeTglfsFolderEntriesJson,
     serializeTglfsFolderMessage,
+    toTglfsFolderEntriesManifest,
+    toLegacyTglfsFolderManifest,
     extractTglfsFolderManifestRecord,
     extractTglfsFolderRecord,
 } from "../packages/tglfs-cli/src/folders"
@@ -1758,11 +1765,56 @@ export async function getFolderRecord(
     return null
 }
 
+function downloadedMediaToText(media: unknown): string | null {
+    if (typeof media === "string") {
+        return media
+    }
+    if (media instanceof ArrayBuffer) {
+        return new TextDecoder().decode(new Uint8Array(media))
+    }
+    if (ArrayBuffer.isView(media)) {
+        return new TextDecoder().decode(new Uint8Array(media.buffer, media.byteOffset, media.byteLength))
+    }
+    if (media && typeof (media as { toString?: unknown }).toString === "function") {
+        const text = (media as { toString: (encoding?: string) => string }).toString("utf8")
+        return text === "[object Object]" ? null : text
+    }
+    return null
+}
+
+async function readAttachedFolderEntries(
+    client: TelegramClient,
+    record: TglfsFolderRecord,
+): Promise<TglfsFolderManifestRecord | null> {
+    if (!record.raw || !record.raw.media || !record.data.entriesHash) {
+        return null
+    }
+    const media = await client.downloadMedia(record.raw as any, {})
+    const text = downloadedMediaToText(media)
+    if (!text) {
+        return null
+    }
+    const entries = parseTglfsFolderEntriesJson(text)
+    if (!entries || entries.folderId !== record.data.folderId) {
+        return null
+    }
+    const hash = await hashTglfsFolderEntries(entries)
+    if (hash !== record.data.entriesHash) {
+        return null
+    }
+    return { msgId: record.msgId, date: record.date, peerId: record.peerId, data: entries, raw: record.raw }
+}
+
 export async function getFolderManifest(
     client: TelegramClient,
     folderId: string,
 ): Promise<TglfsFolderManifestRecord | null> {
     await gramJsReady
+    const folderRecord = await getFolderRecord(client, folderId)
+    if (folderRecord?.data.version === 2 && folderRecord.data.entriesHash) {
+        return readAttachedFolderEntries(client, folderRecord)
+    }
+
     const messages = await client.getMessages("me", {
         search: buildFolderManifestSearchQuery(folderId),
         limit: 10,
@@ -1804,20 +1856,61 @@ export async function writeFolderManifest(
     existing?: TglfsFolderManifestRecord | null,
 ): Promise<TglfsFolderManifestRecord> {
     await gramJsReady
-    const compactManifest = compactTglfsFolderManifest(manifest)
-    const message = serializeTglfsFolderManifestMessage(compactManifest)
-    if (!existing) {
-        const result = await client.sendMessage("me", { message })
-        return { msgId: result.id, date: result.date, peerId: result.peerId, data: compactManifest }
+    const folderRecord = await getFolderRecord(client, manifest.folderId)
+    if (!folderRecord) {
+        const compactManifest = toLegacyTglfsFolderManifest(compactTglfsFolderManifest(manifest))
+        const message = serializeTglfsFolderManifestMessage(compactManifest)
+        if (!existing) {
+            const result = await client.sendMessage("me", { message })
+            return { msgId: result.id, date: result.date, peerId: result.peerId, data: compactManifest }
+        }
+        await client.invoke(
+            new Api.messages.EditMessage({
+                peer: existing.peerId ?? "me",
+                id: existing.msgId,
+                message,
+            }),
+        )
+        return { ...existing, data: compactManifest }
     }
+
+    const revision = Math.max(
+        folderRecord.data.entriesRevision ?? 0,
+        manifest.revision ?? 0,
+        existing?.data.revision ?? 0,
+    ) + 1
+    const compactManifest = toTglfsFolderEntriesManifest(compactTglfsFolderManifest(manifest), revision)
+    const entriesJson = serializeTglfsFolderEntriesJson(compactManifest)
+    const entriesHash = await hashTglfsFolderEntries(compactManifest)
+    const entriesFileName = createTglfsFolderEntriesFileName(manifest.folderId, revision)
+    const folder = {
+        ...folderRecord.data,
+        updatedAt: manifest.updatedAt,
+        entriesRevision: revision,
+        entriesHash,
+        entriesFileName,
+    }
+    const message = serializeTglfsFolderMessage(folder)
+    const entriesFile = new File([entriesJson], entriesFileName, { type: TGLFS_FOLDER_ENTRIES_MIME_TYPE })
+    const uploadedEntries = await client.uploadFile({
+        file: entriesFile,
+        workers: 1,
+    })
+    const media = new Api.InputMediaUploadedDocument({
+        file: uploadedEntries,
+        mimeType: TGLFS_FOLDER_ENTRIES_MIME_TYPE,
+        attributes: [new Api.DocumentAttributeFilename({ fileName: entriesFileName })],
+        forceFile: true,
+    })
     await client.invoke(
         new Api.messages.EditMessage({
-            peer: existing.peerId ?? "me",
-            id: existing.msgId,
+            peer: folderRecord.peerId ?? "me",
+            id: folderRecord.msgId,
             message,
+            media,
         }),
     )
-    return { ...existing, data: compactManifest }
+    return { msgId: folderRecord.msgId, date: folderRecord.date, peerId: folderRecord.peerId, data: compactManifest, raw: folderRecord.raw }
 }
 
 export async function renameFileCard(

@@ -2,17 +2,39 @@ import { serializeFileCardMessage } from "../../packages/tglfs-cli/src/shared/fi
 import {
     TGLFS_FOLDER_MANIFEST_TYPE,
     TGLFS_FOLDER_TYPE,
+    TGLFS_FOLDER_ENTRIES_MIME_TYPE,
     createTglfsFolder,
     createTglfsFolderManifest,
     serializeTglfsFolderManifestMessage,
     serializeTglfsFolderMessage,
+    toLegacyTglfsFolderManifest,
 } from "../../packages/tglfs-cli/src/folders"
 import { FILE_CARD_PREFIX } from "../../packages/tglfs-cli/src/shared/file-cards"
 
 const TELEGRAM_TEXT_MESSAGE_LIMIT = 4096
 
+type MockRecord = {
+    id: number
+    date: number
+    message: string
+    media?: string
+}
+
 function now(offsetSeconds = 0) {
     return new Date(Date.UTC(2026, 4, 2, 17, 0, offsetSeconds)).toISOString()
+}
+
+async function fileText(file: any) {
+    if (typeof file === "string") return file
+    if (typeof file?.text === "function") return file.text()
+    if (typeof file?.__mockText === "string") return file.__mockText
+    if (file?.buffer instanceof ArrayBuffer) {
+        return new TextDecoder().decode(new Uint8Array(file.buffer))
+    }
+    if (ArrayBuffer.isView(file?.buffer)) {
+        return new TextDecoder().decode(new Uint8Array(file.buffer.buffer, file.buffer.byteOffset, file.buffer.byteLength))
+    }
+    return ""
 }
 
 const rootFolder = createTglfsFolder({
@@ -139,12 +161,12 @@ const folderManifestRecords = [
     {
         id: 701,
         date: 1777741203,
-        message: serializeTglfsFolderManifestMessage(rootManifest),
+        message: serializeTglfsFolderManifestMessage(toLegacyTglfsFolderManifest(rootManifest)),
     },
     {
         id: 702,
         date: 1777741206,
-        message: serializeTglfsFolderManifestMessage(projectsManifest),
+        message: serializeTglfsFolderManifestMessage(toLegacyTglfsFolderManifest(projectsManifest)),
     },
 ]
 
@@ -173,7 +195,7 @@ export function createMockFolderBrowserSession() {
         ...mutableFileCards,
         ...mutableFolderRecords,
         ...mutableFolderManifestRecords,
-    ]
+    ] as MockRecord[]
     const mutableRecordsForMessage = (message: string) => {
         if (message.startsWith(TGLFS_FOLDER_MANIFEST_TYPE)) return mutableFolderManifestRecords
         if (message.startsWith(TGLFS_FOLDER_TYPE)) return mutableFolderRecords
@@ -235,6 +257,31 @@ export function createMockFolderBrowserSession() {
             mutableRecordsForMessage(options.message).push(record)
             return { ...record, peerId: "me" }
         },
+        async sendFile(_peer: string, options: { caption?: string; message?: string; file: any }) {
+            const message = options.caption ?? options.message ?? ""
+            if (message.length > TELEGRAM_TEXT_MESSAGE_LIMIT) {
+                throw new Error("400: MESSAGE_TOO_LONG (caused by messages.SendMedia)")
+            }
+            const record = {
+                id: nextMessageId++,
+                date: Math.floor(Date.now() / 1000),
+                message,
+                media: await fileText(options.file),
+            }
+            mutableRecordsForMessage(message).push(record)
+            return { ...record, peerId: "me" }
+        },
+        async uploadFile(options: { file: any }) {
+            return {
+                name: options.file?.name ?? "folder-entries.json",
+                mimeType: options.file?.type ?? TGLFS_FOLDER_ENTRIES_MIME_TYPE,
+                __mockText: await fileText(options.file),
+            }
+        },
+        async downloadMedia(message: MockRecord) {
+            const record = allRecords().find((candidate) => candidate.id === message.id)
+            return record?.media ?? ""
+        },
         async invoke(request: any) {
             const ids = Array.isArray(request?.id) ? request.id : []
             if (ids.length > 0 && typeof request?.message !== "string") {
@@ -248,6 +295,10 @@ export function createMockFolderBrowserSession() {
                 const record = allRecords().find((candidate) => candidate.id === request.id)
                 if (record) {
                     record.message = request.message
+                    const uploadedFile = request.media?.file
+                    if (typeof uploadedFile?.__mockText === "string") {
+                        record.media = uploadedFile.__mockText
+                    }
                     record.date = Math.floor(Date.now() / 1000)
                 }
                 return { updates: [{ id: request.id }] }
