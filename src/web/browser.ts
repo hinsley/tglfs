@@ -595,7 +595,7 @@ function renderList(items: BrowserEntry[]) {
     for (const [index, entry] of items.entries()) {
         const icon = getEntryIcon(entry)
         const name = escapeHtml(getEntryName(entry))
-        const path = getEntryPath(entry)
+        const path = entry.kind === "folder" ? "" : getEntryPath(entry)
         const pathHtml = path ? `<div class="entry-subtitle">${escapeHtml(path)}</div>` : ""
         const date = formatFileCardDate(getEntryDate(entry))
         const status = getEntryStatus(entry)
@@ -1165,8 +1165,7 @@ async function createFolderInCurrentLocation(client: any) {
         now,
     })
 
-    await writeFolderRecord(client, folder)
-    await writeFolderManifest(client, manifest)
+    await writeFolderManifest(client, manifest, null, folder)
 
     if (parentManifest) {
         await writeFolderManifest(client, {

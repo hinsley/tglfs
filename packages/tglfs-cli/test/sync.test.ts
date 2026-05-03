@@ -141,14 +141,8 @@ test("pushSyncRoot uploads blobs before publishing the manifest", async () => {
                 }
                 return []
             },
-            async sendMessage(_peer: string, options: { message: string }) {
-                if (options.message.startsWith("tglfs:folder")) {
-                    events.push("send-folder")
-                    const record = { id: 45, date: 1, peerId: "me-peer", message: options.message }
-                    records.push(record)
-                    return record
-                }
-                throw new Error("unexpected send")
+            async sendMessage() {
+                throw new Error("unexpected text send")
             },
             async uploadFile(options: { file: any }) {
                 const text = options.file.buffer.toString("utf8")
@@ -158,6 +152,24 @@ test("pushSyncRoot uploads blobs before publishing the manifest", async () => {
                 assert.equal(data.folderId, "folder-root")
                 events.push("upload-folder-entries")
                 return { __mockText: text }
+            },
+            async sendFile(_peer: string, options: { file: any; caption?: string }) {
+                events.push("send-folder-media")
+                assert.ok(options.caption?.startsWith("tglfs:folder"))
+                const folder = JSON.parse(options.caption.substring(options.caption.indexOf("{")))
+                assert.equal(folder.version, 2)
+                assert.equal(folder.folderId, "folder-root")
+                assert.equal(folder.entriesRevision, 1)
+                assert.match(folder.entriesHash, /^sha256:/)
+                const record = {
+                    id: 45,
+                    date: 1,
+                    peerId: "me-peer",
+                    message: options.caption,
+                    media: options.file.__mockText,
+                }
+                records.push(record)
+                return record
             },
             async invoke(request: any) {
                 if (request.args.media) {
@@ -199,11 +211,117 @@ test("pushSyncRoot uploads blobs before publishing the manifest", async () => {
             },
         })
 
-        assert.deepEqual(events, ["upload:new.txt", "send-folder", "upload-folder-entries", "folder-entries:45", "manifest:44"])
+        assert.deepEqual(events, ["upload:new.txt", "upload-folder-entries", "send-folder-media", "manifest:44"])
         assert.equal(result.added, 1)
         assert.equal(result.deleted, 1)
         assert.equal(result.folderId, "folder-root")
         assert.equal(result.uploaded[0]?.ufid, "ufid-new.txt")
+    })
+})
+
+test("pushSyncRoot replaces text-only v2 folder records with media-backed folder records", async () => {
+    await withTempLedger(async (dir) => {
+        const manifest = createEmptySyncManifest({
+            rootId: "root-1",
+            rootName: "Docs",
+            folderId: "folder-root",
+            now: "2026-05-02T12:00:00.000Z",
+        })
+        const textOnlyFolder = {
+            type: "tglfs:folder",
+            version: 2,
+            folderId: "folder-root",
+            rootId: "root-1",
+            name: "Docs",
+            path: "",
+            createdAt: "2026-05-02T12:00:00.000Z",
+            updatedAt: "2026-05-02T12:00:00.000Z",
+            deleted: false,
+        }
+        const events: string[] = []
+        const records: Array<{ id: number; date: number; peerId: string; message: string; media?: string }> = [
+            { id: 44, date: 1, peerId: "me-peer", message: serializeSyncManifestMessage(manifest) },
+            { id: 45, date: 1, peerId: "me-peer", message: `tglfs:folder\n${JSON.stringify(textOnlyFolder)}` },
+        ]
+        const client = {
+            async getMessages(_peer: string, options: { search?: string }) {
+                const search = options.search ?? ""
+                if (search.startsWith("tglfs:sync-manifest")) {
+                    return records.filter((record) => record.message.startsWith("tglfs:sync-manifest"))
+                }
+                if (search.startsWith("tglfs:folder-manifest")) {
+                    return []
+                }
+                if (search.startsWith("tglfs:folder")) {
+                    const match = search.match(/"folderId":"([^"]+)"/)
+                    const folderId = match?.[1]
+                    return records.filter((record) =>
+                        record.message.startsWith("tglfs:folder") &&
+                        (!folderId || record.message.includes(`"folderId":"${folderId}"`)),
+                    )
+                }
+                return []
+            },
+            async sendMessage() {
+                throw new Error("unexpected text send")
+            },
+            async uploadFile(options: { file: any }) {
+                const text = options.file.buffer.toString("utf8")
+                const data = JSON.parse(text)
+                assert.equal(data.type, "tglfs:folder-entries")
+                assert.equal(data.version, 2)
+                assert.equal(data.folderId, "folder-root")
+                events.push("upload-folder-entries")
+                return { __mockText: text }
+            },
+            async sendFile(_peer: string, options: { file: any; caption?: string }) {
+                events.push("send-folder-media")
+                assert.ok(options.caption?.startsWith("tglfs:folder"))
+                const folder = JSON.parse(options.caption.substring(options.caption.indexOf("{")))
+                assert.equal(folder.folderId, "folder-root")
+                assert.equal(folder.deleted, false)
+                assert.equal(folder.entriesRevision, 1)
+                const record = {
+                    id: 46,
+                    date: 2,
+                    peerId: "me-peer",
+                    message: options.caption,
+                    media: options.file.__mockText,
+                }
+                records.push(record)
+                return record
+            },
+            async invoke(request: any) {
+                const record = records.find((candidate) => candidate.id === request.args.id)
+                assert.ok(record)
+                record.message = request.args.message
+                if (request.args.id === 45) {
+                    events.push("tombstone-text-folder")
+                    const folder = JSON.parse(request.args.message.substring(request.args.message.indexOf("{")))
+                    assert.equal(folder.deleted, true)
+                    return true
+                }
+                events.push(`manifest:${request.args.id}`)
+                return true
+            },
+        } as any
+
+        await pushSyncRoot(client, {
+            Api: FakeApi as any,
+            root: {
+                rootId: "root-1",
+                rootName: "Docs",
+                folderId: "folder-root",
+                folderPath: dir,
+                manifestMsgId: 44,
+                lastSyncedFiles: {},
+            },
+            password: "",
+            chunkSize: 2 * 1024 * 1024,
+        })
+
+        assert.deepEqual(events, ["upload-folder-entries", "send-folder-media", "tombstone-text-folder", "manifest:44"])
+        assert.equal(records.find((record) => record.id === 46)?.media?.includes("tglfs:folder-entries"), true)
     })
 })
 

@@ -56,6 +56,7 @@ type ApiLike = {
 type SyncClient = {
     getMessages(peer: string, options: unknown): Promise<any[]>
     sendMessage(peer: string, options: { message: string }): Promise<any>
+    sendFile?(peer: string, options: { file: any; caption?: string; message?: string }): Promise<any>
     uploadFile?(options: { file: any; workers: number }): Promise<any>
     downloadMedia?(message: any, options?: unknown): Promise<unknown>
     invoke(request: any): Promise<any>
@@ -201,7 +202,7 @@ async function findTglfsFolder(client: SyncClient, folderId: string): Promise<Tg
     } as any)
     for (const message of messages) {
         const record = extractTglfsFolderRecord(message)
-        if (record?.data.folderId === folderId) {
+        if (record?.data.folderId === folderId && !record.data.deleted) {
             return record
         }
     }
@@ -288,16 +289,52 @@ async function writeTglfsFolder(
     return { ...options.existing, data: options.folder }
 }
 
+async function markSupersededTglfsFolderDeleted(
+    client: SyncClient,
+    options: {
+        Api: ApiLike
+        record: TglfsFolderRecord
+        now: string
+    },
+) {
+    await client.invoke(
+        new options.Api.messages.EditMessage({
+            peer: options.record.peerId ?? "me",
+            id: options.record.msgId,
+            message: serializeTglfsFolderMessage({
+                ...options.record.data,
+                deleted: true,
+                updatedAt: options.now,
+            }),
+        }),
+    )
+}
+
 async function writeTglfsFolderManifest(
     client: SyncClient,
     options: {
         Api: ApiLike
         manifest: TglfsFolderManifest
         existing?: TglfsFolderManifestRecord | null
+        folderForCreate?: TglfsFolder
     },
 ): Promise<TglfsFolderManifestRecord> {
     const folderRecord = await findTglfsFolder(client, options.manifest.folderId)
-    if (!folderRecord || !client.uploadFile || !options.Api.InputMediaUploadedDocument || !options.Api.DocumentAttributeFilename) {
+    if (
+        (!folderRecord && !options.folderForCreate) ||
+        !client.uploadFile ||
+        !client.sendFile ||
+        !options.Api.InputMediaUploadedDocument ||
+        !options.Api.DocumentAttributeFilename
+    ) {
+        if (options.folderForCreate) {
+            const existingFolder = await findTglfsFolder(client, options.folderForCreate.folderId)
+            await writeTglfsFolder(client, {
+                Api: options.Api,
+                folder: options.folderForCreate,
+                existing: existingFolder,
+            })
+        }
         const compactManifest = toLegacyTglfsFolderManifest(compactTglfsFolderManifest(options.manifest))
         const message = serializeTglfsFolderManifestMessage(compactManifest)
         if (!options.existing) {
@@ -315,7 +352,7 @@ async function writeTglfsFolderManifest(
     }
 
     const revision = Math.max(
-        folderRecord.data.entriesRevision ?? 0,
+        folderRecord?.data.entriesRevision ?? options.folderForCreate?.entriesRevision ?? 0,
         options.manifest.revision ?? 0,
         options.existing?.data.revision ?? 0,
     ) + 1
@@ -328,27 +365,48 @@ async function writeTglfsFolderManifest(
     const entriesFile = new CustomFile(entriesFileName, entriesBuffer.byteLength, "", entriesBuffer)
     const uploadedEntries = await client.uploadFile({ file: entriesFile, workers: 1 })
     const folder = {
-        ...folderRecord.data,
+        ...(folderRecord?.data ?? options.folderForCreate),
         updatedAt: options.manifest.updatedAt,
         entriesRevision: revision,
         entriesHash,
         entriesFileName,
-    }
+    } as TglfsFolder
     const media = new options.Api.InputMediaUploadedDocument({
         file: uploadedEntries,
         mimeType: TGLFS_FOLDER_ENTRIES_MIME_TYPE,
         attributes: [new options.Api.DocumentAttributeFilename({ fileName: entriesFileName })],
         forceFile: true,
     })
-    await client.invoke(
-        new options.Api.messages.EditMessage({
-            peer: folderRecord.peerId ?? "me",
-            id: folderRecord.msgId,
-            message: serializeTglfsFolderMessage(folder),
-            media,
-        }),
-    )
-    return { msgId: folderRecord.msgId, date: folderRecord.date, peerId: folderRecord.peerId, data: compactManifest, raw: folderRecord.raw }
+    const message = serializeTglfsFolderMessage(folder)
+    if (folderRecord?.raw?.media) {
+        await client.invoke(
+            new options.Api.messages.EditMessage({
+                peer: folderRecord.peerId ?? "me",
+                id: folderRecord.msgId,
+                message,
+                media,
+            }),
+        )
+        return { msgId: folderRecord.msgId, date: folderRecord.date, peerId: folderRecord.peerId, data: compactManifest, raw: folderRecord.raw }
+    }
+
+    const result = await client.sendFile("me", {
+        file: uploadedEntries,
+        caption: message,
+    })
+    if (folderRecord) {
+        try {
+            await markSupersededTglfsFolderDeleted(client, {
+                Api: options.Api,
+                record: folderRecord,
+                now: options.manifest.updatedAt,
+            })
+        } catch {
+            // The new media-backed folder record is complete. If the old text-only
+            // record cannot be marked deleted, readers prefer the newer record.
+        }
+    }
+    return { msgId: result.id, date: result.date, peerId: result.peerId, data: compactManifest, raw: result }
 }
 
 function createChildFolderId(rootFolderId: string, folderPath: string) {
@@ -463,19 +521,25 @@ function buildFolderTreeFromManifest(manifest: SyncManifestV2, timestamp: string
 
 async function publishFolderTree(client: SyncClient, options: { Api: ApiLike; manifest: SyncManifestV2; timestamp: string }) {
     const tree = buildFolderTreeFromManifest(options.manifest, options.timestamp)
-    for (const folder of tree.folders.values()) {
-        const existing = await findTglfsFolder(client, folder.folderId)
-        const nextFolder = existing
-            ? { ...folder, createdAt: existing.data.createdAt, updatedAt: options.timestamp }
+    for (const [folderPath, manifest] of tree.manifests.entries()) {
+        const folder = tree.folders.get(folderPath)
+        if (!folder) {
+            continue
+        }
+        const existingFolderRecord = await findTglfsFolder(client, folder.folderId)
+        const nextFolder = existingFolderRecord
+            ? { ...folder, createdAt: existingFolderRecord.data.createdAt, updatedAt: options.timestamp }
             : folder
-        await writeTglfsFolder(client, { Api: options.Api, folder: nextFolder, existing })
-    }
-    for (const manifest of tree.manifests.values()) {
-        const existing = await findTglfsFolderManifest(client, manifest.folderId)
-        const nextManifest = existing
-            ? { ...manifest, createdAt: existing.data.createdAt, updatedAt: options.timestamp }
+        const existingManifestRecord = await findTglfsFolderManifest(client, manifest.folderId)
+        const nextManifest = existingManifestRecord
+            ? { ...manifest, createdAt: existingManifestRecord.data.createdAt, updatedAt: options.timestamp }
             : manifest
-        await writeTglfsFolderManifest(client, { Api: options.Api, manifest: nextManifest, existing })
+        await writeTglfsFolderManifest(client, {
+            Api: options.Api,
+            manifest: nextManifest,
+            existing: existingManifestRecord,
+            folderForCreate: nextFolder,
+        })
     }
 }
 

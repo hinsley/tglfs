@@ -1737,9 +1737,11 @@ export async function listFolderRecords(
         waitTime: 0,
     } as any)
     const records: TglfsFolderRecord[] = []
+    const seenFolderIds = new Set<string>()
     for (const message of messages) {
         const record = extractTglfsFolderRecord(message as any)
-        if (record && !record.data.deleted) {
+        if (record && !record.data.deleted && !seenFolderIds.has(record.data.folderId)) {
+            seenFolderIds.add(record.data.folderId)
             records.push(record)
         }
     }
@@ -1850,32 +1852,53 @@ export async function writeFolderRecord(
     return { ...existing, data: folder }
 }
 
+async function markSupersededFolderRecordDeleted(
+    client: TelegramClient,
+    record: TglfsFolderRecord,
+    now: string,
+) {
+    await client.invoke(
+        new Api.messages.EditMessage({
+            peer: record.peerId ?? "me",
+            id: record.msgId,
+            message: serializeTglfsFolderMessage({
+                ...record.data,
+                deleted: true,
+                updatedAt: now,
+            }),
+        }),
+    )
+}
+
 export async function writeFolderManifest(
     client: TelegramClient,
     manifest: TglfsFolderManifest,
     existing?: TglfsFolderManifestRecord | null,
+    folderForCreate?: TglfsFolder,
 ): Promise<TglfsFolderManifestRecord> {
     await gramJsReady
     const folderRecord = await getFolderRecord(client, manifest.folderId)
     if (!folderRecord) {
-        const compactManifest = toLegacyTglfsFolderManifest(compactTglfsFolderManifest(manifest))
-        const message = serializeTglfsFolderManifestMessage(compactManifest)
-        if (!existing) {
-            const result = await client.sendMessage("me", { message })
-            return { msgId: result.id, date: result.date, peerId: result.peerId, data: compactManifest }
+        if (!folderForCreate) {
+            const compactManifest = toLegacyTglfsFolderManifest(compactTglfsFolderManifest(manifest))
+            const message = serializeTglfsFolderManifestMessage(compactManifest)
+            if (!existing) {
+                const result = await client.sendMessage("me", { message })
+                return { msgId: result.id, date: result.date, peerId: result.peerId, data: compactManifest }
+            }
+            await client.invoke(
+                new Api.messages.EditMessage({
+                    peer: existing.peerId ?? "me",
+                    id: existing.msgId,
+                    message,
+                }),
+            )
+            return { ...existing, data: compactManifest }
         }
-        await client.invoke(
-            new Api.messages.EditMessage({
-                peer: existing.peerId ?? "me",
-                id: existing.msgId,
-                message,
-            }),
-        )
-        return { ...existing, data: compactManifest }
     }
 
     const revision = Math.max(
-        folderRecord.data.entriesRevision ?? 0,
+        folderRecord?.data.entriesRevision ?? folderForCreate?.entriesRevision ?? 0,
         manifest.revision ?? 0,
         existing?.data.revision ?? 0,
     ) + 1
@@ -1884,12 +1907,12 @@ export async function writeFolderManifest(
     const entriesHash = await hashTglfsFolderEntries(compactManifest)
     const entriesFileName = createTglfsFolderEntriesFileName(manifest.folderId, revision)
     const folder = {
-        ...folderRecord.data,
+        ...(folderRecord?.data ?? folderForCreate),
         updatedAt: manifest.updatedAt,
         entriesRevision: revision,
         entriesHash,
         entriesFileName,
-    }
+    } as TglfsFolder
     const message = serializeTglfsFolderMessage(folder)
     const entriesFile = new File([entriesJson], entriesFileName, { type: TGLFS_FOLDER_ENTRIES_MIME_TYPE })
     const uploadedEntries = await client.uploadFile({
@@ -1902,15 +1925,31 @@ export async function writeFolderManifest(
         attributes: [new Api.DocumentAttributeFilename({ fileName: entriesFileName })],
         forceFile: true,
     })
-    await client.invoke(
-        new Api.messages.EditMessage({
-            peer: folderRecord.peerId ?? "me",
-            id: folderRecord.msgId,
-            message,
-            media,
-        }),
-    )
-    return { msgId: folderRecord.msgId, date: folderRecord.date, peerId: folderRecord.peerId, data: compactManifest, raw: folderRecord.raw }
+    if (folderRecord?.raw?.media) {
+        await client.invoke(
+            new Api.messages.EditMessage({
+                peer: folderRecord.peerId ?? "me",
+                id: folderRecord.msgId,
+                message,
+                media,
+            }),
+        )
+        return { msgId: folderRecord.msgId, date: folderRecord.date, peerId: folderRecord.peerId, data: compactManifest, raw: folderRecord.raw }
+    }
+
+    const result = await client.sendFile("me", {
+        file: uploadedEntries,
+        caption: message,
+    } as any)
+    if (folderRecord) {
+        try {
+            await markSupersededFolderRecordDeleted(client, folderRecord, manifest.updatedAt)
+        } catch {
+            // The new media-backed folder record is complete. If the old text-only
+            // record cannot be marked deleted, readers prefer the newer record.
+        }
+    }
+    return { msgId: result.id, date: result.date, peerId: result.peerId, data: compactManifest, raw: result }
 }
 
 export async function renameFileCard(
