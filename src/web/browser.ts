@@ -126,6 +126,19 @@ type MoveDestination =
 
 const ROOT_MOVE_DESTINATION = "__tglfs-root__"
 
+type MoveTombstoneBatch = {
+    fileUfids: Set<string>
+    folderIds: Set<string>
+}
+
+type PreparedFolderMove = {
+    record: TglfsFolderRecord
+    parentFolderId?: string
+    rootId: string
+    oldPath: string
+    newPath: string
+}
+
 function getExtension(name: string): string {
     const parts = name.toLowerCase().split(".")
     if (parts.length < 2) return ""
@@ -523,19 +536,11 @@ function activeManifestEntryNames(manifest: TglfsFolderManifest) {
     )
 }
 
-function findActiveFileEntryByUfid(manifest: TglfsFolderManifest, ufid: string) {
-    return Object.values(manifest.entries).find((entry) =>
-        !entry.deleted &&
-        entry.kind === "file" &&
-        entry.ufid === ufid,
-    )
-}
-
-function findActiveEntryByName(manifest: TglfsFolderManifest, name: string) {
-    const lower = name.toLowerCase()
-    return Object.values(manifest.entries).find((entry) =>
-        !entry.deleted &&
-        entry.name.toLowerCase() === lower,
+function activeManifestFileUfids(manifest: TglfsFolderManifest) {
+    return new Set(
+        Object.values(manifest.entries)
+            .filter((entry) => !entry.deleted && entry.kind === "file" && !!entry.ufid)
+            .map((entry) => entry.ufid as string),
     )
 }
 
@@ -558,6 +563,32 @@ function assertFolderNameAvailable(name: string, entries: Iterable<string>) {
         }
     }
     return true
+}
+
+function getOrCreateMoveTombstoneBatch(batches: Map<string, MoveTombstoneBatch>, folderId: string) {
+    const existing = batches.get(folderId)
+    if (existing) return existing
+    const batch = { fileUfids: new Set<string>(), folderIds: new Set<string>() }
+    batches.set(folderId, batch)
+    return batch
+}
+
+function addFileTombstone(batches: Map<string, MoveTombstoneBatch>, folderId: string, ufid: string) {
+    getOrCreateMoveTombstoneBatch(batches, folderId).fileUfids.add(ufid)
+}
+
+function addFolderTombstone(batches: Map<string, MoveTombstoneBatch>, folderId: string, childFolderId: string) {
+    getOrCreateMoveTombstoneBatch(batches, folderId).folderIds.add(childFolderId)
+}
+
+async function writeMoveTombstones(client: any, batches: Map<string, MoveTombstoneBatch>, now: string) {
+    for (const [folderId, batch] of batches) {
+        if (batch.fileUfids.size === 0 && batch.folderIds.size === 0) continue
+        await tombstoneEntryInFolderManifest(client, folderId, now, (entry) =>
+            (entry.kind === "file" && !!entry.ufid && batch.fileUfids.has(entry.ufid)) ||
+            (entry.kind === "folder" && !!entry.folderId && batch.folderIds.has(entry.folderId)),
+        )
+    }
 }
 
 function attachSelectionHandlers(root: HTMLElement, entry: BrowserEntry, index: number) {
@@ -1431,138 +1462,176 @@ async function requestMoveDestination(client: any, selectedEntries: BrowserEntry
     return destination ?? null
 }
 
-async function moveFileEntryToRoot(client: any, file: FileBrowserEntry, now: string) {
-    if (state.currentFolder) {
-        await tombstoneEntryInFolderManifest(client, state.currentFolder.data.folderId, now, (entry) =>
-            entry.kind === "file" && entry.ufid === file.data.ufid,
-        )
-    }
-    markFileMovedToRoot(file.data.ufid)
-    return true
-}
+async function moveEntriesToFolderInSinglePass(
+    client: any,
+    entries: BrowserEntry[],
+    destination: TglfsFolderRecord,
+    now: string,
+) {
+    const { record: destinationManifestRecord, manifest: destinationManifest } =
+        await getFolderManifestForMutation(client, destination.data, now)
+    const destinationEntries = { ...destinationManifest.entries }
+    const destinationNames = activeManifestEntryNames(destinationManifest)
+    const destinationFileUfids = activeManifestFileUfids(destinationManifest)
+    const sourceTombstones = new Map<string, MoveTombstoneBatch>()
+    const movedFileUfids: string[] = []
+    const preparedFolderMoves: PreparedFolderMove[] = []
 
-async function moveFileEntryToFolder(client: any, file: FileBrowserEntry, destination: TglfsFolderRecord, now: string) {
-    const { record: destinationManifestRecord, manifest: destinationManifest } = await getFolderManifestForMutation(client, destination.data, now)
-    const existingDestinationEntry =
-        findActiveEntryByName(destinationManifest, file.data.name) ??
-        findActiveFileEntryByUfid(destinationManifest, file.data.ufid)
-    if (existingDestinationEntry) {
-        showUfidToast(`"${file.data.name}" already exists here`)
-        return false
+    for (const entry of entries) {
+        if (isFileEntry(entry)) {
+            const lowerName = entry.data.name.toLowerCase()
+            if (destinationNames.has(lowerName) || destinationFileUfids.has(entry.data.ufid)) {
+                showUfidToast(`"${entry.data.name}" already exists here`)
+                continue
+            }
+            destinationNames.add(lowerName)
+            destinationFileUfids.add(entry.data.ufid)
+            const path = joinFolderPath(destination.data.path, entry.data.name)
+            destinationEntries[entry.data.name] = {
+                entryId: createRecordId("entry"),
+                name: entry.data.name,
+                path,
+                kind: "file",
+                ufid: entry.data.ufid,
+                size: entry.data.size,
+                mtimeMs: Date.parse(now),
+                mode: 0o644,
+                deleted: false,
+                updatedAt: now,
+            }
+            movedFileUfids.push(entry.data.ufid)
+            if (state.currentFolder) {
+                addFileTombstone(sourceTombstones, state.currentFolder.data.folderId, entry.data.ufid)
+            }
+            continue
+        }
+
+        if (!isFolderEntry(entry)) continue
+        const record = await resolveFolderRecordForMutation(client, entry)
+        if (!record) {
+            showUfidToast("Unable to find folder record")
+            continue
+        }
+        const lowerName = record.data.name.toLowerCase()
+        if (destinationNames.has(lowerName)) {
+            showUfidToast(`"${record.data.name}" already exists here`)
+            continue
+        }
+
+        destinationNames.add(lowerName)
+        const rootId = destination.data.rootId ?? destination.data.folderId
+        const oldPath = record.data.path
+        const newPath = joinFolderPath(destination.data.path, record.data.name)
+        destinationEntries[record.data.name] = {
+            entryId: createRecordId("entry"),
+            name: record.data.name,
+            path: newPath,
+            kind: "folder",
+            folderId: record.data.folderId,
+            deleted: false,
+            updatedAt: now,
+        }
+        preparedFolderMoves.push({
+            record,
+            parentFolderId: destination.data.folderId,
+            rootId,
+            oldPath,
+            newPath,
+        })
+        if (record.data.parentFolderId) {
+            addFolderTombstone(sourceTombstones, record.data.parentFolderId, record.data.folderId)
+        }
     }
 
-    const path = joinFolderPath(destination.data.path, file.data.name)
+    const moved = movedFileUfids.length + preparedFolderMoves.length
+    if (moved === 0) return 0
+
     await writeFolderManifest(client, {
         ...destinationManifest,
         rootId: destination.data.rootId ?? destination.data.folderId,
         path: destination.data.path,
         updatedAt: now,
-        entries: {
-            ...destinationManifest.entries,
-            [file.data.name]: {
-                entryId: createRecordId("entry"),
-                name: file.data.name,
-                path,
-                kind: "file",
-                ufid: file.data.ufid,
-                size: file.data.size,
-                mtimeMs: Date.parse(now),
-                mode: 0o644,
-                deleted: false,
-                updatedAt: now,
-            },
-        },
-    }, destinationManifestRecord)
-    markFileMovedToFolder(file.data.ufid)
-
-    if (state.currentFolder) {
-        await tombstoneEntryInFolderManifest(client, state.currentFolder.data.folderId, now, (entry) =>
-            entry.kind === "file" && entry.ufid === file.data.ufid,
-        )
-    }
-
-    return true
-}
-
-async function moveFolderEntryToRoot(client: any, folder: FolderBrowserEntry, now: string) {
-    const record = await resolveFolderRecordForMutation(client, folder)
-    if (!record) {
-        showUfidToast("Unable to find folder record")
-        return false
-    }
-    if (await topLevelFolderNameExists(client, record.data.name, record.data.folderId)) {
-        showUfidToast(`"${record.data.name}" already exists here`)
-        return false
-    }
-
-    await updateFolderTreeForRename(client, record, {
-        parentFolderId: undefined,
-        rootId: record.data.folderId,
-        oldPath: record.data.path,
-        newPath: "",
-        now,
-        includeEmptyPrefix: true,
-    })
-
-    if (record.data.parentFolderId) {
-        await tombstoneEntryInFolderManifest(client, record.data.parentFolderId, now, (entry) =>
-            entry.kind === "folder" && entry.folderId === record.data.folderId,
-        )
-    }
-
-    return true
-}
-
-async function moveFolderEntryToFolder(client: any, folder: FolderBrowserEntry, destination: TglfsFolderRecord, now: string) {
-    const record = await resolveFolderRecordForMutation(client, folder)
-    if (!record) {
-        showUfidToast("Unable to find folder record")
-        return false
-    }
-
-    const { record: destinationManifestRecord, manifest: destinationManifest } = await getFolderManifestForMutation(client, destination.data, now)
-    if (!assertFolderNameAvailable(record.data.name, activeManifestEntryNames(destinationManifest))) {
-        return false
-    }
-
-    const rootId = destination.data.rootId ?? destination.data.folderId
-    const oldPath = record.data.path
-    const newPath = joinFolderPath(destination.data.path, record.data.name)
-    await writeFolderManifest(client, {
-        ...destinationManifest,
-        rootId,
-        path: destination.data.path,
-        updatedAt: now,
-        entries: {
-            ...destinationManifest.entries,
-            [record.data.name]: {
-                entryId: createRecordId("entry"),
-                name: record.data.name,
-                path: newPath,
-                kind: "folder",
-                folderId: record.data.folderId,
-                deleted: false,
-                updatedAt: now,
-            },
-        },
+        entries: destinationEntries,
     }, destinationManifestRecord)
 
-    await updateFolderTreeForRename(client, record, {
-        parentFolderId: destination.data.folderId,
-        rootId,
-        oldPath,
-        newPath,
-        now,
-        includeEmptyPrefix: true,
-    })
+    for (const folderMove of preparedFolderMoves) {
+        await updateFolderTreeForRename(client, folderMove.record, {
+            parentFolderId: folderMove.parentFolderId,
+            rootId: folderMove.rootId,
+            oldPath: folderMove.oldPath,
+            newPath: folderMove.newPath,
+            now,
+            includeEmptyPrefix: true,
+        })
+    }
+    await writeMoveTombstones(client, sourceTombstones, now)
+    for (const ufid of movedFileUfids) {
+        markFileMovedToFolder(ufid)
+    }
+    return moved
+}
 
-    if (record.data.parentFolderId) {
-        await tombstoneEntryInFolderManifest(client, record.data.parentFolderId, now, (entry) =>
-            entry.kind === "folder" && entry.folderId === record.data.folderId,
-        )
+async function moveEntriesToRootInSinglePass(client: any, entries: BrowserEntry[], now: string) {
+    const sourceTombstones = new Map<string, MoveTombstoneBatch>()
+    const movedFileUfids: string[] = []
+    const preparedFolderMoves: PreparedFolderMove[] = []
+    const topLevelFolderRecords = await listFolderRecords(client, { limit: 500 })
+    const topLevelNames = new Set(
+        topLevelFolderRecords
+            .filter((record) => !record.data.parentFolderId && record.data.path === "" && !record.data.deleted)
+            .map((record) => record.data.name.toLowerCase()),
+    )
+
+    for (const entry of entries) {
+        if (isFileEntry(entry)) {
+            movedFileUfids.push(entry.data.ufid)
+            if (state.currentFolder) {
+                addFileTombstone(sourceTombstones, state.currentFolder.data.folderId, entry.data.ufid)
+            }
+            continue
+        }
+
+        if (!isFolderEntry(entry)) continue
+        const record = await resolveFolderRecordForMutation(client, entry)
+        if (!record) {
+            showUfidToast("Unable to find folder record")
+            continue
+        }
+        const lowerName = record.data.name.toLowerCase()
+        if (topLevelNames.has(lowerName)) {
+            showUfidToast(`"${record.data.name}" already exists here`)
+            continue
+        }
+        topLevelNames.add(lowerName)
+        preparedFolderMoves.push({
+            record,
+            rootId: record.data.folderId,
+            oldPath: record.data.path,
+            newPath: "",
+        })
+        if (record.data.parentFolderId) {
+            addFolderTombstone(sourceTombstones, record.data.parentFolderId, record.data.folderId)
+        }
     }
 
-    return true
+    const moved = movedFileUfids.length + preparedFolderMoves.length
+    if (moved === 0) return 0
+
+    for (const folderMove of preparedFolderMoves) {
+        await updateFolderTreeForRename(client, folderMove.record, {
+            parentFolderId: undefined,
+            rootId: folderMove.rootId,
+            oldPath: folderMove.oldPath,
+            newPath: folderMove.newPath,
+            now,
+            includeEmptyPrefix: true,
+        })
+    }
+    await writeMoveTombstones(client, sourceTombstones, now)
+    for (const ufid of movedFileUfids) {
+        markFileMovedToRoot(ufid)
+    }
+    return moved
 }
 
 async function moveSelectedEntries(client: any) {
@@ -1574,22 +1643,9 @@ async function moveSelectedEntries(client: any) {
     if (!destination) return
 
     const now = new Date().toISOString()
-    let moved = 0
-    for (const entry of movableEntries) {
-        if (isFileEntry(entry)) {
-            if (destination.kind === "root") {
-                if (await moveFileEntryToRoot(client, entry, now)) moved++
-            } else if (await moveFileEntryToFolder(client, entry, destination.record, now)) {
-                moved++
-            }
-            continue
-        }
-        if (destination.kind === "root") {
-            if (await moveFolderEntryToRoot(client, entry, now)) moved++
-        } else if (await moveFolderEntryToFolder(client, entry, destination.record, now)) {
-            moved++
-        }
-    }
+    const moved = destination.kind === "root"
+        ? await moveEntriesToRootInSinglePass(client, movableEntries, now)
+        : await moveEntriesToFolderInSinglePass(client, movableEntries, destination.record, now)
 
     clearSelection()
     await refreshBrowser?.()
