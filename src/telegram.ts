@@ -20,6 +20,7 @@ import {
     serializeFileCardMessage,
 } from "../packages/tglfs-cli/src/shared/file-cards"
 import { TGLFS_ROOT_PARENT_ID } from "../packages/tglfs-cli/src/shared/constants"
+import { planDirectoryParentMigration } from "../packages/tglfs-cli/src/shared/directory-migration"
 import {
     TGLFS_FOLDER_ENTRIES_MIME_TYPE,
     TGLFS_FOLDER_TYPE,
@@ -39,6 +40,7 @@ import {
     extractTglfsFolderRecord,
 } from "../packages/tglfs-cli/src/folders"
 import type { TglfsFolder, TglfsFolderManifest, TglfsFolderManifestRecord, TglfsFolderRecord } from "../packages/tglfs-cli/src/folders"
+import type { FileCardRecord } from "../packages/tglfs-cli/src/shared/file-cards"
 import {
     deleteFileCardMessages as sharedDeleteFileCardMessages,
     listFileCards as sharedListFileCards,
@@ -1846,6 +1848,89 @@ export async function getFolderManifest(
         }
     }
     return null
+}
+
+async function listAllFileCardRecords(client: TelegramClient): Promise<FileCardRecord[]> {
+    const records: FileCardRecord[] = []
+    const seen = new Set<number>()
+    let offsetId: number | undefined
+    while (true) {
+        const page = await listFileCards(client, { limit: 500, offsetId })
+        for (const record of page) {
+            if (!seen.has(record.msgId)) {
+                seen.add(record.msgId)
+                records.push(record)
+            }
+        }
+        if (page.length < 500) break
+        const nextOffsetId = page[page.length - 1]?.msgId
+        if (!nextOffsetId || nextOffsetId === offsetId) break
+        offsetId = nextOffsetId
+    }
+    return records
+}
+
+async function listAllFolderRecords(client: TelegramClient): Promise<TglfsFolderRecord[]> {
+    const records: TglfsFolderRecord[] = []
+    const seen = new Set<string>()
+    let offsetId: number | undefined
+    while (true) {
+        const page = await listFolderRecords(client, { limit: 500, offsetId })
+        for (const record of page) {
+            if (!seen.has(record.data.folderId)) {
+                seen.add(record.data.folderId)
+                records.push(record)
+            }
+        }
+        if (page.length < 500) break
+        const nextOffsetId = page[page.length - 1]?.msgId
+        if (!nextOffsetId || nextOffsetId === offsetId) break
+        offsetId = nextOffsetId
+    }
+    return records
+}
+
+export type DirectoryParentMigrationResult = {
+    foldersScanned: number
+    filesScanned: number
+    manifestsRead: number
+    foldersUpdated: number
+    filesUpdated: number
+    folderParentConflicts: string[]
+    fileParentConflicts: string[]
+}
+
+export async function migrateDirectoryParentRefs(client: TelegramClient): Promise<DirectoryParentMigrationResult> {
+    await gramJsReady
+    const now = new Date().toISOString()
+    const folderRecords = await listAllFolderRecords(client)
+    const manifestRecords = (await Promise.all(
+        folderRecords.map((record) => getFolderManifest(client, record.data.folderId).catch(() => null)),
+    )).filter((record): record is TglfsFolderManifestRecord => !!record)
+    const fileRecords = await listAllFileCardRecords(client)
+    const plan = planDirectoryParentMigration(folderRecords, manifestRecords, fileRecords)
+
+    for (const update of plan.folderUpdates) {
+        await writeFolderRecord(client, {
+            ...update.record.data,
+            parentFolderId: update.parentFolderId,
+            updatedAt: now,
+        }, update.record)
+    }
+
+    for (const update of plan.fileUpdates) {
+        await updateFileCardParent(client, update.record.msgId, "me", update.record.data, update.parentFolderId)
+    }
+
+    return {
+        foldersScanned: folderRecords.length,
+        filesScanned: fileRecords.length,
+        manifestsRead: manifestRecords.length,
+        foldersUpdated: plan.folderUpdates.length,
+        filesUpdated: plan.fileUpdates.length,
+        folderParentConflicts: plan.folderParentConflicts,
+        fileParentConflicts: plan.fileParentConflicts,
+    }
 }
 
 export async function writeFolderRecord(

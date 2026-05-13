@@ -636,6 +636,51 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
             await Telegram.fileDownloadLegacy(activeClient, activeConfig)
         })
 
+        const migrateDirectoryParentsButton = document.getElementById("migrateDirectoryParentsButton") as HTMLButtonElement | null
+        migrateDirectoryParentsButton?.addEventListener("click", async () => {
+            if (!activeClient) {
+                return
+            }
+            const ok = confirm(
+                "Migrate folder indexing?\n\nThis will edit TGLFS folder and file-card messages in your Telegram Saved Messages so directory browsing can use parent references.",
+            )
+            if (!ok) return
+
+            const originalText = migrateDirectoryParentsButton.textContent ?? "Migrate Folder Index"
+            migrateDirectoryParentsButton.disabled = true
+            migrateDirectoryParentsButton.textContent = "Migrating..."
+            try {
+                const Telegram = await getTelegramModule()
+                const result = await Telegram.migrateDirectoryParentRefs(activeClient)
+                const conflictLines = [
+                    result.folderParentConflicts.length
+                        ? `Folder conflicts skipped: ${result.folderParentConflicts.length}`
+                        : "",
+                    result.fileParentConflicts.length
+                        ? `File conflicts skipped: ${result.fileParentConflicts.length}`
+                        : "",
+                ].filter(Boolean)
+                alert([
+                    "Folder index migration complete.",
+                    "",
+                    `Folders scanned: ${result.foldersScanned}`,
+                    `Folder manifests read: ${result.manifestsRead}`,
+                    `Files scanned: ${result.filesScanned}`,
+                    `Folders updated: ${result.foldersUpdated}`,
+                    `Files updated: ${result.filesUpdated}`,
+                    ...conflictLines,
+                ].join("\n"))
+                window.dispatchEvent(new Event("tglfs:refresh-browser"))
+            } catch (error) {
+                console.error(error)
+                const message = error instanceof Error ? error.message : String(error)
+                alert(`Folder index migration failed.\n\n${message}`)
+            } finally {
+                migrateDirectoryParentsButton.disabled = false
+                migrateDirectoryParentsButton.textContent = originalText
+            }
+        })
+
         const fileBrowserButton = document.getElementById("fileBrowserButton") as HTMLButtonElement | null
         fileBrowserButton?.addEventListener("click", async () => {
             if (!activeClient || !activeConfig) {
