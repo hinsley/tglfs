@@ -1,5 +1,6 @@
 import { BATCH_DELAY_MS, BATCH_LIMIT } from "./constants.js"
 import {
+    buildFileCardParentSearchQuery,
     buildFileCardSearchQuery,
     buildFileCardUfidLookupQuery,
     extractFileCardRecords,
@@ -24,6 +25,7 @@ type TelegramFileClient = {
 type ListFileCardsOptions = {
     peer?: string
     query?: string
+    parentFolderId?: string
     limit?: number
     offsetId?: number
 }
@@ -96,8 +98,11 @@ export async function listFileCards(
     options: ListFileCardsOptions = {},
 ): Promise<FileCardRecord[]> {
     const peer = resolvePeer(options.peer)
+    const search = options.parentFolderId
+        ? buildFileCardParentSearchQuery(options.parentFolderId, options.query)
+        : buildFileCardSearchQuery(options.query)
     const messages = await client.getMessages(peer, {
-        search: buildFileCardSearchQuery(options.query),
+        search,
         limit: options.limit ?? 50,
         addOffset: 0,
         minId: 0,

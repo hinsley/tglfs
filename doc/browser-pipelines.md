@@ -20,8 +20,9 @@ This document explains how TGLFS processes files entirely in the browser: how co
 
 ## On-wire format and metadata
 - **File card**: A JSON message stored in Telegram (“Saved Messages”) that indexes a file’s chunk messages and metadata.
-  - Fields: `name`, `ufid`, `size`, `uploadComplete`, `chunks` (message IDs), `IV`.
+  - Fields: `type`, `version`, `name`, `ufid`, `size`, `uploadComplete`, `chunks` (message IDs), `IV`, `parentFolderId`.
   - `IV` = base64(salt || initialCounter), each 16 bytes.
+- **Directory membership**: Browser directory listings use explicit `parentFolderId` refs on `tglfs:file` and `tglfs:folder` records. Root entries use the reserved parent `tglfs-root`; opening a folder searches for direct child file and folder cards by parent instead of hydrating child entries from folder manifests.
 - **Chunk**: A Telegram message containing up to `config.chunkSize` bytes (default 2 GiB) assembled from 512 KiB parts.
 - **Parts**: Telegram requires parts of size divisible by 1 KiB and dividing 512 KiB. The code uses `UPLOAD_PART_SIZE = 512 * 1024`.
 
@@ -91,4 +92,4 @@ Relevant code: `fileDownload` in `src/telegram.ts` and `src/service-worker.js`.
 - SW bridge: `src/service-worker.js`.
 - Key derivation/counter: `src/web/encryption.ts`.
 - UI/SW registration: `src/web/app.ts` and `src/index.html`.
-- Notes and future direction: `doc/compression_stream.md`, `doc/file_storage.md`, and `dev notes scratchpad.md`. 
+- Notes and future direction: `doc/compression_stream.md`, `doc/file_storage.md`, and `dev notes scratchpad.md`.

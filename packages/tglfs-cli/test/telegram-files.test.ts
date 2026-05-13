@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { serializeFileCardMessage } from "../src/shared/file-cards.js"
-import { transferFileCard, unsendFileCard } from "../src/shared/telegram-files.js"
+import { listFileCards, transferFileCard, unsendFileCard } from "../src/shared/telegram-files.js"
 
 const FakeApi = {
     messages: {
@@ -17,6 +17,42 @@ const FakeApi = {
         },
     },
 }
+
+test("listFileCards can scope a page to a parent folder", async () => {
+    const calls: unknown[] = []
+    const client = {
+        async getMessages(_: string, options: unknown) {
+            calls.push(options)
+            return [
+                {
+                    id: 10,
+                    date: 1700000000,
+                    message: serializeFileCardMessage({
+                        name: "nested.txt",
+                        ufid: "ufid-nested",
+                        size: 10,
+                        uploadComplete: true,
+                        chunks: [1],
+                        IV: "iv",
+                        parentFolderId: "folder-1",
+                    }),
+                },
+            ]
+        },
+    } as any
+
+    const results = await listFileCards(client, { parentFolderId: "folder-1", query: "nested", limit: 25, offsetId: 99 })
+
+    assert.deepEqual(calls[0], {
+        search: 'tglfs:file "parentFolderId":"folder-1" nested',
+        limit: 25,
+        addOffset: 0,
+        minId: 0,
+        maxId: 99,
+        waitTime: 0,
+    })
+    assert.equal(results[0]?.data.parentFolderId, "folder-1")
+})
 
 test("transferFileCard forwards chunks, rewrites chunk ids, and writes a new file card", async () => {
     const forwards: any[] = []

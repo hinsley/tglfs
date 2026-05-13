@@ -19,10 +19,12 @@ import {
     parseFileCardMessage,
     serializeFileCardMessage,
 } from "../packages/tglfs-cli/src/shared/file-cards"
+import { TGLFS_ROOT_PARENT_ID } from "../packages/tglfs-cli/src/shared/constants"
 import {
     TGLFS_FOLDER_ENTRIES_MIME_TYPE,
     TGLFS_FOLDER_TYPE,
     buildFolderManifestSearchQuery,
+    buildFolderParentSearchQuery,
     buildFolderSearchQuery,
     compactTglfsFolderManifest,
     createTglfsFolderEntriesFileName,
@@ -1141,7 +1143,12 @@ export async function fileUnsend(client: TelegramClient, config: Config.Config) 
     }
 }
 
-export async function fileUpload(client: TelegramClient, config: Config.Config, sharedFiles?: File[]) {
+export async function fileUpload(
+    client: TelegramClient,
+    config: Config.Config,
+    sharedFiles?: File[],
+    options: { parentFolderId?: string } = {},
+) {
     await gramJsReady
     // TODO: Implement upload resumption.
     if (config.chunkSize < UPLOAD_PART_SIZE) {
@@ -1345,6 +1352,11 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
             return
         }
 
+        const browserDiv = document.getElementById("fileBrowser")
+        const browserVisible = !!browserDiv && !browserDiv.hasAttribute("hidden")
+        const browserParentFolderId = browserVisible ? (window as any).__tglfsUploadParentFolderId : undefined
+        const parentFolderId = options.parentFolderId?.trim() || browserParentFolderId?.trim?.() || TGLFS_ROOT_PARENT_ID
+
         let fileCardData: FileCardData = createFileCardData({
             name: displayName,
             ufid: UFID,
@@ -1352,6 +1364,7 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
             uploadComplete: false,
             chunks: [],
             IV: IV,
+            parentFolderId,
         })
         const fileCardMessage = await client.sendMessage("me", { message: serializeFileCardMessage(fileCardData) })
 
@@ -1710,7 +1723,7 @@ export async function fileUpload(client: TelegramClient, config: Config.Config, 
 
 export async function listFileCards(
     client: TelegramClient,
-    opts?: { query?: string; limit?: number; offsetId?: number },
+    opts?: { query?: string; parentFolderId?: string; limit?: number; offsetId?: number },
 ): Promise<Array<{ msgId: number; date: number; data: FileCardData }>> {
     return sharedListFileCards(client, opts)
 }
@@ -1725,15 +1738,19 @@ export async function getFileCardByUfid(
 
 export async function listFolderRecords(
     client: TelegramClient,
-    opts?: { query?: string; limit?: number; offsetId?: number },
+    opts?: { query?: string; parentFolderId?: string; limit?: number; offsetId?: number },
 ): Promise<TglfsFolderRecord[]> {
     await gramJsReady
     const query = (opts?.query || "").trim()
-    const search = query ? `${TGLFS_FOLDER_TYPE} ${query}` : buildFolderSearchQuery()
+    const search = opts?.parentFolderId
+        ? buildFolderParentSearchQuery(opts.parentFolderId, query)
+        : query ? `${TGLFS_FOLDER_TYPE} ${query}` : buildFolderSearchQuery()
     const messages = await client.getMessages("me", {
         search,
         limit: opts?.limit ?? 50,
-        offsetId: opts?.offsetId,
+        addOffset: 0,
+        minId: 0,
+        maxId: opts?.offsetId ?? 0,
         waitTime: 0,
     } as any)
     const records: TglfsFolderRecord[] = []
@@ -1968,6 +1985,28 @@ export async function renameFileCard(
         data,
         newName,
     })
+}
+
+export async function updateFileCardParent(
+    client: TelegramClient,
+    msgId: number,
+    peer: any,
+    data: FileCardData,
+    parentFolderId: string,
+): Promise<FileCardData> {
+    await gramJsReady
+    const nextData = createFileCardData({
+        ...data,
+        parentFolderId,
+    })
+    await client.invoke(
+        new Api.messages.EditMessage({
+            peer,
+            id: msgId,
+            message: serializeFileCardMessage(nextData),
+        }),
+    )
+    return nextData
 }
 
 export async function deleteFileCard(

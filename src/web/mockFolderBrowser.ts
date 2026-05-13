@@ -10,6 +10,7 @@ import {
     toLegacyTglfsFolderManifest,
 } from "../../packages/tglfs-cli/src/folders"
 import { FILE_CARD_PREFIX } from "../../packages/tglfs-cli/src/shared/file-cards"
+import { TGLFS_ROOT_PARENT_ID } from "../../packages/tglfs-cli/src/shared/constants"
 
 const TELEGRAM_TEXT_MESSAGE_LIMIT = 4096
 
@@ -39,6 +40,7 @@ async function fileText(file: any) {
 
 const rootFolder = createTglfsFolder({
     folderId: "mock-folder-root",
+    parentFolderId: TGLFS_ROOT_PARENT_ID,
     rootId: "mock-root",
     name: "Synced Docs",
     path: "",
@@ -116,6 +118,7 @@ const fileCards = [
             uploadComplete: true,
             chunks: [1501],
             IV: "mock-iv",
+            parentFolderId: TGLFS_ROOT_PARENT_ID,
         }),
     },
     {
@@ -128,6 +131,7 @@ const fileCards = [
             uploadComplete: true,
             chunks: [1502],
             IV: "mock-iv",
+            parentFolderId: rootFolder.folderId,
         }),
     },
     {
@@ -140,6 +144,7 @@ const fileCards = [
             uploadComplete: true,
             chunks: [1503],
             IV: "mock-iv",
+            parentFolderId: projectsFolder.folderId,
         }),
     },
 ]
@@ -194,6 +199,7 @@ export function createMockFolderBrowserSession() {
     if (usePaginationFixture()) {
         const sinkFolder = createTglfsFolder({
             folderId: "mock-folder-pagination-sink",
+            parentFolderId: TGLFS_ROOT_PARENT_ID,
             rootId: "mock-folder-pagination-sink",
             name: "Pagination Sink",
             path: "",
@@ -214,6 +220,7 @@ export function createMockFolderBrowserSession() {
                         uploadComplete: true,
                         chunks: [2500 + index],
                         IV: "mock-iv",
+                        parentFolderId: sinkFolder.folderId,
                     }),
                 })
                 return [name, {
@@ -292,13 +299,25 @@ export function createMockFolderBrowserSession() {
                     : mutableFolderManifestRecords
             } else if (search.startsWith("tglfs:folder")) {
                 const folderId = quotedValue(search, "folderId")
+                const parentFolderId = quotedValue(search, "parentFolderId")
                 records = folderId
                     ? mutableFolderRecords.filter((record) => record.message.includes(`"folderId":"${folderId}"`))
+                    : parentFolderId
+                        ? mutableFolderRecords.filter((record) =>
+                            record.message.includes(`"parentFolderId":"${parentFolderId}"`) &&
+                            textMatches(record.message, search),
+                        )
                     : mutableFolderRecords.filter((record) => textMatches(record.message, search))
             } else if (search.startsWith("tglfs:file")) {
                 const ufid = quotedValue(search, "ufid")
+                const parentFolderId = quotedValue(search, "parentFolderId")
                 records = ufid
                     ? mutableFileCards.filter((record) => record.message.includes(`"ufid":"${ufid}"`))
+                    : parentFolderId
+                        ? mutableFileCards.filter((record) =>
+                            record.message.includes(`"parentFolderId":"${parentFolderId}"`) &&
+                            textMatches(record.message, search),
+                        )
                     : mutableFileCards.filter((record) => textMatches(record.message, search))
             }
 

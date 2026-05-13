@@ -1,15 +1,19 @@
 import { FILE_CARD_TYPE, normalizeFileCardV1Data } from "./protocol/file-card-v1.js"
 import type { NormalizedFileCardV1Data } from "./protocol/file-card-v1.js"
 import {
-    createFileCardV2Data,
-    FILE_CARD_V2_VERSION,
     normalizeFileCardV2Data,
-    serializeFileCardV2Data,
 } from "./protocol/file-card-v2.js"
 import type { FileCardV2Data, FileCardV2Input } from "./protocol/file-card-v2.js"
+import {
+    createFileCardV3Data,
+    FILE_CARD_V3_VERSION,
+    normalizeFileCardV3Data,
+    serializeFileCardV3Data,
+} from "./protocol/file-card-v3.js"
+import type { FileCardV3Data, FileCardV3Input } from "./protocol/file-card-v3.js"
 
-export type FileCardData = NormalizedFileCardV1Data | FileCardV2Data
-export type FileCardInput = FileCardV2Input
+export type FileCardData = NormalizedFileCardV1Data | FileCardV2Data | FileCardV3Data
+export type FileCardInput = FileCardV3Input | FileCardV2Input
 
 export type FileCardRecord = {
     msgId: number
@@ -24,7 +28,7 @@ export type FileCardMessageLike = {
 }
 
 export const FILE_CARD_PREFIX = FILE_CARD_TYPE
-export const FILE_CARD_CURRENT_VERSION = FILE_CARD_V2_VERSION
+export const FILE_CARD_CURRENT_VERSION = FILE_CARD_V3_VERSION
 
 export const FILE_CARD_SEARCH_SORT_VALUES = [
     "date_desc",
@@ -38,11 +42,11 @@ export const FILE_CARD_SEARCH_SORT_VALUES = [
 export type FileCardSearchSort = (typeof FILE_CARD_SEARCH_SORT_VALUES)[number]
 
 export function isFileCardData(value: unknown): value is FileCardData {
-    return normalizeFileCardV1Data(value) !== null || normalizeFileCardV2Data(value) !== null
+    return normalizeFileCardV1Data(value) !== null || normalizeFileCardV2Data(value) !== null || normalizeFileCardV3Data(value) !== null
 }
 
 export function createFileCardData(data: FileCardInput): FileCardData {
-    return createFileCardV2Data(data)
+    return createFileCardV3Data(data)
 }
 
 export function parseFileCardMessage(message: string): FileCardData | null {
@@ -52,14 +56,14 @@ export function parseFileCardMessage(message: string): FileCardData | null {
 
     try {
         const payload = JSON.parse(message.substring(message.indexOf("{")))
-        return normalizeFileCardV2Data(payload) ?? normalizeFileCardV1Data(payload)
+        return normalizeFileCardV3Data(payload) ?? normalizeFileCardV2Data(payload) ?? normalizeFileCardV1Data(payload)
     } catch {
         return null
     }
 }
 
 export function serializeFileCardMessage(data: FileCardInput) {
-    return `${FILE_CARD_PREFIX}\n${serializeFileCardV2Data(data)}`
+    return `${FILE_CARD_PREFIX}\n${serializeFileCardV3Data(data)}`
 }
 
 export function extractFileCardRecord(message: FileCardMessageLike): FileCardRecord | null {
@@ -92,6 +96,10 @@ export function extractFileCardRecords(messages: Iterable<FileCardMessageLike>) 
 
 export function buildFileCardSearchQuery(query = "") {
     return `${FILE_CARD_PREFIX} ${query.trim()}`.trim()
+}
+
+export function buildFileCardParentSearchQuery(parentFolderId: string, query = "") {
+    return buildFileCardSearchQuery(`"parentFolderId":"${parentFolderId.trim()}" ${query.trim()}`.trim())
 }
 
 export function buildFileCardUfidLookupQuery(ufid: string) {

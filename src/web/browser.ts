@@ -5,7 +5,6 @@ import {
 } from "../../packages/tglfs-cli/src/shared/file-cards"
 import {
     downloadFileCard,
-    getFileCardByUfid,
     getFolderManifest,
     getFolderRecord,
     listFileCards,
@@ -13,6 +12,7 @@ import {
     renameFileCard,
     deleteFileCard,
     sendFileCard,
+    updateFileCardParent,
     writeFolderManifest,
     writeFolderRecord,
 } from "../telegram"
@@ -20,10 +20,9 @@ import type { FileCardData } from "../types/models"
 import {
     createTglfsFolder,
     createTglfsFolderManifest,
-    TGLFS_FOLDER_TYPE,
-    TGLFS_FOLDER_VERSION,
 } from "../../packages/tglfs-cli/src/folders"
 import type { TglfsFolder, TglfsFolderManifest, TglfsFolderManifestEntry, TglfsFolderManifestRecord, TglfsFolderRecord } from "../../packages/tglfs-cli/src/folders"
+import { TGLFS_ROOT_PARENT_ID } from "../../packages/tglfs-cli/src/shared/constants"
 import { PreviewModal, type PreviewEntry } from "./preview"
 
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"])
@@ -72,7 +71,7 @@ type BrowserState = {
     currentPage: number
     pages: BrowserEntry[][]
     lastOffsetId: number | undefined
-    rootFolderIndex: number
+    lastFolderOffsetId: number | undefined
     selected: Map<string, BrowserEntry>
     lastClickedIndex: number | null
     hasMore: boolean
@@ -94,7 +93,7 @@ const state: BrowserState = {
     currentPage: 0,
     pages: [],
     lastOffsetId: undefined,
-    rootFolderIndex: 0,
+    lastFolderOffsetId: undefined,
     selected: new Map(),
     lastClickedIndex: null,
     hasMore: true,
@@ -107,8 +106,6 @@ let ufidToastTimer: number | undefined
 let activeBrowserClient: any = null
 let refreshBrowser: ((options?: BrowserRefreshOptions) => Promise<void>) | null = null
 let browserRefreshSequence = 0
-const locallyFiledUfids = new Set<string>()
-const locallyRootedUfids = new Set<string>()
 
 type BrowserDialogOptions = {
     title: string
@@ -356,7 +353,7 @@ function resetBrowserListingState() {
     state.pages = []
     state.currentPage = 0
     state.lastOffsetId = undefined
-    state.rootFolderIndex = 0
+    state.lastFolderOffsetId = undefined
     state.selected.clear()
     state.lastClickedIndex = null
     state.hasMore = false
@@ -525,6 +522,14 @@ async function openFolder(entry: FolderBrowserEntry) {
     await refreshBrowser?.({ showLoading: true, loadingMessage })
 }
 
+function currentDirectoryParentId() {
+    return state.currentFolder?.data.folderId ?? TGLFS_ROOT_PARENT_ID
+}
+
+function setNextUploadParentFromBrowserState() {
+    ;(window as any).__tglfsUploadParentFolderId = currentDirectoryParentId()
+}
+
 async function buildFolderTrail(entry: FolderBrowserEntry): Promise<FolderBrowserEntry[]> {
     const client = activeBrowserClient
     if (!client) return [entry]
@@ -543,7 +548,10 @@ async function buildFolderTrail(entry: FolderBrowserEntry): Promise<FolderBrowse
     while (current && !seen.has(current.data.folderId)) {
         records.unshift(current)
         seen.add(current.data.folderId)
-        current = current.data.parentFolderId ? await getFolderRecord(client, current.data.parentFolderId) : null
+        const parentFolderId = current.data.parentFolderId
+        current = parentFolderId && parentFolderId !== TGLFS_ROOT_PARENT_ID
+            ? await getFolderRecord(client, parentFolderId)
+            : null
     }
 
     return records.map(folderEntryFromRecord)
@@ -613,16 +621,6 @@ function activeManifestFileUfids(manifest: TglfsFolderManifest) {
             .filter((entry) => !entry.deleted && entry.kind === "file" && !!entry.ufid)
             .map((entry) => entry.ufid as string),
     )
-}
-
-function markFileMovedToFolder(ufid: string) {
-    locallyFiledUfids.add(ufid)
-    locallyRootedUfids.delete(ufid)
-}
-
-function markFileMovedToRoot(ufid: string) {
-    locallyRootedUfids.add(ufid)
-    locallyFiledUfids.delete(ufid)
 }
 
 function assertFolderNameAvailable(name: string, entries: Iterable<string>) {
@@ -988,128 +986,50 @@ function folderEntryFromRecord(record: { msgId: number; date: number; data: Tglf
     }
 }
 
-function epochFromIso(value: string) {
-    const date = Date.parse(value)
-    return Number.isNaN(date) ? Math.floor(Date.now() / 1000) : Math.floor(date / 1000)
-}
-
-function syntheticFolderFromEntry(entry: TglfsFolderManifestEntry, manifestRootId?: string): FolderBrowserEntry | null {
-    if (entry.kind !== "folder" || !entry.folderId) return null
-    const folder: TglfsFolder = {
-        type: TGLFS_FOLDER_TYPE,
-        version: TGLFS_FOLDER_VERSION,
-        folderId: entry.folderId,
-        parentFolderId: state.currentFolder?.data.folderId,
-        rootId: manifestRootId,
-        name: entry.name,
-        path: entry.path,
-        createdAt: entry.updatedAt,
-        updatedAt: entry.updatedAt,
-        deleted: false,
-    }
-    return {
-        kind: "folder",
-        id: `folder:${folder.folderId}`,
-        msgId: 0,
-        date: epochFromIso(entry.updatedAt),
-        data: folder,
-    }
-}
-
-function missingFileFromEntry(entry: TglfsFolderManifestEntry): MissingFileBrowserEntry | null {
-    if (entry.kind !== "file" || !entry.ufid) return null
-    return {
-        kind: "missing-file",
-        id: `missing:${entry.ufid}`,
-        date: epochFromIso(entry.updatedAt),
-        name: entry.name,
-        path: entry.path,
-        ufid: entry.ufid,
-        size: entry.size ?? 0,
-    }
-}
-
-function entryMatchesQuery(entry: BrowserEntry, query: string) {
-    if (!query) return true
-    const needle = query.toLowerCase()
-    const haystack = [
-        getEntryName(entry),
-        getEntryPath(entry),
-        entry.kind === "file" ? entry.data.ufid : "",
-        entry.kind === "folder" ? entry.data.folderId : "",
-        entry.kind === "missing-file" ? entry.ufid : "",
-    ].join(" ").toLowerCase()
-    return haystack.includes(needle)
-}
-
-function folderRecordBelongsInGlobalView(entry: FolderBrowserEntry) {
-    return !entry.data.parentFolderId && entry.data.path === ""
-}
-
-async function collectFolderFileUfids(client: any, folderRecords: TglfsFolderRecord[]) {
-    const ufids = new Set<string>()
-    const manifests = await Promise.all(
-        folderRecords.map((record) => getFolderManifest(client, record.data.folderId).catch(() => null)),
-    )
-    for (const manifest of manifests) {
-        if (!manifest) continue
-        for (const entry of Object.values(manifest.data.entries)) {
-            if (!entry.deleted && entry.kind === "file" && entry.ufid) {
-                ufids.add(entry.ufid)
-            }
-        }
-    }
-    return ufids
-}
-
-async function listAllFolderRecordsForBrowser(client: any) {
-    const records: TglfsFolderRecord[] = []
-    const seen = new Set<string>()
-    let offsetId: number | undefined
-    while (true) {
-        const page = await listFolderRecords(client, { limit: 500, offsetId })
-        for (const record of page) {
-            if (!seen.has(record.data.folderId)) {
-                seen.add(record.data.folderId)
-                records.push(record)
-            }
-        }
-        if (page.length < 500) break
-        const nextOffsetId = page[page.length - 1].msgId
-        if (nextOffsetId === offsetId) break
-        offsetId = nextOffsetId
-    }
-    return records
-}
-
-function chunkEntries(items: BrowserEntry[]) {
-    const pages: BrowserEntry[][] = []
-    for (let index = 0; index < items.length; index += state.pageSize) {
-        pages.push(items.slice(index, index + state.pageSize))
-    }
-    return pages.length ? pages : [[]]
-}
-
-async function loadRootPage(client: any, options: { folderIndex?: number; fileOffsetId?: number } = {}) {
-    const allFolderRecords = await listAllFolderRecordsForBrowser(client)
-    const folderFileUfids = await collectFolderFileUfids(client, allFolderRecords)
-    const folderEntries = allFolderRecords
-        .map(folderEntryFromRecord)
-        .filter(folderRecordBelongsInGlobalView)
-        .filter((entry) => entryMatchesQuery(entry, state.query))
-
+async function loadDirectoryPage(
+    client: any,
+    parentFolderId: string,
+    options: { folderOffsetId?: number; fileOffsetId?: number } = {},
+) {
     const items: BrowserEntry[] = []
-    let nextFolderIndex = Math.max(0, options.folderIndex ?? 0)
-    while (nextFolderIndex < folderEntries.length && items.length < state.pageSize) {
-        items.push(folderEntries[nextFolderIndex])
-        nextFolderIndex++
+    let nextFolderOffsetId = options.folderOffsetId
+    let folderHasMore = false
+
+    const folderRecords = await listFolderRecords(client, {
+        parentFolderId,
+        query: state.query,
+        limit: state.pageSize + 1,
+        offsetId: options.folderOffsetId,
+    })
+    for (const record of folderRecords) {
+        if (items.length >= state.pageSize) {
+            folderHasMore = true
+            break
+        }
+        items.push(folderEntryFromRecord(record))
+        nextFolderOffsetId = record.msgId
+    }
+
+    if (folderHasMore) {
+        applySort(items)
+        return {
+            items,
+            lastFolderOffsetId: nextFolderOffsetId,
+            lastOffsetId: options.fileOffsetId,
+            hasMore: true,
+        }
     }
 
     let fileOffsetId = options.fileOffsetId
     let nextFileOffsetId = options.fileOffsetId
     let fileHasMore = false
     while (items.length < state.pageSize) {
-        const fileRecords = await listFileCards(client, { query: state.query, limit: state.pageSize + 1, offsetId: fileOffsetId })
+        const fileRecords = await listFileCards(client, {
+            parentFolderId,
+            query: state.query,
+            limit: state.pageSize + 1,
+            offsetId: fileOffsetId,
+        })
         if (fileRecords.length === 0) {
             fileHasMore = false
             break
@@ -1117,14 +1037,6 @@ async function loadRootPage(client: any, options: { folderIndex?: number; fileOf
 
         let processedAny = false
         for (const [index, record] of fileRecords.entries()) {
-            const ufid = record.data.ufid
-            const filed = folderFileUfids.has(ufid) || locallyFiledUfids.has(ufid)
-            if (filed && !locallyRootedUfids.has(ufid)) {
-                nextFileOffsetId = record.msgId
-                processedAny = true
-                continue
-            }
-
             if (items.length >= state.pageSize) {
                 fileHasMore = true
                 processedAny = true
@@ -1152,7 +1064,12 @@ async function loadRootPage(client: any, options: { folderIndex?: number; fileOf
         }
 
         if (fileRecords.length <= state.pageSize) {
-            const probe = await listFileCards(client, { query: state.query, limit: 1, offsetId: nextFileOffsetId })
+            const probe = await listFileCards(client, {
+                parentFolderId,
+                query: state.query,
+                limit: 1,
+                offsetId: nextFileOffsetId,
+            })
             if (probe.length === 0) {
                 break
             }
@@ -1175,74 +1092,35 @@ async function loadRootPage(client: any, options: { folderIndex?: number; fileOf
     applySort(items)
     return {
         items,
-        nextFolderIndex,
+        lastFolderOffsetId: nextFolderOffsetId,
         lastOffsetId: nextFileOffsetId,
-        hasMore: nextFolderIndex < folderEntries.length || fileHasMore,
+        hasMore: fileHasMore,
     }
-}
-
-async function resolveFolderManifestEntry(client: any, entry: TglfsFolderManifestEntry, manifestRootId?: string): Promise<BrowserEntry | null> {
-    if (entry.deleted) return null
-    if (entry.kind === "folder" && entry.folderId) {
-        const record = await getFolderRecord(client, entry.folderId)
-        return record ? folderEntryFromRecord(record) : syntheticFolderFromEntry(entry, manifestRootId)
-    }
-    if (entry.kind === "file" && entry.ufid) {
-        const record = await getFileCardByUfid(client, entry.ufid)
-        return record ? fileEntryFromRecord(record) : missingFileFromEntry(entry)
-    }
-    return null
-}
-
-async function loadFolderPages(client: any) {
-    const current = state.currentFolder
-    if (!current) {
-        return [[]]
-    }
-    const manifest = await getFolderManifest(client, current.data.folderId)
-    if (!manifest) {
-        return [[]]
-    }
-    const resolved = await Promise.all(
-        Object.values(manifest.data.entries).map((entry) => resolveFolderManifestEntry(client, entry, manifest.data.rootId)),
-    )
-    const items = resolved.filter((entry): entry is BrowserEntry => !!entry).filter((entry) => entryMatchesQuery(entry, state.query))
-    applySort(items)
-    return chunkEntries(items)
 }
 
 async function loadFirstPage(client: any, refreshSequence = browserRefreshSequence): Promise<BrowserEntry[] | null> {
     state.pages = []
     state.currentPage = 0
     state.lastOffsetId = undefined
-    state.rootFolderIndex = 0
+    state.lastFolderOffsetId = undefined
     state.selected.clear()
     state.lastClickedIndex = null
-    if (state.currentFolder) {
-        const pages = await loadFolderPages(client)
-        if (refreshSequence !== browserRefreshSequence) return null
-        state.pages = pages
-        state.hasMore = state.pages.length > 1
-        return state.pages[0] ?? []
-    }
-    const page = await loadRootPage(client)
+    const page = await loadDirectoryPage(client, currentDirectoryParentId())
     if (refreshSequence !== browserRefreshSequence) return null
     state.lastOffsetId = page.lastOffsetId
-    state.rootFolderIndex = page.nextFolderIndex
+    state.lastFolderOffsetId = page.lastFolderOffsetId
     state.pages.push(page.items)
     state.hasMore = page.hasMore
     return page.items
 }
 
 async function loadNextPage(client: any) {
-    if (state.currentFolder) {
-        const next = state.pages[state.currentPage + 1] ?? []
-        state.hasMore = state.currentPage + 1 < state.pages.length - 1
-        return next
-    }
-    const page = await loadRootPage(client, { folderIndex: state.rootFolderIndex, fileOffsetId: state.lastOffsetId })
+    const page = await loadDirectoryPage(client, currentDirectoryParentId(), {
+        folderOffsetId: state.lastFolderOffsetId,
+        fileOffsetId: state.lastOffsetId,
+    })
     state.lastOffsetId = page.lastOffsetId
-    state.rootFolderIndex = page.nextFolderIndex
+    state.lastFolderOffsetId = page.lastFolderOffsetId
     state.hasMore = page.hasMore
     if (page.items.length > 0) {
         state.pages.push(page.items)
@@ -1262,12 +1140,20 @@ async function resolveFolderRecordForMutation(client: any, entry: FolderBrowserE
 }
 
 async function topLevelFolderNameExists(client: any, name: string, ignoreFolderId?: string) {
-    const records = await listFolderRecords(client, { query: name, limit: 200 })
+    const records = await listFolderRecords(client, { parentFolderId: TGLFS_ROOT_PARENT_ID, query: name, limit: 200 })
     return records.some((record) =>
         record.data.folderId !== ignoreFolderId &&
-        !record.data.parentFolderId &&
+        record.data.parentFolderId === TGLFS_ROOT_PARENT_ID &&
         record.data.path === "" &&
         !record.data.deleted &&
+        record.data.name.toLowerCase() === name.toLowerCase(),
+    )
+}
+
+async function fileNameExistsInParent(client: any, parentFolderId: string, name: string, ignoreMsgId?: number) {
+    const records = await listFileCards(client, { parentFolderId, query: name, limit: 200 })
+    return records.some((record) =>
+        record.msgId !== ignoreMsgId &&
         record.data.name.toLowerCase() === name.toLowerCase(),
     )
 }
@@ -1370,7 +1256,7 @@ async function createFolderInCurrentLocation(client: any) {
     const path = parent ? joinFolderPath(parent.data.path, name) : ""
     const folder = createTglfsFolder({
         folderId,
-        parentFolderId: parent?.data.folderId,
+        parentFolderId: parent?.data.folderId ?? TGLFS_ROOT_PARENT_ID,
         rootId,
         name,
         path,
@@ -1484,17 +1370,18 @@ async function renameFolderEntry(client: any, entry: FolderBrowserEntry) {
 
     const now = new Date().toISOString()
     const parentId = record.data.parentFolderId
-    const parentManifestRecord = parentId ? await getFolderManifest(client, parentId) : null
+    const actualParentId = parentId && parentId !== TGLFS_ROOT_PARENT_ID ? parentId : undefined
+    const parentManifestRecord = actualParentId ? await getFolderManifest(client, actualParentId) : null
     if (parentManifestRecord) {
         const activeNames = [...activeManifestEntryNames(parentManifestRecord.data)].filter((name) => name !== record.data.name.toLowerCase())
         if (!assertFolderNameAvailable(newName, activeNames)) return
-    } else if (!parentId && await topLevelFolderNameExists(client, newName, record.data.folderId)) {
+    } else if (!actualParentId && await topLevelFolderNameExists(client, newName, record.data.folderId)) {
         showUfidToast(`"${newName}" already exists here`)
         return
     }
 
     const parentPath = parentManifestRecord?.data.path ?? ""
-    const newPath = parentId ? joinFolderPath(parentPath, newName) : record.data.path
+    const newPath = actualParentId ? joinFolderPath(parentPath, newName) : record.data.path
 
     await updateFolderTreeForRename(client, record, {
         name: newName,
@@ -1557,7 +1444,7 @@ async function tombstoneFolderTree(client: any, record: TglfsFolderRecord, now: 
 }
 
 async function tombstoneFolderInParentManifest(client: any, record: TglfsFolderRecord, now: string) {
-    if (!record.data.parentFolderId) return
+    if (!record.data.parentFolderId || record.data.parentFolderId === TGLFS_ROOT_PARENT_ID) return
     const parentManifestRecord = await getFolderManifest(client, record.data.parentFolderId)
     if (!parentManifestRecord) return
 
@@ -1607,8 +1494,9 @@ async function requestMoveDestination(client: any, selectedEntries: BrowserEntry
     const folderRecords = await listFolderRecords(client, { limit: 200 })
     const recordsById = new Map(folderRecords.map((record) => [record.data.folderId, record]))
     const currentFolderId = state.currentFolder?.data.folderId
-    const parentFolder = state.currentFolder?.data.parentFolderId
-        ? recordsById.get(state.currentFolder.data.parentFolderId) ?? await getFolderRecord(client, state.currentFolder.data.parentFolderId)
+    const parentFolderId = state.currentFolder?.data.parentFolderId
+    const parentFolder = parentFolderId && parentFolderId !== TGLFS_ROOT_PARENT_ID
+        ? recordsById.get(parentFolderId) ?? await getFolderRecord(client, parentFolderId)
         : null
     const parentDestination: MoveDestination | null = state.currentFolder
         ? parentFolder
@@ -1661,13 +1549,14 @@ async function moveEntriesToFolderInSinglePass(
     const destinationNames = activeManifestEntryNames(destinationManifest)
     const destinationFileUfids = activeManifestFileUfids(destinationManifest)
     const sourceTombstones = new Map<string, MoveTombstoneBatch>()
-    const movedFileUfids: string[] = []
+    const movedFileEntries: FileBrowserEntry[] = []
     const preparedFolderMoves: PreparedFolderMove[] = []
 
     for (const entry of entries) {
         if (isFileEntry(entry)) {
             const lowerName = entry.data.name.toLowerCase()
-            if (destinationNames.has(lowerName) || destinationFileUfids.has(entry.data.ufid)) {
+            const fileNameExists = await fileNameExistsInParent(client, destination.data.folderId, entry.data.name, entry.msgId)
+            if (destinationNames.has(lowerName) || destinationFileUfids.has(entry.data.ufid) || fileNameExists) {
                 showUfidToast(`"${entry.data.name}" already exists here`)
                 continue
             }
@@ -1686,7 +1575,7 @@ async function moveEntriesToFolderInSinglePass(
                 deleted: false,
                 updatedAt: now,
             }
-            movedFileUfids.push(entry.data.ufid)
+            movedFileEntries.push(entry)
             if (state.currentFolder) {
                 addFileTombstone(sourceTombstones, state.currentFolder.data.folderId, entry.data.ufid)
             }
@@ -1730,7 +1619,7 @@ async function moveEntriesToFolderInSinglePass(
         }
     }
 
-    const moved = movedFileUfids.length + preparedFolderMoves.length
+    const moved = movedFileEntries.length + preparedFolderMoves.length
     if (moved === 0) return { files: 0, folders: 0 }
 
     await writeFolderManifest(client, {
@@ -1751,27 +1640,31 @@ async function moveEntriesToFolderInSinglePass(
             includeEmptyPrefix: true,
         })
     }
-    await writeMoveTombstones(client, sourceTombstones, now)
-    for (const ufid of movedFileUfids) {
-        markFileMovedToFolder(ufid)
+    for (const entry of movedFileEntries) {
+        entry.data = await updateFileCardParent(client, entry.msgId, "me", entry.data, destination.data.folderId)
     }
-    return { files: movedFileUfids.length, folders: preparedFolderMoves.length }
+    await writeMoveTombstones(client, sourceTombstones, now)
+    return { files: movedFileEntries.length, folders: preparedFolderMoves.length }
 }
 
 async function moveEntriesToRootInSinglePass(client: any, entries: BrowserEntry[], now: string) {
     const sourceTombstones = new Map<string, MoveTombstoneBatch>()
-    const movedFileUfids: string[] = []
+    const movedFileEntries: FileBrowserEntry[] = []
     const preparedFolderMoves: PreparedFolderMove[] = []
     const topLevelFolderRecords = await listFolderRecords(client, { limit: 500 })
     const topLevelNames = new Set(
         topLevelFolderRecords
-            .filter((record) => !record.data.parentFolderId && record.data.path === "" && !record.data.deleted)
+            .filter((record) => record.data.parentFolderId === TGLFS_ROOT_PARENT_ID && record.data.path === "" && !record.data.deleted)
             .map((record) => record.data.name.toLowerCase()),
     )
 
     for (const entry of entries) {
         if (isFileEntry(entry)) {
-            movedFileUfids.push(entry.data.ufid)
+            if (await fileNameExistsInParent(client, TGLFS_ROOT_PARENT_ID, entry.data.name, entry.msgId)) {
+                showUfidToast(`"${entry.data.name}" already exists here`)
+                continue
+            }
+            movedFileEntries.push(entry)
             if (state.currentFolder) {
                 addFileTombstone(sourceTombstones, state.currentFolder.data.folderId, entry.data.ufid)
             }
@@ -1801,12 +1694,12 @@ async function moveEntriesToRootInSinglePass(client: any, entries: BrowserEntry[
         }
     }
 
-    const moved = movedFileUfids.length + preparedFolderMoves.length
+    const moved = movedFileEntries.length + preparedFolderMoves.length
     if (moved === 0) return { files: 0, folders: 0 }
 
     for (const folderMove of preparedFolderMoves) {
         await updateFolderTreeForRename(client, folderMove.record, {
-            parentFolderId: undefined,
+            parentFolderId: TGLFS_ROOT_PARENT_ID,
             rootId: folderMove.rootId,
             oldPath: folderMove.oldPath,
             newPath: folderMove.newPath,
@@ -1814,11 +1707,11 @@ async function moveEntriesToRootInSinglePass(client: any, entries: BrowserEntry[
             includeEmptyPrefix: true,
         })
     }
-    await writeMoveTombstones(client, sourceTombstones, now)
-    for (const ufid of movedFileUfids) {
-        markFileMovedToRoot(ufid)
+    for (const entry of movedFileEntries) {
+        entry.data = await updateFileCardParent(client, entry.msgId, "me", entry.data, TGLFS_ROOT_PARENT_ID)
     }
-    return { files: movedFileUfids.length, folders: preparedFolderMoves.length }
+    await writeMoveTombstones(client, sourceTombstones, now)
+    return { files: movedFileEntries.length, folders: preparedFolderMoves.length }
 }
 
 async function moveSelectedEntries(client: any) {
@@ -2017,7 +1910,7 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         if (state.currentPage > 0) {
             state.currentPage--
             clearSelection()
-            state.hasMore = state.currentFolder ? state.currentPage < state.pages.length - 1 : state.hasMore
+            state.hasMore = state.currentPage < state.pages.length - 1 || state.hasMore
             renderBrowser(state.pages[state.currentPage])
         }
     })
@@ -2026,12 +1919,12 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         if (state.currentPage < state.pages.length - 1 && state.pages[state.currentPage + 1]?.length) {
             state.currentPage++
             clearSelection()
-            state.hasMore = state.currentFolder ? state.currentPage < state.pages.length - 1 : state.hasMore
+            state.hasMore = state.currentPage < state.pages.length - 1 || state.hasMore
             renderBrowser(state.pages[state.currentPage])
             return
         }
         const items = await loadNextPage(client)
-        if (items.length > 0 || state.currentFolder) {
+        if (items.length > 0) {
             state.currentPage++
             clearSelection()
             renderBrowser(items)
@@ -2071,6 +1964,7 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         clearSelection()
     })
     actionUpload.addEventListener("click", () => {
+        setNextUploadParentFromBrowserState()
         const uploadInput = document.getElementById("uploadFileInput") as HTMLInputElement | null
         if (uploadInput) uploadInput.click()
     })
@@ -2082,6 +1976,7 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     })
     actionUploadItem?.addEventListener("click", (e) => {
         e.preventDefault()
+        setNextUploadParentFromBrowserState()
         const uploadInput = document.getElementById("uploadFileInput") as HTMLInputElement | null
         if (uploadInput) uploadInput.click()
     })

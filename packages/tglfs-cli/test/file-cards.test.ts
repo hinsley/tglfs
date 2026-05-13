@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
     buildFileCardSearchQuery,
+    buildFileCardParentSearchQuery,
     buildFileCardUfidLookupQuery,
     FILE_CARD_CURRENT_VERSION,
     extractFileCardRecords,
@@ -13,10 +14,15 @@ import {
     serializeFileCardMessage,
     sortFileCardRecords,
 } from "../src/shared/file-cards.js"
+import { TGLFS_ROOT_PARENT_ID } from "../src/shared/constants.js"
 
 test("blank and nonblank file-card search queries match web behavior", () => {
     assert.equal(buildFileCardSearchQuery(), "tglfs:file")
     assert.equal(buildFileCardSearchQuery(" theorydesign "), "tglfs:file theorydesign")
+    assert.equal(
+        buildFileCardParentSearchQuery("folder-1", " theorydesign "),
+        'tglfs:file "parentFolderId":"folder-1" theorydesign',
+    )
     assert.equal(
         buildFileCardUfidLookupQuery(" abcd "),
         'tglfs:file "ufid":"abcd"',
@@ -78,24 +84,49 @@ test("new file-card serialization writes explicit current protocol metadata", ()
         IV: "iv",
     })
 
-    assert.equal(FILE_CARD_CURRENT_VERSION, 2)
+    assert.equal(FILE_CARD_CURRENT_VERSION, 3)
     assert.match(message, /^tglfs:file\n/)
     assert.deepEqual(JSON.parse(message.substring(message.indexOf("{"))), {
         type: "tglfs:file",
-        version: 2,
+        version: 3,
         name: "current.txt",
         ufid: "u2",
         size: 20,
         uploadComplete: true,
         chunks: [2],
         IV: "iv",
+        parentFolderId: TGLFS_ROOT_PARENT_ID,
+    })
+})
+
+test("current file-card serialization writes explicit parent folder refs", () => {
+    const message = serializeFileCardMessage({
+        name: "nested.txt",
+        ufid: "u-nested",
+        size: 30,
+        uploadComplete: true,
+        chunks: [3],
+        IV: "iv",
+        parentFolderId: "folder-1",
+    })
+
+    assert.deepEqual(JSON.parse(message.substring(message.indexOf("{"))), {
+        type: "tglfs:file",
+        version: 3,
+        name: "nested.txt",
+        ufid: "u-nested",
+        size: 30,
+        uploadComplete: true,
+        chunks: [3],
+        IV: "iv",
+        parentFolderId: "folder-1",
     })
 })
 
 test("unsupported future file-card versions are refused instead of guessed", () => {
     assert.equal(
         parseFileCardMessage(
-            'tglfs:file\n{"type":"tglfs:file","version":3,"name":"future.txt","ufid":"u3","size":30,"uploadComplete":true,"chunks":[3],"IV":"iv"}',
+            'tglfs:file\n{"type":"tglfs:file","version":4,"name":"future.txt","ufid":"u3","size":30,"uploadComplete":true,"chunks":[3],"IV":"iv","parentFolderId":"folder-1"}',
         ),
         null,
     )

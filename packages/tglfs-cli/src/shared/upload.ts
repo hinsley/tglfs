@@ -2,7 +2,7 @@ import { Buffer } from "buffer"
 
 import { deriveAESKeyFromPassword, ENCRYPTION_CHUNK_SIZE, incrementCounter64By } from "../crypto.js"
 import { computeUfidFromStream } from "../ufid.js"
-import { UPLOAD_PART_SIZE } from "./constants.js"
+import { TGLFS_ROOT_PARENT_ID, UPLOAD_PART_SIZE } from "./constants.js"
 import { createFileCardData, serializeFileCardMessage } from "./file-cards.js"
 import { lookupFileCardByUfid } from "./telegram-files.js"
 import type { FileCardData, FileCardRecord } from "./file-cards.js"
@@ -38,6 +38,7 @@ export type UploadProgress = {
 export type UploadCurrentFormatOptions = {
     Api: UploadApiLike
     peer?: string
+    parentFolderId?: string
     chunkSize: number
     password: string
     source: UploadSource
@@ -105,6 +106,7 @@ export async function uploadCurrentFormatSource(
         uploadComplete: false,
         chunks: [],
         IV: Buffer.from(createIvBytes(salt, initialCounter)).toString("base64"),
+        parentFolderId: options.parentFolderId?.trim() || TGLFS_ROOT_PARENT_ID,
     })
 
     const fileCardMessage = await client.sendMessage(peer, {

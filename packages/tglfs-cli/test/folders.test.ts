@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+    buildFolderParentSearchQuery,
     compactTglfsFolderManifest,
     createTglfsFolder,
     createTglfsFolderManifest,
@@ -12,6 +13,13 @@ import {
     serializeTglfsFolderManifestMessage,
     serializeTglfsFolderMessage,
 } from "../src/folders.js"
+
+test("folder parent search query targets direct children", () => {
+    assert.equal(
+        buildFolderParentSearchQuery("folder-1", "Notes"),
+        'tglfs:folder "parentFolderId":"folder-1" Notes',
+    )
+})
 
 test("folder v2 messages parse successfully", () => {
     const folder = createTglfsFolder({

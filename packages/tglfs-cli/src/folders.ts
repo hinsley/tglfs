@@ -99,6 +99,10 @@ export function buildFolderSearchQuery(folderId?: string) {
     return trimmed ? `${TGLFS_FOLDER_TYPE} "folderId":"${trimmed}"` : TGLFS_FOLDER_TYPE
 }
 
+export function buildFolderParentSearchQuery(parentFolderId: string, query = "") {
+    return `${TGLFS_FOLDER_TYPE} "parentFolderId":"${parentFolderId.trim()}" ${query.trim()}`.trim()
+}
+
 export function buildFolderManifestSearchQuery(folderId?: string) {
     const trimmed = folderId?.trim()
     return trimmed ? `${TGLFS_FOLDER_MANIFEST_TYPE} "folderId":"${trimmed}"` : TGLFS_FOLDER_MANIFEST_TYPE

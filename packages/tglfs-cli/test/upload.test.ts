@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { serializeFileCardMessage } from "../src/shared/file-cards.js"
+import { TGLFS_ROOT_PARENT_ID } from "../src/shared/constants.js"
 import { DuplicateUfidError, uploadCurrentFormatSource } from "../src/shared/upload.js"
 import { computeUfidFromBytes } from "../src/ufid.js"
 
@@ -60,7 +61,8 @@ test("uploadCurrentFormatSource uploads a small source and finalizes the file ca
 
     assert.equal(sentMessages.length, 1)
     assert.match(sentMessages[0].message, /^tglfs:file\n/)
-    assert.equal(JSON.parse(sentMessages[0].message.substring(sentMessages[0].message.indexOf("{"))).version, 2)
+    assert.equal(JSON.parse(sentMessages[0].message.substring(sentMessages[0].message.indexOf("{"))).version, 3)
+    assert.equal(JSON.parse(sentMessages[0].message.substring(sentMessages[0].message.indexOf("{"))).parentFolderId, TGLFS_ROOT_PARENT_ID)
     assert.equal(chunkMessages.length, 1)
     assert.ok(invocations.length >= 2)
     assert.equal(result.data.name, "fixture.txt")
