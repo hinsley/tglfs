@@ -77,9 +77,9 @@ const DOWNLOAD_PART_SIZE = 1024 * 1024 // 1 MiB.
 const UPLOAD_PART_SIZE = 512 * 1024 // 512 KiB.
 const BATCH_LIMIT = 50 // How many messages to manipulate at a time with forwarding/deletion.
 const BATCH_DELAY = 1000 // How many milliseconds to wait before processing the next batch (may prevent spam bans).
-const DIRECTORY_MIGRATION_EDIT_DELAY_MS = 10_000
+const DIRECTORY_MIGRATION_EDIT_DELAY_MS = 60_000
 const DIRECTORY_MIGRATION_FLOOD_WAIT_PADDING_MS = 10_000
-const DIRECTORY_MIGRATION_RECOVERY_EDIT_DELAY_MS = 30_000
+const DIRECTORY_MIGRATION_RECOVERY_EDIT_DELAY_MS = 120_000
 
 // FileCardData is defined in src/types/models.ts.
 
@@ -2013,7 +2013,51 @@ async function runDirectoryMigrationEdit(
     }
 }
 
+function setDirectoryMigrationFloodThreshold(client: TelegramClient) {
+    const target = client as unknown as { floodSleepThreshold?: number }
+    const original = target.floodSleepThreshold
+    target.floodSleepThreshold = 0
+    return () => {
+        if (original === undefined) {
+            delete target.floodSleepThreshold
+        } else {
+            target.floodSleepThreshold = original
+        }
+    }
+}
+
 export async function migrateDirectoryParentRefs(
+    client: TelegramClient,
+    options?: DirectoryParentMigrationOptions,
+): Promise<DirectoryParentMigrationResult> {
+    const restoreFloodThreshold = setDirectoryMigrationFloodThreshold(client)
+    try {
+        while (true) {
+            try {
+                return await migrateDirectoryParentRefsOnce(client, options)
+            } catch (error) {
+                const floodWaitSeconds = extractTelegramFloodWaitSeconds(error)
+                if (!floodWaitSeconds) {
+                    throw error
+                }
+                const paddingMs = options?.floodWaitPaddingMs ?? DIRECTORY_MIGRATION_FLOOD_WAIT_PADDING_MS
+                await waitForDirectoryMigration(
+                    floodWaitSeconds * 1000 + paddingMs,
+                    options,
+                    {
+                        phase: "waiting",
+                        message: `Telegram requested a ${floodWaitSeconds}s wait. Waiting and then resuming the migration.`,
+                        completed: 0,
+                    },
+                )
+            }
+        }
+    } finally {
+        restoreFloodThreshold()
+    }
+}
+
+async function migrateDirectoryParentRefsOnce(
     client: TelegramClient,
     options?: DirectoryParentMigrationOptions,
 ): Promise<DirectoryParentMigrationResult> {

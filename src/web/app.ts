@@ -680,7 +680,7 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
                 return
             }
             const ok = confirm(
-                "Migrate folder indexing?\n\nThis will edit TGLFS folder and file-card messages in your Telegram Saved Messages so directory browsing can use parent references.\n\nThe migration runs slowly to stay under Telegram rate limits and may pause if Telegram asks it to wait.",
+                "Migrate folder indexing?\n\nThis will edit TGLFS folder and file-card messages in your Telegram Saved Messages so directory browsing can use parent references.\n\nThe migration edits about one record per minute to stay under Telegram rate limits and may pause if Telegram asks it to wait.",
             )
             if (!ok) return
 
