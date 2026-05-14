@@ -1938,7 +1938,6 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     prevButton.addEventListener("click", () => {
         if (state.currentPage > 0) {
             state.currentPage--
-            clearSelection()
             state.hasMore = state.currentPage < state.pages.length - 1 || state.hasMore
             renderBrowser(state.pages[state.currentPage])
         }
@@ -1947,7 +1946,6 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     nextButton.addEventListener("click", async () => {
         if (state.currentPage < state.pages.length - 1 && state.pages[state.currentPage + 1]?.length) {
             state.currentPage++
-            clearSelection()
             state.hasMore = state.currentPage < state.pages.length - 1 || state.hasMore
             renderBrowser(state.pages[state.currentPage])
             return
@@ -1955,7 +1953,6 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         const items = await loadNextPage(client)
         if (items.length > 0) {
             state.currentPage++
-            clearSelection()
             renderBrowser(items)
             return
         }
