@@ -11,6 +11,7 @@ type GramJsModules = {
     TelegramClient: typeof import("telegram")["TelegramClient"]
     Api: typeof import("telegram")["Api"]
     StoreSession: typeof import("telegram/sessions")["StoreSession"]
+    PromisedWebSockets: typeof import("telegram/extensions")["PromisedWebSockets"]
     getFileInfo: typeof import("telegram/Utils")["getFileInfo"]
 }
 
@@ -59,9 +60,10 @@ function installLocalStorageShim() {
 async function loadGramJsModules(): Promise<GramJsModules> {
     installLocalStorageShim()
 
-    const [telegram, sessionModule, utilsModule] = await Promise.all([
+    const [telegram, sessionModule, extensionsModule, utilsModule] = await Promise.all([
         import("telegram"),
         import("telegram/sessions"),
+        import("telegram/extensions"),
         import("telegram/Utils"),
     ])
 
@@ -69,6 +71,7 @@ async function loadGramJsModules(): Promise<GramJsModules> {
         TelegramClient: telegram.TelegramClient,
         Api: telegram.Api,
         StoreSession: sessionModule.StoreSession,
+        PromisedWebSockets: extensionsModule.PromisedWebSockets,
         getFileInfo: utilsModule.getFileInfo,
     }
 }

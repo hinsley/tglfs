@@ -22,6 +22,7 @@ import {
 import { TGLFS_ROOT_PARENT_ID } from "../packages/tglfs-cli/src/shared/constants"
 import { planDirectoryParentMigration } from "../packages/tglfs-cli/src/shared/directory-migration"
 import { extractTelegramFloodWaitSeconds } from "../packages/tglfs-cli/src/shared/telegram-rate-limit"
+import { createTelegramWebDcFallbackSocket } from "../packages/tglfs-cli/src/shared/telegram-web-dc"
 import {
     TGLFS_FOLDER_ENTRIES_MIME_TYPE,
     TGLFS_FOLDER_TYPE,
@@ -57,12 +58,14 @@ import { FileCardData } from "./types/models"
 let Api!: typeof import("telegram")["Api"]
 let TelegramClientCtor!: typeof import("telegram")["TelegramClient"]
 let StoreSession!: typeof import("telegram/sessions")["StoreSession"]
+let PromisedWebSocketsCtor!: typeof import("telegram/extensions")["PromisedWebSockets"]
 let getFileInfo!: typeof import("telegram/Utils")["getFileInfo"]
 
 const gramJsReady = getGramJs().then((modules) => {
     Api = modules.Api
     TelegramClientCtor = modules.TelegramClient
     StoreSession = modules.StoreSession
+    PromisedWebSocketsCtor = modules.PromisedWebSockets
     getFileInfo = modules.getFileInfo
 })
 
@@ -2667,7 +2670,11 @@ export async function init(config: Config.Config, authHandlers: AuthHandlers = {
     // Load previous session from a session string.
     const storeSession = new StoreSession("./tglfs.session")
     // Connect.
-    const client = new TelegramClientCtor(storeSession, config.apiId, config.apiHash, { connectionRetries: 5 })
+    const client = new TelegramClientCtor(storeSession, config.apiId, config.apiHash, {
+        connectionRetries: 5,
+        useWSS: true,
+        networkSocket: createTelegramWebDcFallbackSocket(PromisedWebSocketsCtor) as any,
+    })
     // Provide credentials to the server.
     await client.start({
         phoneNumber: config.phone,
