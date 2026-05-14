@@ -4,6 +4,7 @@ import {
     formatFileCardSize,
 } from "../../packages/tglfs-cli/src/shared/file-cards"
 import {
+    countDirectoryEntries,
     downloadFileCard,
     getFolderManifest,
     getFolderRecord,
@@ -75,6 +76,7 @@ type BrowserState = {
     selected: Map<string, BrowserEntry>
     lastClickedIndex: number | null
     hasMore: boolean
+    totalPages: number | null
     currentFolder: FolderBrowserEntry | null
     currentFolderTrail: FolderBrowserEntry[]
 }
@@ -89,7 +91,7 @@ const state: BrowserState = {
     query: "",
     sort: "date_desc",
     viewMode: "list",
-    pageSize: 50,
+    pageSize: 10,
     currentPage: 0,
     pages: [],
     lastOffsetId: undefined,
@@ -97,6 +99,7 @@ const state: BrowserState = {
     selected: new Map(),
     lastClickedIndex: null,
     hasMore: true,
+    totalPages: null,
     currentFolder: null,
     currentFolderTrail: [],
 }
@@ -357,6 +360,7 @@ function resetBrowserListingState() {
     state.selected.clear()
     state.lastClickedIndex = null
     state.hasMore = false
+    state.totalPages = null
 }
 
 function renderBrowserLoading(message = "Loading files...") {
@@ -397,6 +401,15 @@ function beginBrowserNavigationLoading(message: string) {
 
 function getVisibleItems() {
     return state.pages[state.currentPage] ?? []
+}
+
+function visibleTotalPages() {
+    return Math.max(
+        1,
+        state.currentPage + 1,
+        state.pages.length,
+        state.totalPages ?? (state.pages.length + (state.hasMore ? 1 : 0)),
+    )
 }
 
 function getVisiblePreviewEntries(): PreviewEntry[] {
@@ -822,7 +835,7 @@ function renderBrowser(items: BrowserEntry[]) {
     const pageInfo = document.getElementById("browserPageInfo")
     if (pageInfo) {
         const k = state.currentPage + 1
-        const n = state.hasMore ? "…" : String(Math.max(1, state.pages.length))
+        const n = visibleTotalPages()
         pageInfo.textContent = `Page ${k}/${n}`
     }
     const prevButton = document.getElementById("browserPrevPage") as HTMLButtonElement | null
@@ -1105,8 +1118,24 @@ async function loadFirstPage(client: any, refreshSequence = browserRefreshSequen
     state.lastFolderOffsetId = undefined
     state.selected.clear()
     state.lastClickedIndex = null
-    const page = await loadDirectoryPage(client, currentDirectoryParentId())
+    state.totalPages = null
+    const parentFolderId = currentDirectoryParentId()
+    const countPromise = countDirectoryEntries(client, {
+        parentFolderId,
+        query: state.query,
+    }).catch((error) => {
+        console.warn("Failed to load folder browser page count", error)
+        return null
+    })
+    const page = await loadDirectoryPage(client, parentFolderId)
     if (refreshSequence !== browserRefreshSequence) return null
+    countPromise
+        .then((counts) => {
+            if (!counts) return
+            if (refreshSequence !== browserRefreshSequence) return
+            state.totalPages = Math.max(1, Math.ceil(counts.total / state.pageSize))
+            renderBrowser(state.pages[state.currentPage] ?? page.items)
+        })
     state.lastOffsetId = page.lastOffsetId
     state.lastFolderOffsetId = page.lastFolderOffsetId
     state.pages.push(page.items)

@@ -35,6 +35,12 @@ type LookupFileCardByUfidOptions = {
     limit?: number
 }
 
+type CountFileCardsOptions = {
+    peer?: string
+    query?: string
+    parentFolderId?: string
+}
+
 type WriteFileCardOptions = {
     Api: ApiLike
     peer?: string
@@ -95,6 +101,30 @@ function extractForwardedMessageId(result: any) {
 
 function fileCardParentFolderId(record: FileCardRecord) {
     return "parentFolderId" in record.data ? record.data.parentFolderId : undefined
+}
+
+function telegramMessageSearchTotal(messages: any[]) {
+    const total = (messages as any).total
+    return typeof total === "number" && Number.isFinite(total) ? total : messages.length
+}
+
+export async function countFileCards(
+    client: TelegramFileClient,
+    options: CountFileCardsOptions = {},
+): Promise<number> {
+    const peer = resolvePeer(options.peer)
+    const search = options.parentFolderId
+        ? buildFileCardParentSearchQuery(options.parentFolderId, options.query)
+        : buildFileCardSearchQuery(options.query)
+    const messages = await client.getMessages(peer, {
+        search,
+        limit: 0,
+        addOffset: 0,
+        minId: 0,
+        maxId: 0,
+        waitTime: 0,
+    } as any)
+    return telegramMessageSearchTotal(messages)
 }
 
 export async function listFileCards(

@@ -73,3 +73,27 @@ test("web folder listing filters tokenized parent search false positives", async
     assert.deepEqual(records.map((record) => record.data.name), ["Child A", "Child B"])
     assert.deepEqual(calls.map((call) => call.maxId), [0, 20])
 })
+
+test("web directory entry count uses count-only folder and file searches", async () => {
+    const { countDirectoryEntries } = await import("../../../src/telegram.ts")
+    const calls: any[] = []
+    const client = {
+        async getMessages(_: string, options: any) {
+            calls.push(options)
+            const result: any[] = []
+            result.total = options.search.startsWith("tglfs:folder") ? 3 : 17
+            return result
+        },
+    } as any
+
+    const counts = await countDirectoryEntries(client, { parentFolderId: "folder-parent", query: "needle" })
+
+    assert.deepEqual(counts, { folders: 3, files: 17, total: 20 })
+    assert.deepEqual(
+        calls.map((call) => ({ search: call.search, limit: call.limit })),
+        [
+            { search: 'tglfs:folder "parentFolderId":"folder-parent" needle', limit: 0 },
+            { search: 'tglfs:file "parentFolderId":"folder-parent" needle', limit: 0 },
+        ],
+    )
+})

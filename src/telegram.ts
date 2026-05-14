@@ -49,6 +49,7 @@ import {
 import type { TglfsFolder, TglfsFolderManifest, TglfsFolderManifestRecord, TglfsFolderRecord } from "../packages/tglfs-cli/src/folders"
 import type { FileCardRecord } from "../packages/tglfs-cli/src/shared/file-cards"
 import {
+    countFileCards as sharedCountFileCards,
     deleteFileCardMessages as sharedDeleteFileCardMessages,
     listFileCards as sharedListFileCards,
     lookupFileCardByUfid as sharedLookupFileCardByUfid,
@@ -1743,12 +1744,56 @@ export async function listFileCards(
     return sharedListFileCards(client, opts)
 }
 
+export async function countFileCards(
+    client: TelegramClient,
+    opts?: { query?: string; parentFolderId?: string },
+): Promise<number> {
+    await gramJsReady
+    return sharedCountFileCards(client, opts)
+}
+
 export async function getFileCardByUfid(
     client: TelegramClient,
     ufid: string,
 ): Promise<{ msgId: number; date: number; data: FileCardData } | null> {
     await gramJsReady
     return sharedLookupFileCardByUfid(client, ufid)
+}
+
+function telegramMessageSearchTotal(messages: any[]) {
+    const total = (messages as any).total
+    return typeof total === "number" && Number.isFinite(total) ? total : messages.length
+}
+
+export async function countFolderRecords(
+    client: TelegramClient,
+    opts?: { query?: string; parentFolderId?: string },
+): Promise<number> {
+    await gramJsReady
+    const query = (opts?.query || "").trim()
+    const search = opts?.parentFolderId
+        ? buildFolderParentSearchQuery(opts.parentFolderId, query)
+        : query ? `${TGLFS_FOLDER_TYPE} ${query}` : buildFolderSearchQuery()
+    const messages = await client.getMessages("me", {
+        search,
+        limit: 0,
+        addOffset: 0,
+        minId: 0,
+        maxId: 0,
+        waitTime: 0,
+    } as any)
+    return telegramMessageSearchTotal(messages)
+}
+
+export async function countDirectoryEntries(
+    client: TelegramClient,
+    opts?: { query?: string; parentFolderId?: string },
+): Promise<{ folders: number; files: number; total: number }> {
+    const [folders, files] = await Promise.all([
+        countFolderRecords(client, opts),
+        countFileCards(client, opts),
+    ])
+    return { folders, files, total: folders + files }
 }
 
 export async function listFolderRecords(

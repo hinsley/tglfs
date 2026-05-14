@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { serializeFileCardMessage } from "../src/shared/file-cards.js"
-import { listFileCards, transferFileCard, unsendFileCard } from "../src/shared/telegram-files.js"
+import { countFileCards, listFileCards, transferFileCard, unsendFileCard } from "../src/shared/telegram-files.js"
 
 const FakeApi = {
     messages: {
@@ -89,6 +89,30 @@ test("listFileCards filters tokenized parent search false positives", async () =
 
     assert.deepEqual(results.map((record) => record.data.name), ["right-a.txt", "right-b.txt"])
     assert.deepEqual(calls.map((call) => call.maxId), [0, 20])
+})
+
+test("countFileCards uses Telegram count-only search", async () => {
+    const calls: unknown[] = []
+    const client = {
+        async getMessages(_: string, options: unknown) {
+            calls.push(options)
+            const result: any[] = []
+            result.total = 123
+            return result
+        },
+    } as any
+
+    const total = await countFileCards(client, { parentFolderId: "folder-1", query: "nested" })
+
+    assert.equal(total, 123)
+    assert.deepEqual(calls[0], {
+        search: 'tglfs:file "parentFolderId":"folder-1" nested',
+        limit: 0,
+        addOffset: 0,
+        minId: 0,
+        maxId: 0,
+        waitTime: 0,
+    })
 })
 
 test("transferFileCard forwards chunks, rewrites chunk ids, and writes a new file card", async () => {

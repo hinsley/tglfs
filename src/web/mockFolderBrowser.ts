@@ -324,8 +324,13 @@ export function createMockFolderBrowserSession() {
             const sorted = records
                 .filter((record) => maxId === 0 || record.id < maxId)
                 .sort((a, b) => b.id - a.id)
-                .slice(0, limit)
-            return sorted
+            if (limit === 0) {
+                const result: Array<{ id: number; date: number; message: string }> = []
+                ;(result as any).total = sorted.length
+                return result
+            }
+            const page = sorted.slice(0, limit)
+            return page
         },
         async sendMessage(_peer: string, options: { message: string }) {
             if (options.message.length > TELEGRAM_TEXT_MESSAGE_LIMIT) {
