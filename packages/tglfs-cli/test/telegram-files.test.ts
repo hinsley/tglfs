@@ -54,6 +54,43 @@ test("listFileCards can scope a page to a parent folder", async () => {
     assert.equal(results[0]?.data.parentFolderId, "folder-1")
 })
 
+test("listFileCards filters tokenized parent search false positives", async () => {
+    const calls: any[] = []
+    const makeMessage = (id: number, name: string, ufid: string, parentFolderId: string) => ({
+        id,
+        date: 1700000000 + id,
+        message: serializeFileCardMessage({
+            name,
+            ufid,
+            size: id,
+            uploadComplete: true,
+            chunks: [id],
+            IV: "iv",
+            parentFolderId,
+        }),
+    })
+    const client = {
+        async getMessages(_: string, options: any) {
+            calls.push(options)
+            if (options.maxId === 0) {
+                return [
+                    makeMessage(30, "wrong.txt", "ufid-wrong", "folder-other"),
+                    makeMessage(20, "right-a.txt", "ufid-right-a", "folder-1"),
+                ]
+            }
+            if (options.maxId === 20) {
+                return [makeMessage(10, "right-b.txt", "ufid-right-b", "folder-1")]
+            }
+            return []
+        },
+    } as any
+
+    const results = await listFileCards(client, { parentFolderId: "folder-1", limit: 2 })
+
+    assert.deepEqual(results.map((record) => record.data.name), ["right-a.txt", "right-b.txt"])
+    assert.deepEqual(calls.map((call) => call.maxId), [0, 20])
+})
+
 test("transferFileCard forwards chunks, rewrites chunk ids, and writes a new file card", async () => {
     const forwards: any[] = []
     const sentMessages: Array<{ peer: string; message: string }> = []

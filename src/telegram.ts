@@ -1757,25 +1757,53 @@ export async function listFolderRecords(
 ): Promise<TglfsFolderRecord[]> {
     await gramJsReady
     const query = (opts?.query || "").trim()
+    const parentFolderId = opts?.parentFolderId?.trim()
+    const targetLimit = opts?.limit ?? 50
+    const requestLimit = targetLimit
     const search = opts?.parentFolderId
         ? buildFolderParentSearchQuery(opts.parentFolderId, query)
         : query ? `${TGLFS_FOLDER_TYPE} ${query}` : buildFolderSearchQuery()
-    const messages = await client.getMessages("me", {
-        search,
-        limit: opts?.limit ?? 50,
-        addOffset: 0,
-        minId: 0,
-        maxId: opts?.offsetId ?? 0,
-        waitTime: 0,
-    } as any)
     const records: TglfsFolderRecord[] = []
     const seenFolderIds = new Set<string>()
-    for (const message of messages) {
-        const record = extractTglfsFolderRecord(message as any)
-        if (record && !record.data.deleted && !seenFolderIds.has(record.data.folderId)) {
+    let offsetId = opts?.offsetId ?? 0
+
+    while (records.length < targetLimit) {
+        const messages = await client.getMessages("me", {
+            search,
+            limit: requestLimit,
+            addOffset: 0,
+            minId: 0,
+            maxId: offsetId,
+            waitTime: 0,
+        } as any)
+        if (messages.length === 0) {
+            break
+        }
+
+        let nextOffsetId = offsetId
+        for (const message of messages) {
+            nextOffsetId = message.id
+            const record = extractTglfsFolderRecord(message as any)
+            if (!record || record.data.deleted || seenFolderIds.has(record.data.folderId)) {
+                continue
+            }
+            if (parentFolderId && record.data.parentFolderId !== parentFolderId) {
+                continue
+            }
+            if (parentFolderId && record.data.folderId === parentFolderId) {
+                continue
+            }
             seenFolderIds.add(record.data.folderId)
             records.push(record)
+            if (records.length >= targetLimit) {
+                break
+            }
         }
+
+        if (messages.length < requestLimit || nextOffsetId === offsetId) {
+            break
+        }
+        offsetId = nextOffsetId
     }
     return records
 }

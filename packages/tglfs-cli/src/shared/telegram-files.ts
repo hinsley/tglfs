@@ -93,24 +93,59 @@ function extractForwardedMessageId(result: any) {
     return typeof id === "number" ? id : null
 }
 
+function fileCardParentFolderId(record: FileCardRecord) {
+    return "parentFolderId" in record.data ? record.data.parentFolderId : undefined
+}
+
 export async function listFileCards(
     client: TelegramFileClient,
     options: ListFileCardsOptions = {},
 ): Promise<FileCardRecord[]> {
     const peer = resolvePeer(options.peer)
+    const parentFolderId = options.parentFolderId?.trim()
+    const targetLimit = options.limit ?? 50
+    const requestLimit = targetLimit
     const search = options.parentFolderId
         ? buildFileCardParentSearchQuery(options.parentFolderId, options.query)
         : buildFileCardSearchQuery(options.query)
-    const messages = await client.getMessages(peer, {
-        search,
-        limit: options.limit ?? 50,
-        addOffset: 0,
-        minId: 0,
-        maxId: options.offsetId ?? 0,
-        waitTime: 0,
-    } as any)
+    const records: FileCardRecord[] = []
+    let offsetId = options.offsetId ?? 0
 
-    return extractFileCardRecords(messages)
+    while (records.length < targetLimit) {
+        const messages = await client.getMessages(peer, {
+            search,
+            limit: requestLimit,
+            addOffset: 0,
+            minId: 0,
+            maxId: offsetId,
+            waitTime: 0,
+        } as any)
+        if (messages.length === 0) {
+            break
+        }
+
+        let nextOffsetId = offsetId
+        for (const message of messages) {
+            nextOffsetId = message.id
+        }
+
+        for (const record of extractFileCardRecords(messages)) {
+            if (parentFolderId && fileCardParentFolderId(record) !== parentFolderId) {
+                continue
+            }
+            records.push(record)
+            if (records.length >= targetLimit) {
+                break
+            }
+        }
+
+        if (messages.length < requestLimit || nextOffsetId === offsetId) {
+            break
+        }
+        offsetId = nextOffsetId
+    }
+
+    return records
 }
 
 export async function lookupFileCardByUfid(

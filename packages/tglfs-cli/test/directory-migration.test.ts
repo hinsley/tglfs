@@ -172,3 +172,54 @@ test("directory parent migration skips ambiguous duplicate parent refs", () => {
     assert.deepEqual(plan.fileParentConflicts, ["ufid-same"])
     assert.deepEqual(plan.fileUpdates, [])
 })
+
+test("directory parent migration ignores and repairs self-parent folder refs", () => {
+    const folders = [
+        folderRecord("folder-root", "Docs", "folder-root"),
+        folderRecord("folder-child", "Projects"),
+    ]
+    const manifests: TglfsFolderManifestRecord[] = [
+        {
+            msgId: 50,
+            date: 1,
+            data: {
+                type: "tglfs:folder-entries",
+                version: 2,
+                folderId: "folder-root",
+                path: "",
+                createdAt: now,
+                updatedAt: now,
+                entries: {
+                    Docs: {
+                        entryId: "entry-self",
+                        name: "Docs",
+                        path: "",
+                        kind: "folder",
+                        folderId: "folder-root",
+                        deleted: false,
+                        updatedAt: now,
+                    },
+                    Projects: {
+                        entryId: "entry-projects",
+                        name: "Projects",
+                        path: "Projects",
+                        kind: "folder",
+                        folderId: "folder-child",
+                        deleted: false,
+                        updatedAt: now,
+                    },
+                },
+            },
+        },
+    ]
+
+    const plan = planDirectoryParentMigration(folders, manifests, [])
+
+    assert.deepEqual(
+        plan.folderUpdates.map((update) => [update.record.data.folderId, update.parentFolderId]),
+        [
+            ["folder-root", TGLFS_ROOT_PARENT_ID],
+            ["folder-child", "folder-root"],
+        ],
+    )
+})

@@ -23,6 +23,12 @@ function recordParent(parentMap: Map<string, string>, conflictSet: Set<string>, 
     parentMap.set(childId, parentId)
 }
 
+function folderParentFolderId(record: TglfsFolderRecord) {
+    return record.data.parentFolderId && record.data.parentFolderId !== record.data.folderId
+        ? record.data.parentFolderId
+        : undefined
+}
+
 export function planDirectoryParentMigration(
     folderRecords: TglfsFolderRecord[],
     manifestRecords: TglfsFolderManifestRecord[],
@@ -38,6 +44,7 @@ export function planDirectoryParentMigration(
         for (const entry of Object.values(manifestRecord.data.entries)) {
             if (entry.deleted) continue
             if (entry.kind === "folder" && entry.folderId) {
+                if (entry.folderId === parentFolderId) continue
                 recordParent(folderParents, folderParentConflicts, entry.folderId, parentFolderId)
             }
             if (entry.kind === "file" && entry.ufid) {
@@ -49,7 +56,7 @@ export function planDirectoryParentMigration(
     const folderUpdates: DirectoryParentMigrationPlan["folderUpdates"] = []
     for (const record of folderRecords) {
         if (folderParentConflicts.has(record.data.folderId)) continue
-        const desiredParent = folderParents.get(record.data.folderId) || record.data.parentFolderId || TGLFS_ROOT_PARENT_ID
+        const desiredParent = folderParents.get(record.data.folderId) || folderParentFolderId(record) || TGLFS_ROOT_PARENT_ID
         if (record.data.parentFolderId !== desiredParent) {
             folderUpdates.push({ record, parentFolderId: desiredParent })
         }
