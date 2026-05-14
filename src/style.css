@@ -1297,11 +1297,19 @@ div#controls button#fileBrowserButton {
     border-bottom-right-radius: 0;
 }
 
+div#controls button#migrateDirectoryParentsButton {
+    margin-top: -1px;
+    border-bottom: 0;
+    border-radius: 0;
+}
+
 div#controls button#downloadFileLegacyButton {
     margin-top: -1px;
     margin-bottom: 10px;
     border-top-left-radius: 0;
     border-top-right-radius: 0;
+    border-bottom-left-radius: var(--fx-radius-sm);
+    border-bottom-right-radius: var(--fx-radius-sm);
 }
 
 .dot-separator {
