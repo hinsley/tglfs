@@ -21,6 +21,7 @@ import {
 } from "../packages/tglfs-cli/src/shared/file-cards"
 import { TGLFS_ROOT_PARENT_ID } from "../packages/tglfs-cli/src/shared/constants"
 import { planDirectoryParentMigration } from "../packages/tglfs-cli/src/shared/directory-migration"
+import { extractTelegramFloodWaitSeconds } from "../packages/tglfs-cli/src/shared/telegram-rate-limit"
 import {
     TGLFS_FOLDER_ENTRIES_MIME_TYPE,
     TGLFS_FOLDER_TYPE,
@@ -76,6 +77,9 @@ const DOWNLOAD_PART_SIZE = 1024 * 1024 // 1 MiB.
 const UPLOAD_PART_SIZE = 512 * 1024 // 512 KiB.
 const BATCH_LIMIT = 50 // How many messages to manipulate at a time with forwarding/deletion.
 const BATCH_DELAY = 1000 // How many milliseconds to wait before processing the next batch (may prevent spam bans).
+const DIRECTORY_MIGRATION_EDIT_DELAY_MS = 10_000
+const DIRECTORY_MIGRATION_FLOOD_WAIT_PADDING_MS = 10_000
+const DIRECTORY_MIGRATION_RECOVERY_EDIT_DELAY_MS = 30_000
 
 // FileCardData is defined in src/types/models.ts.
 
@@ -1850,7 +1854,70 @@ export async function getFolderManifest(
     return null
 }
 
-async function listAllFileCardRecords(client: TelegramClient): Promise<FileCardRecord[]> {
+type DirectoryParentMigrationPhase =
+    | "scanning-folders"
+    | "reading-manifests"
+    | "scanning-files"
+    | "planning"
+    | "editing-folders"
+    | "editing-files"
+    | "waiting"
+    | "complete"
+    | "failed"
+
+export type DirectoryParentMigrationProgress = {
+    phase: DirectoryParentMigrationPhase
+    message: string
+    completed: number
+    total?: number
+    foldersScanned?: number
+    filesScanned?: number
+    manifestsRead?: number
+    foldersUpdated?: number
+    filesUpdated?: number
+    waitSeconds?: number
+}
+
+export type DirectoryParentMigrationOptions = {
+    onProgress?: (progress: DirectoryParentMigrationProgress) => void
+    editDelayMs?: number
+    floodWaitPaddingMs?: number
+}
+
+function emitDirectoryMigrationProgress(
+    options: DirectoryParentMigrationOptions | undefined,
+    progress: DirectoryParentMigrationProgress,
+) {
+    options?.onProgress?.(progress)
+}
+
+function sleep(ms: number) {
+    return new Promise<void>((resolve) => globalThis.setTimeout(resolve, ms))
+}
+
+async function waitForDirectoryMigration(
+    ms: number,
+    options: DirectoryParentMigrationOptions | undefined,
+    progress: Omit<DirectoryParentMigrationProgress, "waitSeconds">,
+) {
+    const end = Date.now() + ms
+    while (true) {
+        const remainingMs = end - Date.now()
+        if (remainingMs <= 0) {
+            return
+        }
+        emitDirectoryMigrationProgress(options, {
+            ...progress,
+            waitSeconds: Math.ceil(remainingMs / 1000),
+        })
+        await sleep(Math.min(1000, remainingMs))
+    }
+}
+
+async function listAllFileCardRecords(
+    client: TelegramClient,
+    options?: DirectoryParentMigrationOptions,
+): Promise<FileCardRecord[]> {
     const records: FileCardRecord[] = []
     const seen = new Set<number>()
     let offsetId: number | undefined
@@ -1862,6 +1929,12 @@ async function listAllFileCardRecords(client: TelegramClient): Promise<FileCardR
                 records.push(record)
             }
         }
+        emitDirectoryMigrationProgress(options, {
+            phase: "scanning-files",
+            message: `Scanning file cards: ${records.length} found`,
+            completed: records.length,
+            filesScanned: records.length,
+        })
         if (page.length < 500) break
         const nextOffsetId = page[page.length - 1]?.msgId
         if (!nextOffsetId || nextOffsetId === offsetId) break
@@ -1870,7 +1943,10 @@ async function listAllFileCardRecords(client: TelegramClient): Promise<FileCardR
     return records
 }
 
-async function listAllFolderRecords(client: TelegramClient): Promise<TglfsFolderRecord[]> {
+async function listAllFolderRecords(
+    client: TelegramClient,
+    options?: DirectoryParentMigrationOptions,
+): Promise<TglfsFolderRecord[]> {
     const records: TglfsFolderRecord[] = []
     const seen = new Set<string>()
     let offsetId: number | undefined
@@ -1882,6 +1958,12 @@ async function listAllFolderRecords(client: TelegramClient): Promise<TglfsFolder
                 records.push(record)
             }
         }
+        emitDirectoryMigrationProgress(options, {
+            phase: "scanning-folders",
+            message: `Scanning folders: ${records.length} found`,
+            completed: records.length,
+            foldersScanned: records.length,
+        })
         if (page.length < 500) break
         const nextOffsetId = page[page.length - 1]?.msgId
         if (!nextOffsetId || nextOffsetId === offsetId) break
@@ -1900,34 +1982,215 @@ export type DirectoryParentMigrationResult = {
     fileParentConflicts: string[]
 }
 
-export async function migrateDirectoryParentRefs(client: TelegramClient): Promise<DirectoryParentMigrationResult> {
+async function runDirectoryMigrationEdit(
+    operation: () => Promise<void>,
+    options: DirectoryParentMigrationOptions | undefined,
+    progress: Omit<DirectoryParentMigrationProgress, "waitSeconds">,
+): Promise<boolean> {
+    let slowedAfterFloodWait = false
+    while (true) {
+        try {
+            emitDirectoryMigrationProgress(options, progress)
+            await operation()
+            return slowedAfterFloodWait
+        } catch (error) {
+            const floodWaitSeconds = extractTelegramFloodWaitSeconds(error)
+            if (!floodWaitSeconds) {
+                throw error
+            }
+            slowedAfterFloodWait = true
+            const paddingMs = options?.floodWaitPaddingMs ?? DIRECTORY_MIGRATION_FLOOD_WAIT_PADDING_MS
+            await waitForDirectoryMigration(
+                floodWaitSeconds * 1000 + paddingMs,
+                options,
+                {
+                    ...progress,
+                    phase: "waiting",
+                    message: `Telegram requested a ${floodWaitSeconds}s wait. Waiting and then resuming.`,
+                },
+            )
+        }
+    }
+}
+
+export async function migrateDirectoryParentRefs(
+    client: TelegramClient,
+    options?: DirectoryParentMigrationOptions,
+): Promise<DirectoryParentMigrationResult> {
     await gramJsReady
     const now = new Date().toISOString()
-    const folderRecords = await listAllFolderRecords(client)
-    const manifestRecords = (await Promise.all(
-        folderRecords.map((record) => getFolderManifest(client, record.data.folderId).catch(() => null)),
-    )).filter((record): record is TglfsFolderManifestRecord => !!record)
-    const fileRecords = await listAllFileCardRecords(client)
+    emitDirectoryMigrationProgress(options, {
+        phase: "scanning-folders",
+        message: "Scanning folders...",
+        completed: 0,
+    })
+    const folderRecords = await listAllFolderRecords(client, options)
+
+    const manifestRecords: TglfsFolderManifestRecord[] = []
+    for (const [index, record] of folderRecords.entries()) {
+        const manifest = await getFolderManifest(client, record.data.folderId).catch(() => null)
+        if (manifest) {
+            manifestRecords.push(manifest)
+        }
+        emitDirectoryMigrationProgress(options, {
+            phase: "reading-manifests",
+            message: `Reading folder manifests: ${index + 1} / ${folderRecords.length}`,
+            completed: index + 1,
+            total: folderRecords.length,
+            foldersScanned: folderRecords.length,
+            manifestsRead: manifestRecords.length,
+        })
+    }
+
+    emitDirectoryMigrationProgress(options, {
+        phase: "scanning-files",
+        message: "Scanning file cards...",
+        completed: 0,
+        foldersScanned: folderRecords.length,
+        manifestsRead: manifestRecords.length,
+    })
+    const fileRecords = await listAllFileCardRecords(client, options)
+    emitDirectoryMigrationProgress(options, {
+        phase: "planning",
+        message: "Planning parent-ref updates...",
+        completed: 0,
+        foldersScanned: folderRecords.length,
+        filesScanned: fileRecords.length,
+        manifestsRead: manifestRecords.length,
+    })
     const plan = planDirectoryParentMigration(folderRecords, manifestRecords, fileRecords)
+    const totalUpdates = plan.folderUpdates.length + plan.fileUpdates.length
+    let completedUpdates = 0
+    let foldersUpdated = 0
+    let filesUpdated = 0
+    let editDelayMs = options?.editDelayMs ?? DIRECTORY_MIGRATION_EDIT_DELAY_MS
+
+    const waitBeforeNextEdit = async (phase: DirectoryParentMigrationPhase, message: string) => {
+        if (completedUpdates === 0 || editDelayMs <= 0) {
+            return
+        }
+        await waitForDirectoryMigration(editDelayMs, options, {
+            phase: "waiting",
+            message,
+            completed: completedUpdates,
+            total: totalUpdates,
+            foldersScanned: folderRecords.length,
+            filesScanned: fileRecords.length,
+            manifestsRead: manifestRecords.length,
+            foldersUpdated,
+            filesUpdated,
+        })
+        emitDirectoryMigrationProgress(options, {
+            phase,
+            message: `Applying parent-ref updates: ${completedUpdates} / ${totalUpdates}`,
+            completed: completedUpdates,
+            total: totalUpdates,
+            foldersScanned: folderRecords.length,
+            filesScanned: fileRecords.length,
+            manifestsRead: manifestRecords.length,
+            foldersUpdated,
+            filesUpdated,
+        })
+    }
 
     for (const update of plan.folderUpdates) {
-        await writeFolderRecord(client, {
-            ...update.record.data,
-            parentFolderId: update.parentFolderId,
-            updatedAt: now,
-        }, update.record)
+        await waitBeforeNextEdit("editing-folders", "Pacing Telegram edits before the next folder update...")
+        const slowedAfterFloodWait = await runDirectoryMigrationEdit(
+            () => writeFolderRecord(client, {
+                ...update.record.data,
+                parentFolderId: update.parentFolderId,
+                updatedAt: now,
+            }, update.record).then(() => undefined),
+            options,
+            {
+                phase: "editing-folders",
+                message: `Updating folder parent refs: ${foldersUpdated + 1} / ${plan.folderUpdates.length}`,
+                completed: completedUpdates,
+                total: totalUpdates,
+                foldersScanned: folderRecords.length,
+                filesScanned: fileRecords.length,
+                manifestsRead: manifestRecords.length,
+                foldersUpdated,
+                filesUpdated,
+            },
+        )
+        if (slowedAfterFloodWait) {
+            editDelayMs = Math.max(editDelayMs, DIRECTORY_MIGRATION_RECOVERY_EDIT_DELAY_MS)
+        }
+        foldersUpdated += 1
+        completedUpdates += 1
+        emitDirectoryMigrationProgress(options, {
+            phase: "editing-folders",
+            message: `Updated folder parent refs: ${foldersUpdated} / ${plan.folderUpdates.length}`,
+            completed: completedUpdates,
+            total: totalUpdates,
+            foldersScanned: folderRecords.length,
+            filesScanned: fileRecords.length,
+            manifestsRead: manifestRecords.length,
+            foldersUpdated,
+            filesUpdated,
+        })
     }
 
     for (const update of plan.fileUpdates) {
-        await updateFileCardParent(client, update.record.msgId, "me", update.record.data, update.parentFolderId)
+        await waitBeforeNextEdit("editing-files", "Pacing Telegram edits before the next file-card update...")
+        const slowedAfterFloodWait = await runDirectoryMigrationEdit(
+            () => updateFileCardParent(
+                client,
+                update.record.msgId,
+                "me",
+                update.record.data,
+                update.parentFolderId,
+            ).then(() => undefined),
+            options,
+            {
+                phase: "editing-files",
+                message: `Updating file-card parent refs: ${filesUpdated + 1} / ${plan.fileUpdates.length}`,
+                completed: completedUpdates,
+                total: totalUpdates,
+                foldersScanned: folderRecords.length,
+                filesScanned: fileRecords.length,
+                manifestsRead: manifestRecords.length,
+                foldersUpdated,
+                filesUpdated,
+            },
+        )
+        if (slowedAfterFloodWait) {
+            editDelayMs = Math.max(editDelayMs, DIRECTORY_MIGRATION_RECOVERY_EDIT_DELAY_MS)
+        }
+        filesUpdated += 1
+        completedUpdates += 1
+        emitDirectoryMigrationProgress(options, {
+            phase: "editing-files",
+            message: `Updated file-card parent refs: ${filesUpdated} / ${plan.fileUpdates.length}`,
+            completed: completedUpdates,
+            total: totalUpdates,
+            foldersScanned: folderRecords.length,
+            filesScanned: fileRecords.length,
+            manifestsRead: manifestRecords.length,
+            foldersUpdated,
+            filesUpdated,
+        })
     }
+
+    emitDirectoryMigrationProgress(options, {
+        phase: "complete",
+        message: "Folder index migration complete.",
+        completed: totalUpdates,
+        total: totalUpdates,
+        foldersScanned: folderRecords.length,
+        filesScanned: fileRecords.length,
+        manifestsRead: manifestRecords.length,
+        foldersUpdated,
+        filesUpdated,
+    })
 
     return {
         foldersScanned: folderRecords.length,
         filesScanned: fileRecords.length,
         manifestsRead: manifestRecords.length,
-        foldersUpdated: plan.folderUpdates.length,
-        filesUpdated: plan.fileUpdates.length,
+        foldersUpdated,
+        filesUpdated,
         folderParentConflicts: plan.folderParentConflicts,
         fileParentConflicts: plan.fileParentConflicts,
     }

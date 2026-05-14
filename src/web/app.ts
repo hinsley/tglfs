@@ -2,6 +2,7 @@ import "./polyfills"
 
 type TelegramModule = typeof import("../telegram")
 type BrowserModule = typeof import("./browser")
+type DirectoryParentMigrationProgress = import("../telegram").DirectoryParentMigrationProgress
 
 let telegramModulePromise: Promise<TelegramModule> | null = null
 let browserModulePromise: Promise<BrowserModule> | null = null
@@ -107,6 +108,43 @@ function queueShareFiles(files: File[]) {
     }
     pendingShareFiles = pendingShareFiles ? pendingShareFiles.concat(files) : files
     void maybeUploadSharedFiles()
+}
+
+function renderDirectoryMigrationProgress(progress: DirectoryParentMigrationProgress) {
+    const progressDiv = document.getElementById("progressBarContainer")
+    const progressBarText = document.getElementById("progressBarText")
+    const progressBar = document.getElementById("progress") as HTMLElement | null
+    const progressBytesText = document.getElementById("progressBytesText")
+    const progressTimeText = document.getElementById("progressTimeText")
+    progressDiv?.removeAttribute("hidden")
+
+    const total = progress.total ?? 0
+    const completed = progress.completed ?? 0
+    const percentage = total > 0 ? Math.max(0, Math.min(100, Math.round((completed / total) * 100))) : 0
+    if (progressBar) {
+        progressBar.style.width = `${percentage}%`
+        progressBar.textContent = total > 0 ? `${percentage}%` : ""
+        progressBar.setAttribute("aria-valuenow", percentage.toString())
+    }
+    if (progressBarText) {
+        progressBarText.textContent = progress.message
+    }
+    if (progressBytesText) {
+        progressBytesText.textContent = total > 0
+            ? `${completed} / ${total} records`
+            : `${completed} records`
+    }
+    if (progressTimeText) {
+        const counts = [
+            progress.foldersScanned !== undefined ? `Folders scanned: ${progress.foldersScanned}` : "",
+            progress.manifestsRead !== undefined ? `Manifests read: ${progress.manifestsRead}` : "",
+            progress.filesScanned !== undefined ? `Files scanned: ${progress.filesScanned}` : "",
+            progress.foldersUpdated !== undefined ? `Folders updated: ${progress.foldersUpdated}` : "",
+            progress.filesUpdated !== undefined ? `Files updated: ${progress.filesUpdated}` : "",
+            progress.waitSeconds !== undefined ? `Waiting: ${progress.waitSeconds}s` : "",
+        ].filter(Boolean)
+        progressTimeText.textContent = counts.join(" | ")
+    }
 }
 
 function normalizeSharedFiles(payload: unknown): File[] {
@@ -642,16 +680,25 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
                 return
             }
             const ok = confirm(
-                "Migrate folder indexing?\n\nThis will edit TGLFS folder and file-card messages in your Telegram Saved Messages so directory browsing can use parent references.",
+                "Migrate folder indexing?\n\nThis will edit TGLFS folder and file-card messages in your Telegram Saved Messages so directory browsing can use parent references.\n\nThe migration runs slowly to stay under Telegram rate limits and may pause if Telegram asks it to wait.",
             )
             if (!ok) return
 
             const originalText = migrateDirectoryParentsButton.textContent ?? "Migrate Folder Index"
             migrateDirectoryParentsButton.disabled = true
             migrateDirectoryParentsButton.textContent = "Migrating..."
+            let migrationSucceeded = false
             try {
                 const Telegram = await getTelegramModule()
-                const result = await Telegram.migrateDirectoryParentRefs(activeClient)
+                renderDirectoryMigrationProgress({
+                    phase: "scanning-folders",
+                    message: "Starting folder index migration...",
+                    completed: 0,
+                })
+                const result = await Telegram.migrateDirectoryParentRefs(activeClient, {
+                    onProgress: renderDirectoryMigrationProgress,
+                })
+                migrationSucceeded = true
                 const conflictLines = [
                     result.folderParentConflicts.length
                         ? `Folder conflicts skipped: ${result.folderParentConflicts.length}`
@@ -674,10 +721,18 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
             } catch (error) {
                 console.error(error)
                 const message = error instanceof Error ? error.message : String(error)
+                renderDirectoryMigrationProgress({
+                    phase: "failed",
+                    message: "Folder index migration failed.",
+                    completed: 0,
+                })
                 alert(`Folder index migration failed.\n\n${message}`)
             } finally {
                 migrateDirectoryParentsButton.disabled = false
                 migrateDirectoryParentsButton.textContent = originalText
+                if (migrationSucceeded) {
+                    document.getElementById("progressBarContainer")?.setAttribute("hidden", "")
+                }
             }
         })
 
