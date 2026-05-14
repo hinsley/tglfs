@@ -22,7 +22,12 @@ import {
 import { TGLFS_ROOT_PARENT_ID } from "../packages/tglfs-cli/src/shared/constants"
 import { planDirectoryParentMigration } from "../packages/tglfs-cli/src/shared/directory-migration"
 import { extractTelegramFloodWaitSeconds } from "../packages/tglfs-cli/src/shared/telegram-rate-limit"
-import { createTelegramWebDcFallbackSocket } from "../packages/tglfs-cli/src/shared/telegram-web-dc"
+import {
+    TELEGRAM_WEB_DC_ENDPOINTS,
+    getTelegramWebDcEndpoint,
+    getTelegramWebDcFallbackHosts,
+    isTelegramWebDcConnectionError,
+} from "../packages/tglfs-cli/src/shared/telegram-web-dc"
 import {
     TGLFS_FOLDER_ENTRIES_MIME_TYPE,
     TGLFS_FOLDER_TYPE,
@@ -83,6 +88,7 @@ const BATCH_DELAY = 1000 // How many milliseconds to wait before processing the 
 const DIRECTORY_MIGRATION_EDIT_DELAY_MS = 60_000
 const DIRECTORY_MIGRATION_FLOOD_WAIT_PADDING_MS = 10_000
 const DIRECTORY_MIGRATION_RECOVERY_EDIT_DELAY_MS = 120_000
+const TELEGRAM_WEB_DC_START_TIMEOUT_MS = 10_000
 
 // FileCardData is defined in src/types/models.ts.
 
@@ -2664,21 +2670,107 @@ export type AuthHandlers = {
     onError?: (error: unknown) => void
 }
 
-export async function init(config: Config.Config, authHandlers: AuthHandlers = {}): Promise<TelegramClient> {
-    await gramJsReady
-    console.log("Starting up...")
-    // Load previous session from a session string.
-    const storeSession = new StoreSession("./tglfs.session")
-    // Connect.
-    const client = new TelegramClientCtor(storeSession, config.apiId, config.apiHash, {
+type MutableTelegramStoreSession = {
+    load: () => Promise<void>
+    setDC: (dcId: number, serverAddress: string, port: number) => void
+    setAuthKey: (authKey: unknown) => void
+    dcId?: number
+    serverAddress?: string
+    port?: number
+    authKey?: unknown
+}
+
+type TelegramSessionSnapshot = {
+    dcId?: number
+    serverAddress?: string
+    port?: number
+    authKey?: unknown
+}
+
+function snapshotTelegramSession(session: MutableTelegramStoreSession): TelegramSessionSnapshot {
+    return {
+        dcId: session.dcId,
+        serverAddress: session.serverAddress,
+        port: session.port,
+        authKey: session.authKey,
+    }
+}
+
+function restoreTelegramSession(session: MutableTelegramStoreSession, snapshot: TelegramSessionSnapshot) {
+    if (snapshot.dcId !== undefined && snapshot.serverAddress && snapshot.port !== undefined) {
+        session.setDC(snapshot.dcId, snapshot.serverAddress, snapshot.port)
+    }
+    session.setAuthKey(snapshot.authKey)
+}
+
+function configureTelegramSessionForWebDc(
+    session: MutableTelegramStoreSession,
+    host: string,
+    originalSession: TelegramSessionSnapshot,
+) {
+    const endpoint = getTelegramWebDcEndpoint(host)
+    if (!endpoint) {
+        return host
+    }
+
+    session.setDC(endpoint.dcId, endpoint.host, 443)
+    if (originalSession.dcId === endpoint.dcId) {
+        session.setAuthKey(originalSession.authKey)
+    } else {
+        // Auth keys are DC-scoped. Reusing a Pluto key against Venus just turns
+        // a DC outage into another handshake failure.
+        session.setAuthKey(undefined)
+    }
+    return endpoint.host
+}
+
+function createBrowserTelegramClient(config: Config.Config, storeSession: MutableTelegramStoreSession): TelegramClient {
+    return new TelegramClientCtor(storeSession as any, config.apiId, config.apiHash, {
         connectionRetries: 5,
         useWSS: true,
-        networkSocket: createTelegramWebDcFallbackSocket(PromisedWebSocketsCtor) as any,
+        networkSocket: PromisedWebSocketsCtor as any,
     })
-    // Provide credentials to the server.
-    await client.start({
+}
+
+async function connectTelegramClientWithTimeout(client: TelegramClient, host: string): Promise<void> {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const connectPromise = client.connect()
+    connectPromise.catch(() => undefined)
+    try {
+        await Promise.race([
+            connectPromise,
+            new Promise<never>((_, reject) => {
+                timeout = setTimeout(() => {
+                    reject(new Error(`Timed out starting Telegram web DC ${host}`))
+                }, TELEGRAM_WEB_DC_START_TIMEOUT_MS)
+            }),
+        ])
+    } finally {
+        if (timeout !== undefined) {
+            clearTimeout(timeout)
+        }
+    }
+    if (!client.connected) {
+        throw new Error(`Telegram web DC ${host} did not connect`)
+    }
+}
+
+async function startTelegramClientWithWebDcFallback(
+    config: Config.Config,
+    storeSession: MutableTelegramStoreSession,
+    authHandlers: AuthHandlers,
+): Promise<TelegramClient> {
+    await storeSession.load()
+    const originalSession = snapshotTelegramSession(storeSession)
+    const initialAddress = originalSession.serverAddress ?? TELEGRAM_WEB_DC_ENDPOINTS[3].host
+    const hosts = getTelegramWebDcFallbackHosts(initialAddress)
+    let lastError: unknown
+    let authPromptStarted = false
+
+    const startOptions = {
         phoneNumber: config.phone,
         password: async () => {
+            authPromptStarted = true
             if (authHandlers.getPassword) {
                 const pwd = await authHandlers.getPassword()
                 if (!pwd) {
@@ -2693,6 +2785,7 @@ export async function init(config: Config.Config, authHandlers: AuthHandlers = {
             return pwd
         },
         phoneCode: async () => {
+            authPromptStarted = true
             if (authHandlers.getPhoneCode) {
                 const code = await authHandlers.getPhoneCode()
                 if (!code) {
@@ -2710,7 +2803,37 @@ export async function init(config: Config.Config, authHandlers: AuthHandlers = {
             authHandlers.onError?.(error)
             console.error(error)
         },
-    })
+    }
+
+    for (const host of hosts) {
+        const activeHost = configureTelegramSessionForWebDc(storeSession, host, originalSession)
+        const client = createBrowserTelegramClient(config, storeSession)
+        try {
+            console.info(`Trying Telegram web DC ${activeHost}`)
+            await connectTelegramClientWithTimeout(client, activeHost)
+            await client.start(startOptions)
+            return client
+        } catch (error) {
+            lastError = error
+            await client.disconnect().catch(() => undefined)
+            if (authPromptStarted || !isTelegramWebDcConnectionError(error)) {
+                restoreTelegramSession(storeSession, originalSession)
+                throw error
+            }
+            console.warn(`Telegram web DC ${activeHost} failed, trying next fallback`, error)
+        }
+    }
+
+    restoreTelegramSession(storeSession, originalSession)
+    throw lastError instanceof Error ? lastError : new Error("Failed to connect to Telegram web DCs")
+}
+
+export async function init(config: Config.Config, authHandlers: AuthHandlers = {}): Promise<TelegramClient> {
+    await gramJsReady
+    console.log("Starting up...")
+    // Load previous session from a session string.
+    const storeSession = new StoreSession("./tglfs.session")
+    const client = await startTelegramClientWithWebDcFallback(config, storeSession, authHandlers)
     console.log("You are now logged in!")
     return client
 }

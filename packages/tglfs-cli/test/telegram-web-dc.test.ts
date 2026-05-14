@@ -4,7 +4,9 @@ import test from "node:test"
 import {
     TELEGRAM_WEB_DC_ENDPOINTS,
     createTelegramWebDcFallbackSocket,
+    getTelegramWebDcEndpoint,
     getTelegramWebDcFallbackHosts,
+    isTelegramWebDcConnectionError,
 } from "../src/shared/telegram-web-dc.js"
 
 test("Telegram web DC fallback hosts use normal endpoints only", () => {
@@ -42,6 +44,19 @@ test("Telegram web DC fallback starts with the requested host", () => {
             "flora.web.telegram.org",
         ],
     )
+})
+
+test("Telegram web DC endpoint lookup accepts hosts and websocket URLs", () => {
+    assert.deepEqual(getTelegramWebDcEndpoint("pluto.web.telegram.org"), TELEGRAM_WEB_DC_ENDPOINTS[0])
+    assert.deepEqual(getTelegramWebDcEndpoint("wss://venus.web.telegram.org/apiws"), TELEGRAM_WEB_DC_ENDPOINTS[1])
+    assert.equal(getTelegramWebDcEndpoint("149.154.167.91"), undefined)
+})
+
+test("Telegram web DC connection error detection covers early handshake closes", () => {
+    assert.equal(isTelegramWebDcConnectionError(new Error("Not connected")), true)
+    assert.equal(isTelegramWebDcConnectionError(new Error("Connection closed while receiving data")), true)
+    assert.equal(isTelegramWebDcConnectionError(new Error("Timed out starting Telegram web DC pluto.web.telegram.org")), true)
+    assert.equal(isTelegramWebDcConnectionError(new Error("PHONE_CODE_INVALID")), false)
 })
 
 test("Telegram web DC fallback socket retries the next normal host", async () => {

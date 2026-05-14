@@ -8,6 +8,8 @@ export const TELEGRAM_WEB_DC_ENDPOINTS = [
 
 export const TELEGRAM_WEB_DC_FALLBACK_CONNECT_TIMEOUT_MS = 5_000
 
+export type TelegramWebDcEndpoint = (typeof TELEGRAM_WEB_DC_ENDPOINTS)[number]
+
 export type TelegramWebSocketLike = {
     connect(port: number, ip: string, testServers?: boolean): Promise<unknown>
     readExactly(number: number): Promise<Buffer>
@@ -22,7 +24,7 @@ export type TelegramWebSocketConstructor<T extends TelegramWebSocketLike = Teleg
     ...args: unknown[]
 ) => T
 
-function normalizeTelegramWebHost(value: string) {
+export function normalizeTelegramWebHost(value: string) {
     return value
         .trim()
         .replace(/^wss?:\/\//i, "")
@@ -32,6 +34,11 @@ function normalizeTelegramWebHost(value: string) {
         .toLowerCase()
 }
 
+export function getTelegramWebDcEndpoint(value: string): TelegramWebDcEndpoint | undefined {
+    const host = normalizeTelegramWebHost(value)
+    return TELEGRAM_WEB_DC_ENDPOINTS.find((endpoint) => endpoint.host === host)
+}
+
 export function getTelegramWebDcFallbackHosts(serverAddress: string): string[] {
     const host = normalizeTelegramWebHost(serverAddress)
     const knownHosts = TELEGRAM_WEB_DC_ENDPOINTS.map((endpoint) => endpoint.host)
@@ -39,6 +46,22 @@ export function getTelegramWebDcFallbackHosts(serverAddress: string): string[] {
         return [serverAddress]
     }
     return [host, ...knownHosts.filter((candidate) => candidate !== host)]
+}
+
+export function isTelegramWebDcConnectionError(error: unknown): boolean {
+    const message = error instanceof Error
+        ? `${error.name}: ${error.message}`
+        : String(error)
+    return (
+        /not connected/i.test(message) ||
+        /connection closed/i.test(message) ||
+        /websocket/i.test(message) ||
+        /timed out/i.test(message) ||
+        /did not connect/i.test(message) ||
+        /failed to connect/i.test(message) ||
+        /network/i.test(message) ||
+        /disconnected/i.test(message)
+    )
 }
 
 async function withConnectTimeout<T>(
