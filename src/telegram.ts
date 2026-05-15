@@ -1159,6 +1159,20 @@ export async function fileUnsend(client: TelegramClient, config: Config.Config) 
     }
 }
 
+export function resolveUploadParentFolderId(
+    options: { parentFolderId?: string } = {},
+    browserContext: { browserWasVisible?: boolean; browserParentFolderId?: string } = {},
+) {
+    const explicitParentFolderId = options.parentFolderId?.trim()
+    if (explicitParentFolderId) {
+        return explicitParentFolderId
+    }
+    const browserParentFolderId = browserContext.browserWasVisible
+        ? browserContext.browserParentFolderId?.trim()
+        : undefined
+    return browserParentFolderId || TGLFS_ROOT_PARENT_ID
+}
+
 export async function fileUpload(
     client: TelegramClient,
     config: Config.Config,
@@ -1368,10 +1382,8 @@ export async function fileUpload(
             return
         }
 
-        const browserDiv = document.getElementById("fileBrowser")
-        const browserVisible = !!browserDiv && !browserDiv.hasAttribute("hidden")
-        const browserParentFolderId = browserVisible ? (window as any).__tglfsUploadParentFolderId : undefined
-        const parentFolderId = options.parentFolderId?.trim() || browserParentFolderId?.trim?.() || TGLFS_ROOT_PARENT_ID
+        const browserParentFolderId = (window as any).__tglfsUploadParentFolderId
+        const parentFolderId = resolveUploadParentFolderId(options, { browserWasVisible, browserParentFolderId })
 
         let fileCardData: FileCardData = createFileCardData({
             name: displayName,

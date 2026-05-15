@@ -97,3 +97,20 @@ test("web directory entry count uses count-only folder and file searches", async
         ],
     )
 })
+
+test("upload parent resolution keeps browser folder after progress UI hides browser", async () => {
+    const { resolveUploadParentFolderId } = await import("../../../src/telegram.ts")
+
+    assert.equal(
+        resolveUploadParentFolderId({}, { browserWasVisible: true, browserParentFolderId: "folder-current" }),
+        "folder-current",
+    )
+    assert.equal(
+        resolveUploadParentFolderId({}, { browserWasVisible: false, browserParentFolderId: "folder-current" }),
+        "tglfs-root",
+    )
+    assert.equal(
+        resolveUploadParentFolderId({ parentFolderId: "folder-explicit" }, { browserWasVisible: true, browserParentFolderId: "folder-current" }),
+        "folder-explicit",
+    )
+})
