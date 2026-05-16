@@ -1173,6 +1173,13 @@ export function resolveUploadParentFolderId(
     return browserParentFolderId || TGLFS_ROOT_PARENT_ID
 }
 
+export function restoreUploadUiAndMaybeRefreshBrowser(restoreUploadUi: () => void, uploadCompleted: boolean) {
+    restoreUploadUi()
+    if (uploadCompleted) {
+        window.dispatchEvent(new Event("tglfs:refresh-browser"))
+    }
+}
+
 export async function fileUpload(
     client: TelegramClient,
     config: Config.Config,
@@ -1344,6 +1351,7 @@ export async function fileUpload(
     const uploadPhaseLabel = `Uploading ${displayName}`
     setProgressPhase(ufidPhaseLabel)
 
+    let uploadCompleted = false
     try {
         const salt = window.crypto.getRandomValues(new Uint8Array(16))
         const aesKey = await Encryption.deriveAESKeyFromPassword(password, salt)
@@ -1718,6 +1726,7 @@ export async function fileUpload(
                 message: serializeFileCardMessage(fileCardData),
             }),
         )
+        uploadCompleted = true
 
         const humanReadableFileSize = humanReadableSize(fileCardData.size)
         const date = new Date(fileCardMessage.date * 1000)
@@ -1738,14 +1747,10 @@ export async function fileUpload(
         alert(`File upload complete:\n\n${fileInfo}\n\nCopying UFID to clipboard.`)
 
         await navigator.clipboard.writeText(fileCardData.ufid)
-
-        // Notify the file browser (if visible) to refresh its listing.
-        window.dispatchEvent(new Event("tglfs:refresh-browser"))
     } catch (error) {
         console.error(error)
     } finally {
-        // Restore previous UI.
-        restoreUploadUi()
+        restoreUploadUiAndMaybeRefreshBrowser(restoreUploadUi, uploadCompleted)
     }
 }
 

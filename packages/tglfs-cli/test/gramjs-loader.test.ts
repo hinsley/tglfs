@@ -114,3 +114,48 @@ test("upload parent resolution keeps browser folder after progress UI hides brow
         "folder-explicit",
     )
 })
+
+test("completed web upload restores browser UI before dispatching refresh", async () => {
+    const { restoreUploadUiAndMaybeRefreshBrowser } = await import("../../../src/telegram.ts")
+    const originalWindow = (globalThis as any).window
+    const originalEvent = (globalThis as any).Event
+    const calls: string[] = []
+
+    ;(globalThis as any).Event = class {
+        type: string
+
+        constructor(type: string) {
+            this.type = type
+        }
+    }
+    ;(globalThis as any).window = {
+        dispatchEvent(event: { type: string }) {
+            calls.push(`dispatch:${event.type}`)
+            return true
+        },
+    }
+
+    try {
+        restoreUploadUiAndMaybeRefreshBrowser(() => {
+            calls.push("restore")
+        }, true)
+        assert.deepEqual(calls, ["restore", "dispatch:tglfs:refresh-browser"])
+
+        calls.length = 0
+        restoreUploadUiAndMaybeRefreshBrowser(() => {
+            calls.push("restore")
+        }, false)
+        assert.deepEqual(calls, ["restore"])
+    } finally {
+        if (originalWindow === undefined) {
+            delete (globalThis as any).window
+        } else {
+            ;(globalThis as any).window = originalWindow
+        }
+        if (originalEvent === undefined) {
+            delete (globalThis as any).Event
+        } else {
+            ;(globalThis as any).Event = originalEvent
+        }
+    }
+})
