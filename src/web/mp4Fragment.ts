@@ -14,6 +14,25 @@ function readUint32(bytes: Uint8Array, offset: number): number {
     return bytes[offset] * 0x1000000 + bytes[offset + 1] * 0x10000 + bytes[offset + 2] * 0x100 + bytes[offset + 3]
 }
 
+function writeUint32(bytes: Uint8Array, offset: number, value: number) {
+    bytes[offset] = Math.floor(value / 0x1000000) & 0xff
+    bytes[offset + 1] = Math.floor(value / 0x10000) & 0xff
+    bytes[offset + 2] = Math.floor(value / 0x100) & 0xff
+    bytes[offset + 3] = value & 0xff
+}
+
+function readUint64(bytes: Uint8Array, offset: number): number {
+    const value = readUint32(bytes, offset) * 2 ** 32 + readUint32(bytes, offset + 4)
+    if (!Number.isSafeInteger(value)) throw new Error("The generated MP4 duration is too large to read safely.")
+    return value
+}
+
+function writeUint64(bytes: Uint8Array, offset: number, value: number) {
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error("The generated MP4 duration is too large to write safely.")
+    writeUint32(bytes, offset, Math.floor(value / 2 ** 32))
+    writeUint32(bytes, offset + 4, value >>> 0)
+}
+
 function readBox(bytes: Uint8Array, offset: number, limit: number): Mp4Box {
     if (offset + 8 > limit) throw new Error("The generated MP4 contains an incomplete box header.")
 
@@ -23,9 +42,8 @@ function readBox(bytes: Uint8Array, offset: number, limit: number): Mp4Box {
     let size = size32
     if (size32 === 1) {
         if (offset + 16 > limit) throw new Error("The generated MP4 contains an incomplete extended box header.")
-        size = readUint32(bytes, offset + 8) * 2 ** 32 + readUint32(bytes, offset + 12)
+        size = readUint64(bytes, offset + 8)
         headerSize = 16
-        if (!Number.isSafeInteger(size)) throw new Error("The generated MP4 contains a box too large to validate safely.")
     } else if (size32 === 0) {
         size = limit - offset
     }
@@ -43,6 +61,61 @@ function listBoxes(bytes: Uint8Array, start = 0, end = bytes.length): Mp4Box[] {
         offset = box.end
     }
     return boxes
+}
+
+function movieHeader(bytes: Uint8Array): Mp4Box {
+    const moov = listBoxes(bytes).find((box) => box.type === "moov")
+    if (!moov) throw new Error("The generated MP4 has no moov box.")
+    const mvhd = listBoxes(bytes, moov.start + moov.headerSize, moov.end).find((box) => box.type === "mvhd")
+    if (!mvhd) throw new Error("The generated MP4 has no movie header.")
+    return mvhd
+}
+
+export function parseFfmpegDurationSeconds(message: string): number | null {
+    const match = message.match(/Duration:\s*(\d+):([0-5]\d):([0-5]\d(?:\.\d+)?)/i)
+    if (!match) return null
+    const seconds = Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : null
+}
+
+export function writeMp4MovieDuration(bytes: Uint8Array, durationSeconds: number): Uint8Array {
+    if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+        throw new Error("The generated MP4 has no finite positive duration.")
+    }
+
+    const output = bytes.slice()
+    const mvhd = movieHeader(output)
+    const fullBoxOffset = mvhd.start + mvhd.headerSize
+    const version = output[fullBoxOffset]
+    const timescaleOffset = version === 1 ? fullBoxOffset + 20 : fullBoxOffset + 12
+    const durationOffset = version === 1 ? fullBoxOffset + 24 : fullBoxOffset + 16
+    const durationSize = version === 1 ? 8 : 4
+    if (version !== 0 && version !== 1) throw new Error(`Unsupported mvhd version ${version}.`)
+    if (durationOffset + durationSize > mvhd.end) throw new Error("The generated MP4 has a truncated movie header.")
+
+    const timescale = readUint32(output, timescaleOffset)
+    if (timescale <= 0) throw new Error("The generated MP4 has an invalid movie timescale.")
+    const duration = Math.max(1, Math.round(durationSeconds * timescale))
+    if (version === 0) {
+        if (duration > 0xffffffff) throw new Error("The MP4 duration does not fit its version-0 movie header.")
+        writeUint32(output, durationOffset, duration)
+    } else {
+        writeUint64(output, durationOffset, duration)
+    }
+    return output
+}
+
+export function readMp4MovieDurationSeconds(bytes: Uint8Array): number {
+    const mvhd = movieHeader(bytes)
+    const fullBoxOffset = mvhd.start + mvhd.headerSize
+    const version = bytes[fullBoxOffset]
+    if (version !== 0 && version !== 1) throw new Error(`Unsupported mvhd version ${version}.`)
+    const timescaleOffset = version === 1 ? fullBoxOffset + 20 : fullBoxOffset + 12
+    const durationOffset = version === 1 ? fullBoxOffset + 24 : fullBoxOffset + 16
+    const timescale = readUint32(bytes, timescaleOffset)
+    const duration = version === 1 ? readUint64(bytes, durationOffset) : readUint32(bytes, durationOffset)
+    if (timescale <= 0) throw new Error("The generated MP4 has an invalid movie timescale.")
+    return duration / timescale
 }
 
 export function validateFragmentedMp4(bytes: Uint8Array): number {
@@ -95,16 +168,17 @@ export async function canUseCurrentPreview(bytes: Uint8Array, firstFragmentEnd: 
             resolve(result)
         }
         const timeout = window.setTimeout(() => finish(false), 8_000)
-        video.addEventListener("loadedmetadata", () => finish(true), { once: true })
+        video.addEventListener("loadedmetadata", () => finish(Number.isFinite(video.duration) && video.duration > 0), { once: true })
         video.addEventListener("error", () => finish(false), { once: true })
         mediaSource.addEventListener("sourceopen", () => {
             try {
                 const buffer = mediaSource.addSourceBuffer(mimeType)
-                buffer.mode = "sequence"
+                buffer.mode = "segments"
                 buffer.addEventListener("error", () => finish(false), { once: true })
                 buffer.addEventListener("updateend", () => {
-                    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) finish(true)
-                    else if (mediaSource.readyState === "open") {
+                    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+                        finish(Number.isFinite(video.duration) && video.duration > 0)
+                    } else if (mediaSource.readyState === "open") {
                         try { mediaSource.endOfStream() } catch {}
                     }
                 }, { once: true })

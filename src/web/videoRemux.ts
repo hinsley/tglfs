@@ -1,7 +1,13 @@
 import { FFmpeg } from "@ffmpeg/ffmpeg"
 import coreURL from "@ffmpeg/core?url"
 import wasmURL from "@ffmpeg/core/wasm?url"
-import { canUseCurrentPreview, supportsStreamingMp4Preview, validateFragmentedMp4 } from "./mp4Fragment"
+import {
+    canUseCurrentPreview,
+    parseFfmpegDurationSeconds,
+    supportsStreamingMp4Preview,
+    validateFragmentedMp4,
+    writeMp4MovieDuration,
+} from "./mp4Fragment"
 import { makeFallbackTranscodeArgs, makeFragmentedMp4Args } from "./videoTranscodeArgs"
 
 export type RemuxableVideoKind = "mp4" | "mov"
@@ -91,6 +97,13 @@ function outputFile(data: Uint8Array, file: File, kind: RemuxableVideoKind): Fil
     }))
 }
 
+function addFiniteDuration(data: Uint8Array, durationSeconds: number | null): Uint8Array {
+    if (!durationSeconds) {
+        throw new Error("FFmpeg did not report a finite source duration, so Preview could not build an accurate scrubber.")
+    }
+    return writeMp4MovieDuration(data, durationSeconds)
+}
+
 export async function remuxToStreamingMp4(
     file: File,
     kind: RemuxableVideoKind,
@@ -109,9 +122,11 @@ export async function remuxToStreamingMp4(
     let progressEnd = COPY_PROGRESS_END
     let logs: string[] = []
     let sawAudio = false
+    let durationSeconds: number | null = null
 
     const logHandler = ({ message }: { message: string }) => {
         if (/Stream #\d+:\d+.*Audio:/i.test(message)) sawAudio = true
+        durationSeconds ??= parseFfmpegDurationSeconds(message)
         logs.push(message)
         if (logs.length > 80) logs.shift()
     }
@@ -133,7 +148,7 @@ export async function remuxToStreamingMp4(
         const inputHasAudio = sawAudio
         if (copyExit === 0) {
             try {
-                const data = await readOutput(ffmpeg, copyName)
+                const data = addFiniteDuration(await readOutput(ffmpeg, copyName), durationSeconds)
                 const firstFragmentEnd = validateFragmentedMp4(data)
                 onProgress?.(COPY_PROGRESS_END + 2)
                 if (await canUseCurrentPreview(data, firstFragmentEnd)) {
@@ -141,7 +156,7 @@ export async function remuxToStreamingMp4(
                     return outputFile(data, file, kind)
                 }
             } catch {
-                // Invalid or unsupported copied tracks fall through to re-encoding.
+                // Invalid, durationless, or unsupported copied tracks fall through to re-encoding.
             }
         }
 
@@ -156,10 +171,10 @@ export async function remuxToStreamingMp4(
             throw new Error(`${copyFailure} Browser-compatible re-encoding failed with exit code ${transcodeExit}.${logDetails(logs)}`)
         }
 
-        const data = await readOutput(ffmpeg, transcodeName)
+        const data = addFiniteDuration(await readOutput(ffmpeg, transcodeName), durationSeconds)
         const firstFragmentEnd = validateFragmentedMp4(data)
         if (!(await canUseCurrentPreview(data, firstFragmentEnd))) {
-            throw new Error(`FFmpeg produced an MP4 that Preview still rejected.${logDetails(logs)}`)
+            throw new Error(`FFmpeg produced an MP4 that Preview still rejected or could not report a finite duration.${logDetails(logs)}`)
         }
         onProgress?.(100)
         return outputFile(data, file, kind)
