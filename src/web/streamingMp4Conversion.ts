@@ -102,7 +102,7 @@ function writeUint64(bytes: Uint8Array, offset: number, value: number) {
     writeUint32(bytes, offset + 4, value >>> 0)
 }
 
-function readCompleteBox(bytes: Uint8Array, offset: number): Mp4Box | null {
+function readCompleteBox(bytes: Uint8Array, offset: number, limit: number): Mp4Box | null {
     if (offset + 8 > limit) return null
     const size32 = readUint32(bytes, offset)
     const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7])
