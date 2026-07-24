@@ -65,7 +65,7 @@
     },
     "devDependencies": {
         "@types/node": "^25.5.0",
-        "@types/prompts": "^4.2.9",
+        "@types/prompts": "^2.4.9",
         "tsx": "^4.21.0",
         "typescript": "^5.4.3"
     }
