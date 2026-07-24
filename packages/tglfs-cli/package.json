@@ -24,7 +24,7 @@
     ],
     "type": "module",
     "bin": {
-        "tglfs": "dist/cli.js"
+        "tglfs": "dist/entry.js"
     },
     "man": [
         "./man/tglfs.1",
@@ -34,6 +34,7 @@
         "./man/tglfs-upload.1",
         "./man/tglfs-search.1",
         "./man/tglfs-download.1",
+        "./man/tglfs-make-previewable.1",
         "./man/tglfs-rename.1",
         "./man/tglfs-delete.1",
         "./man/tglfs-send.1",
@@ -64,7 +65,7 @@
     },
     "devDependencies": {
         "@types/node": "^25.5.0",
-        "@types/prompts": "^2.4.9",
+        "@types/prompts": "^4.2.9",
         "tsx": "^4.21.0",
         "typescript": "^5.4.3"
     }
