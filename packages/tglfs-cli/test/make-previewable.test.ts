@@ -1,3 +1,4 @@
+// Diagnostic branch trigger: run the CLI workflow against the current implementation.
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
