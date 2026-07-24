@@ -117,7 +117,7 @@ test("Preview registers desktop and mobile MP4 conversion actions", async () => 
     assert.match(actionSource, /actionMakeMp4PreviewableItem/)
 })
 
-test("MP4 conversion writes duration metadata and Preview explicitly sets the MSE duration", async () => {
+test("MP4 conversion selects storage-free streaming or OPFS staging and preserves duration", async () => {
     const remuxSource = await readFile(resolve(repositoryRoot, "src/web/videoRemux.ts"), "utf8")
     const actionSource = await readFile(resolve(repositoryRoot, "src/web/mp4Previewable.ts"), "utf8")
     const previewSource = await readFile(resolve(repositoryRoot, "src/web/preview.ts"), "utf8")
@@ -132,9 +132,16 @@ test("MP4 conversion writes duration metadata and Preview explicitly sets the MS
     assert.match(remuxSource, /parseFfmpegDurationSeconds/)
     assert.doesNotMatch(remuxSource, /\+faststart/)
 
-    assert.match(actionSource, /downloadFileCardToTemporaryFile/)
-    assert.match(actionSource, /Telegram\.fileUpload/)
+    assert.match(actionSource, /createFileCardPlaintextStream/)
+    assert.match(actionSource, /probeMp4MetadataPlacement/)
+    assert.match(actionSource, /runStreamingPath/)
+    assert.match(actionSource, /uploadGeneratedFileStream/)
+    assert.match(actionSource, /runStagedPath/)
+    assert.match(actionSource, /stagePlaintextStreamToTemporaryFile/)
+    assert.match(actionSource, /allowMemoryFallback: false/)
+    assert.doesNotMatch(actionSource, /downloadFileCardToTemporaryFile/)
     assert.doesNotMatch(actionSource, /deleteFileCard|DeleteMessages/)
+
     assert.match(previewSource, /LEGACY_FIXED_MP4_MIME/)
     assert.match(previewSource, /QuotaExceededError/)
     assert.match(previewSource, /waitForMp4BufferCapacity/)
