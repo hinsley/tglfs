@@ -98,7 +98,9 @@ export async function uploadGeneratedCurrentFormatStream(
     }
     const finalizeChunk = async () => {
         if (!partIndex) return
-        const file = new Api.InputFileBig({ id: fileId, parts: partIndex, name: `pending-${uploadToken}.chunk${chunkIndex + 1}` })
+        // GramJS accepts native bigint IDs at runtime, as used by the existing upload path;
+        // its generated InputFileBig type still names the legacy BigInteger interface.
+        const file = new Api.InputFileBig({ id: fileId as any, parts: partIndex, name: `pending-${uploadToken}.chunk${chunkIndex + 1}` })
         const message = await client.sendFile("me", { file })
         chunkMessageIds.push(message.id)
         chunkIndex += 1
