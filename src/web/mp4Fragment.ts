@@ -5,6 +5,11 @@ type Mp4Box = {
     headerSize: number
 }
 
+export type Mp4InitializationMetadata = {
+    complete: boolean
+    durationSeconds: number | null
+}
+
 const PREVIEW_MIME_CANDIDATES = [
     "video/mp4",
     'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
@@ -53,6 +58,26 @@ function readBox(bytes: Uint8Array, offset: number, limit: number): Mp4Box {
     return { type, start: offset, end: offset + size, headerSize }
 }
 
+function tryReadCompleteBox(bytes: Uint8Array, offset: number, limit: number): Mp4Box | null {
+    if (offset + 8 > limit) return null
+
+    const size32 = readUint32(bytes, offset)
+    const type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7])
+    let headerSize = 8
+    let size = size32
+    if (size32 === 1) {
+        if (offset + 16 > limit) return null
+        size = readUint64(bytes, offset + 8)
+        headerSize = 16
+    } else if (size32 === 0) {
+        // A zero-sized top-level box extends to the physical end of the file, which is not known while streaming.
+        return null
+    }
+    if (size < headerSize) throw new Error(`The generated MP4 contains an invalid ${type || "unknown"} box.`)
+    if (offset + size > limit) return null
+    return { type, start: offset, end: offset + size, headerSize }
+}
+
 function listBoxes(bytes: Uint8Array, start = 0, end = bytes.length): Mp4Box[] {
     const boxes: Mp4Box[] = []
     for (let offset = start; offset < end;) {
@@ -63,12 +88,51 @@ function listBoxes(bytes: Uint8Array, start = 0, end = bytes.length): Mp4Box[] {
     return boxes
 }
 
+function findCompleteTopLevelBox(bytes: Uint8Array, type: string): Mp4Box | null {
+    for (let offset = 0; offset < bytes.length;) {
+        const box = tryReadCompleteBox(bytes, offset, bytes.length)
+        if (!box) return null
+        if (box.type === type) return box
+        offset = box.end
+    }
+    return null
+}
+
 function movieHeader(bytes: Uint8Array): Mp4Box {
     const moov = listBoxes(bytes).find((box) => box.type === "moov")
     if (!moov) throw new Error("The generated MP4 has no moov box.")
     const mvhd = listBoxes(bytes, moov.start + moov.headerSize, moov.end).find((box) => box.type === "mvhd")
     if (!mvhd) throw new Error("The generated MP4 has no movie header.")
     return mvhd
+}
+
+function readMovieHeaderDurationSeconds(bytes: Uint8Array, mvhd: Mp4Box): number {
+    const fullBoxOffset = mvhd.start + mvhd.headerSize
+    const version = bytes[fullBoxOffset]
+    if (version !== 0 && version !== 1) throw new Error(`Unsupported mvhd version ${version}.`)
+    const timescaleOffset = version === 1 ? fullBoxOffset + 20 : fullBoxOffset + 12
+    const durationOffset = version === 1 ? fullBoxOffset + 24 : fullBoxOffset + 16
+    const durationSize = version === 1 ? 8 : 4
+    if (durationOffset + durationSize > mvhd.end) throw new Error("The generated MP4 has a truncated movie header.")
+    const timescale = readUint32(bytes, timescaleOffset)
+    const duration = version === 1 ? readUint64(bytes, durationOffset) : readUint32(bytes, durationOffset)
+    if (timescale <= 0) throw new Error("The generated MP4 has an invalid movie timescale.")
+    return duration / timescale
+}
+
+function readMovieExtendsDurationSeconds(bytes: Uint8Array, moov: Mp4Box, timescale: number): number | null {
+    const mvex = listBoxes(bytes, moov.start + moov.headerSize, moov.end).find((box) => box.type === "mvex")
+    if (!mvex) return null
+    const mehd = listBoxes(bytes, mvex.start + mvex.headerSize, mvex.end).find((box) => box.type === "mehd")
+    if (!mehd) return null
+    const fullBoxOffset = mehd.start + mehd.headerSize
+    const version = bytes[fullBoxOffset]
+    if (version !== 0 && version !== 1) throw new Error(`Unsupported mehd version ${version}.`)
+    const durationOffset = fullBoxOffset + 4
+    const durationSize = version === 1 ? 8 : 4
+    if (durationOffset + durationSize > mehd.end) throw new Error("The generated MP4 has a truncated movie-extends header.")
+    const duration = version === 1 ? readUint64(bytes, durationOffset) : readUint32(bytes, durationOffset)
+    return duration > 0 ? duration / timescale : null
 }
 
 export function parseFfmpegDurationSeconds(message: string): number | null {
@@ -106,16 +170,29 @@ export function writeMp4MovieDuration(bytes: Uint8Array, durationSeconds: number
 }
 
 export function readMp4MovieDurationSeconds(bytes: Uint8Array): number {
-    const mvhd = movieHeader(bytes)
+    return readMovieHeaderDurationSeconds(bytes, movieHeader(bytes))
+}
+
+export function inspectMp4InitializationSegment(bytes: Uint8Array): Mp4InitializationMetadata {
+    const moov = findCompleteTopLevelBox(bytes, "moov")
+    if (!moov) return { complete: false, durationSeconds: null }
+
+    const mvhd = listBoxes(bytes, moov.start + moov.headerSize, moov.end).find((box) => box.type === "mvhd")
+    if (!mvhd) throw new Error("The generated MP4 has no movie header.")
+    const movieDuration = readMovieHeaderDurationSeconds(bytes, mvhd)
+    if (Number.isFinite(movieDuration) && movieDuration > 0) {
+        return { complete: true, durationSeconds: movieDuration }
+    }
+
     const fullBoxOffset = mvhd.start + mvhd.headerSize
     const version = bytes[fullBoxOffset]
-    if (version !== 0 && version !== 1) throw new Error(`Unsupported mvhd version ${version}.`)
     const timescaleOffset = version === 1 ? fullBoxOffset + 20 : fullBoxOffset + 12
-    const durationOffset = version === 1 ? fullBoxOffset + 24 : fullBoxOffset + 16
     const timescale = readUint32(bytes, timescaleOffset)
-    const duration = version === 1 ? readUint64(bytes, durationOffset) : readUint32(bytes, durationOffset)
-    if (timescale <= 0) throw new Error("The generated MP4 has an invalid movie timescale.")
-    return duration / timescale
+    const fragmentDuration = timescale > 0 ? readMovieExtendsDurationSeconds(bytes, moov, timescale) : null
+    return {
+        complete: true,
+        durationSeconds: fragmentDuration && Number.isFinite(fragmentDuration) ? fragmentDuration : null,
+    }
 }
 
 export function validateFragmentedMp4(bytes: Uint8Array): number {
@@ -148,6 +225,8 @@ export async function canUseCurrentPreview(bytes: Uint8Array, firstFragmentEnd: 
     if (typeof document === "undefined" || typeof MediaSource === "undefined") return false
     const mimeType = supportedMimeType()
     if (!mimeType) return false
+    const metadata = inspectMp4InitializationSegment(bytes.subarray(0, firstFragmentEnd))
+    if (!metadata.complete || !metadata.durationSeconds) return false
 
     const mediaSource = new MediaSource()
     const video = document.createElement("video")
@@ -174,6 +253,7 @@ export async function canUseCurrentPreview(bytes: Uint8Array, firstFragmentEnd: 
             try {
                 const buffer = mediaSource.addSourceBuffer(mimeType)
                 buffer.mode = "segments"
+                mediaSource.duration = metadata.durationSeconds!
                 buffer.addEventListener("error", () => finish(false), { once: true })
                 buffer.addEventListener("updateend", () => {
                     if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
