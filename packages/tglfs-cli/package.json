@@ -24,7 +24,7 @@
     ],
     "type": "module",
     "bin": {
-        "tglfs": "dist/entry.js"
+        "tglfs": "dist/cli.js"
     },
     "man": [
         "./man/tglfs.1",
