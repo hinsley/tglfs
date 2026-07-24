@@ -1,0 +1,88 @@
+.TH TGLFS-MAKE-PREVIEWABLE 1 "July 2026" "tglfs 0.1.2" "User Commands"
+.SH NAME
+tglfs-make-previewable \- create a new streaming-previewable MP4 copy of a stored TGLFS file
+.SH SYNOPSIS
+.B tglfs make-previewable
+[\fIOPTIONS\fR] \fIufid\fR
+.SH DESCRIPTION
+Downloads, decrypts, and decompresses the selected owned MP4, converts its primary video and optional primary audio track into a fragmented MP4 suitable for TGLFS Preview, and uploads a new compressed and encrypted TGLFS file. The original file card and chunks are not changed or deleted.
+.PP
+When the MP4 has a complete
+.B moov
+box before
+.BR mdat ,
+the source is streamed through FFmpeg and directly into the uploader with bounded buffers. When media data precedes movie metadata, the plaintext source is staged in the operating system temporary directory so FFmpeg can perform random access. Generated output is never staged.
+.PP
+Compatible AVC video and AAC audio are copied. Other primary tracks are transcoded to H.264 Baseline and AAC when supported by the installed FFmpeg build.
+.SH OPTIONS
+.TP
+.B --source-password <password>
+Source MP4 decryption password.
+.TP
+.B --source-password-env [name]
+Read the source password from an environment variable. The default variable is
+.BR TGLFS_MAKE_PREVIEWABLE_SOURCE_PASSWORD .
+.TP
+.B --source-password-stdin
+Read the source password from standard input.
+.TP
+.B --password <password>
+Encryption password for the new MP4.
+.TP
+.B --password-env [name]
+Read the new MP4 password from an environment variable. The default variable is
+.BR TGLFS_MAKE_PREVIEWABLE_PASSWORD .
+.TP
+.B --password-stdin
+Read the new MP4 password from standard input. This cannot be combined with
+.BR --source-password-stdin .
+.TP
+.B --name <name>
+Name for the new MP4. The default appends
+.B .previewable
+before the extension.
+.TP
+.B --ffmpeg <path>
+FFmpeg executable. Defaults to
+.B TGLFS_FFMPEG
+or
+.BR ffmpeg .
+.TP
+.B --ffprobe <path>
+ffprobe executable used only when staged metadata does not contain a finite duration. Defaults to
+.B TGLFS_FFPROBE
+or an ffprobe executable beside FFmpeg.
+.TP
+.B --legacy
+Use the legacy TGLFS source decryption/counter pipeline.
+.TP
+.B --no-interactive
+Disable prompts.
+.TP
+.B --json
+Emit one machine-readable JSON result and never prompt.
+.SH ENVIRONMENT
+.TP
+.B TGLFS_MAKE_PREVIEWABLE_SOURCE_PASSWORD
+Default source decryption password.
+.TP
+.B TGLFS_MAKE_PREVIEWABLE_PASSWORD
+Default encryption password for the generated copy.
+.TP
+.B TGLFS_FFMPEG
+FFmpeg executable path.
+.TP
+.B TGLFS_FFPROBE
+ffprobe executable path.
+.SH EXAMPLES
+.nf
+tglfs make-previewable <ufid>
+tglfs make-previewable <ufid> --source-password-env --password-env
+tglfs make-previewable <ufid> --name lecture.previewable.mp4 --json
+.fi
+.SH EXIT STATUS
+Returns zero on success and a nonzero CLI error code on authentication, decryption, MP4 parsing, FFmpeg, upload, duplicate-UFID, or cleanup failure.
+.SH SEE ALSO
+.BR tglfs (1),
+.BR tglfs-upload (1),
+.BR tglfs-download (1)
