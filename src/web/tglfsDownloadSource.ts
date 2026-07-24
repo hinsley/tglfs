@@ -15,6 +15,10 @@ export type DownloadedSource = {
     cleanup: () => Promise<void>
 }
 
+export type StagePlaintextOptions = {
+    allowMemoryFallback?: boolean
+}
+
 type DownloadSink = {
     write: (chunk: Uint8Array) => Promise<void>
     close: () => Promise<File>
@@ -50,9 +54,12 @@ async function memorySink(outputName: string): Promise<DownloadSink> {
     }
 }
 
-async function createSink(outputName: string): Promise<DownloadSink> {
+async function createSink(outputName: string, allowMemoryFallback: boolean): Promise<DownloadSink> {
     const storage = navigator.storage as StorageManager & { getDirectory?: () => Promise<any> }
-    if (typeof storage?.getDirectory !== "function") return memorySink(outputName)
+    if (typeof storage?.getDirectory !== "function") {
+        if (allowMemoryFallback) return memorySink(outputName)
+        throw new Error("This MP4 has trailing metadata and requires temporary OPFS storage, which this browser does not provide.")
+    }
 
     let root: any
     let temporaryName = ""
@@ -94,20 +101,16 @@ async function createSink(outputName: string): Promise<DownloadSink> {
         if (root && temporaryName) {
             try { await root.removeEntry(temporaryName) } catch {}
         }
-        console.warn("OPFS staging unavailable; using memory for MP4 conversion", error)
-        return memorySink(outputName)
+        if (allowMemoryFallback) {
+            console.warn("OPFS staging unavailable; using memory for MP4 conversion", error)
+            return memorySink(outputName)
+        }
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(`Unable to create temporary OPFS storage for an MP4 with trailing metadata. ${message}`)
     }
 }
 
-export async function downloadFileCardToTemporaryFile(
-    client: any,
-    data: FileCardData,
-    password: string,
-    outputName: string,
-    onProgress?: (percentage: number) => void,
-): Promise<DownloadedSource> {
-    await gramJsReady
-    if (typeof DecompressionStream === "undefined") throw new Error("This browser does not support streaming gzip decompression.")
+async function loadChunkMessages(client: any, data: FileCardData) {
     if (!data.uploadComplete) throw new Error("The source upload is incomplete.")
     if (!data.chunks.length) throw new Error("The source file card has no uploaded chunks.")
 
@@ -115,7 +118,24 @@ export async function downloadFileCardToTemporaryFile(
     const byId = new Map<number, any>(fetched.map((message: any) => [Number(message.id), message]))
     const messages = data.chunks.map((id) => byId.get(id))
     if (messages.some((message) => !message)) throw new Error("One or more source chunks could not be loaded from Telegram.")
+    return messages
+}
 
+/**
+ * Returns the stored file's plaintext as a bounded, backpressure-aware stream:
+ * Telegram download -> AES-CTR decrypt -> gzip decompress. No complete plaintext
+ * file is materialized by this function.
+ */
+export async function createFileCardPlaintextStream(
+    client: any,
+    data: FileCardData,
+    password: string,
+    onProgress?: (percentage: number) => void,
+): Promise<ReadableStream<Uint8Array>> {
+    await gramJsReady
+    if (typeof DecompressionStream === "undefined") throw new Error("This browser does not support streaming gzip decompression.")
+
+    const messages = await loadChunkMessages(client, data)
     const iv = base64ToBytes(data.IV)
     if (iv.length !== 32) throw new Error("The source file card contains invalid encryption metadata.")
     const key = await Encryption.deriveAESKeyFromPassword(password, iv.subarray(0, 16))
@@ -125,26 +145,20 @@ export async function downloadFileCardToTemporaryFile(
 
     const decompression = new DecompressionStream("gzip")
     const writer = decompression.writable.getWriter()
-    const reader = decompression.readable.getReader()
-    const sink = await createSink(outputName)
     let plaintextBytes = 0
-    let readError: unknown = null
-
-    const readPromise = (async () => {
-        try {
-            while (true) {
-                const { value, done } = await reader.read()
-                if (done) break
-                if (!value?.length) continue
-                await sink.write(value)
-                plaintextBytes += value.length
-                onProgress?.(data.size ? Math.min(100, Math.round(plaintextBytes / data.size * 100)) : 100)
+    const validatedPlaintext = decompression.readable.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+            plaintextBytes += chunk.byteLength
+            onProgress?.(data.size ? Math.min(100, Math.round(plaintextBytes / data.size * 100)) : 100)
+            controller.enqueue(chunk)
+        },
+        flush() {
+            if (plaintextBytes !== data.size) {
+                throw new Error(`The downloaded source size was ${plaintextBytes} bytes; the file card expected ${data.size} bytes.`)
             }
-        } catch (error) {
-            readError = error
-            try { await writer.abort(error) } catch {}
-        }
-    })()
+            onProgress?.(100)
+        },
+    }))
 
     const decryptFullBlock = async () => {
         const plaintext = new Uint8Array(await crypto.subtle.decrypt(
@@ -155,57 +169,91 @@ export async function downloadFileCardToTemporaryFile(
         await writer.write(plaintext)
     }
 
-    let writeError: unknown = null
-    try {
-        for (const message of messages) {
-            const size = documentSize(message)
-            for (let downloaded = 0; downloaded < size;) {
-                const part = await client.invoke(new Api.upload.GetFile({
-                    location: getFileInfo(message.media).location,
-                    offset: downloaded,
-                    limit: DOWNLOAD_PART_SIZE,
-                    precise: false,
-                    cdnSupported: false,
-                }))
-                const bytes = (part as any).bytes as Uint8Array
-                if (!bytes?.length) throw new Error("Telegram returned an empty source-file part before the chunk was complete.")
-                downloaded += bytes.length
-                for (let offset = 0; offset < bytes.length;) {
-                    const count = Math.min(bytes.length - offset, encryptedBlock.length - encryptedLength)
-                    encryptedBlock.set(bytes.subarray(offset, offset + count), encryptedLength)
-                    encryptedLength += count
-                    offset += count
-                    if (encryptedLength === encryptedBlock.length) await decryptFullBlock()
+    void (async () => {
+        try {
+            for (const message of messages) {
+                const size = documentSize(message)
+                for (let downloaded = 0; downloaded < size;) {
+                    const part = await client.invoke(new Api.upload.GetFile({
+                        location: getFileInfo(message.media).location,
+                        offset: downloaded,
+                        limit: DOWNLOAD_PART_SIZE,
+                        precise: false,
+                        cdnSupported: false,
+                    }))
+                    const bytes = (part as any).bytes as Uint8Array
+                    if (!bytes?.length) throw new Error("Telegram returned an empty source-file part before the chunk was complete.")
+                    downloaded += bytes.length
+                    for (let offset = 0; offset < bytes.length;) {
+                        const count = Math.min(bytes.length - offset, encryptedBlock.length - encryptedLength)
+                        encryptedBlock.set(bytes.subarray(offset, offset + count), encryptedLength)
+                        encryptedLength += count
+                        offset += count
+                        if (encryptedLength === encryptedBlock.length) await decryptFullBlock()
+                    }
                 }
             }
-        }
-        if (encryptedLength) {
-            const plaintext = new Uint8Array(await crypto.subtle.decrypt(
-                { name: "AES-CTR", counter, length: 64 }, key, encryptedBlock.subarray(0, encryptedLength),
-            ))
-            counter = Encryption.incrementCounter64By(counter, Math.ceil(encryptedLength / 16))
-            await writer.write(plaintext)
-        }
-        await writer.close()
-    } catch (error) {
-        writeError = error
-        try { await writer.abort(error) } catch {}
-    } finally {
-        await readPromise
-    }
 
-    if (readError || writeError) {
-        await sink.abort(readError ?? writeError)
-        throw normalizedError(readError ?? writeError)
-    }
-    if (plaintextBytes !== data.size) {
-        await sink.abort()
-        throw new Error(`The downloaded source size was ${plaintextBytes} bytes; the file card expected ${data.size} bytes.`)
-    }
+            if (encryptedLength) {
+                const plaintext = new Uint8Array(await crypto.subtle.decrypt(
+                    { name: "AES-CTR", counter, length: 64 }, key, encryptedBlock.subarray(0, encryptedLength),
+                ))
+                counter = Encryption.incrementCounter64By(counter, Math.ceil(encryptedLength / 16))
+                encryptedLength = 0
+                await writer.write(plaintext)
+            }
+            await writer.close()
+        } catch (error) {
+            const normalized = normalizedError(error)
+            try { await writer.abort(normalized) } catch {}
+        }
+    })()
+
+    return validatedPlaintext
+}
+
+/** Writes a plaintext stream to a temporary File, using OPFS when required. */
+export async function stagePlaintextStreamToTemporaryFile(
+    stream: ReadableStream<Uint8Array>,
+    outputName: string,
+    expectedSize: number,
+    onProgress?: (percentage: number) => void,
+    options: StagePlaintextOptions = {},
+): Promise<DownloadedSource> {
+    const sink = await createSink(outputName, options.allowMemoryFallback !== false)
+    const reader = stream.getReader()
+    let bytesWritten = 0
+
     try {
+        while (true) {
+            const { value, done } = await reader.read()
+            if (done) break
+            if (!value?.byteLength) continue
+            await sink.write(value)
+            bytesWritten += value.byteLength
+            onProgress?.(expectedSize ? Math.min(100, Math.round(bytesWritten / expectedSize * 100)) : 100)
+        }
+        if (bytesWritten !== expectedSize) {
+            throw new Error(`The staged source size was ${bytesWritten} bytes; the file card expected ${expectedSize} bytes.`)
+        }
+        onProgress?.(100)
         return { file: await sink.close(), cleanup: sink.cleanup }
     } catch (error) {
         await sink.abort(error)
-        throw error
+        throw normalizedError(error)
+    } finally {
+        try { reader.releaseLock() } catch {}
     }
+}
+
+/** Backward-compatible helper for callers that explicitly need a complete temporary File. */
+export async function downloadFileCardToTemporaryFile(
+    client: any,
+    data: FileCardData,
+    password: string,
+    outputName: string,
+    onProgress?: (percentage: number) => void,
+): Promise<DownloadedSource> {
+    const stream = await createFileCardPlaintextStream(client, data, password, onProgress)
+    return stagePlaintextStreamToTemporaryFile(stream, outputName, data.size)
 }

@@ -1,7 +1,18 @@
 import type * as Config from "../config"
-import { parseFileCardMessage, type FileCardData } from "../../packages/tglfs-cli/src/shared/file-cards"
-import { downloadFileCardToTemporaryFile, type DownloadedSource } from "./tglfsDownloadSource"
+import {
+    formatFileCardSize,
+    parseFileCardMessage,
+    type FileCardData,
+} from "../../packages/tglfs-cli/src/shared/file-cards"
+import {
+    createFileCardPlaintextStream,
+    stagePlaintextStreamToTemporaryFile,
+    type DownloadedSource,
+} from "./tglfsDownloadSource"
 import { getPreviewableMp4Name, isMp4FileName } from "./mp4PreviewableName"
+import { probeMp4MetadataPlacement } from "./mp4MetadataPlacement"
+import { createStreamingPreviewableMp4 } from "./streamingMp4Conversion"
+import { uploadGeneratedFileStream } from "./generatedUpload"
 
 const DESKTOP_ID = "browserActionMakeMp4Previewable"
 const MOBILE_ID = "actionMakeMp4PreviewableItem"
@@ -51,6 +62,7 @@ function selectedMp4(): SelectedMp4 | null {
         .filter((node) => node.dataset.browserId === id)
     const msgId = Number(nodes.map((node) => node.dataset.msgid).find(Boolean))
     const name = nodes.map((node) => node.querySelector<HTMLElement>(".file-name-scroll")?.textContent?.trim()).find(Boolean)
+        ?? nodes.map((node) => node.querySelector<HTMLElement>("td.name")?.textContent?.trim()).find(Boolean)
     return Number.isInteger(msgId) && msgId > 0 && name && isMp4FileName(name) ? { msgId, name } : null
 }
 
@@ -99,6 +111,90 @@ async function loadFileCard(client: any, selected: SelectedMp4): Promise<FileCar
     return data
 }
 
+async function reportGeneratedUploadComplete(record: Awaited<ReturnType<typeof uploadGeneratedFileStream>>) {
+    window.dispatchEvent(new Event("tglfs:refresh-browser"))
+    showStatus(`Created ${record.data.name}`)
+    alert([
+        "Previewable MP4 upload complete.",
+        "",
+        `Name: ${record.data.name}`,
+        `UFID: ${record.data.ufid}`,
+        `Size: ${formatFileCardSize(record.data.size)}`,
+    ].join("\n"))
+    try { await navigator.clipboard.writeText(record.data.ufid) }
+    catch (error) { console.warn("Unable to copy generated MP4 UFID", error) }
+}
+
+async function runStreamingPath(
+    client: any,
+    config: Config.Config,
+    data: FileCardData,
+    outputName: string,
+    stream: ReadableStream<Uint8Array>,
+) {
+    const uploadPassword = prompt("(Optional) Encryption password for the new previewable MP4:")
+    if (uploadPassword === null) {
+        await stream.cancel("Previewable MP4 creation cancelled.")
+        return
+    }
+
+    showStatus("Starting storage-free MP4 conversion...", true)
+    const conversion = await createStreamingPreviewableMp4(stream)
+    let uploadPromise: ReturnType<typeof uploadGeneratedFileStream> | null = null
+
+    try {
+        uploadPromise = uploadGeneratedFileStream(client, config, {
+            name: outputName,
+            stream: conversion.stream,
+            password: uploadPassword,
+            parentFolderId: parentFolderId(data),
+            onProgress: ({ plaintextBytes }) => {
+                showStatus(`Streaming converted MP4 to Telegram: ${formatFileCardSize(plaintextBytes)}`, true)
+            },
+        })
+        const [record] = await Promise.all([uploadPromise, conversion.completion])
+        await reportGeneratedUploadComplete(record)
+    } catch (error) {
+        try { await conversion.cancel() } catch {}
+        try { await uploadPromise } catch {}
+        throw error
+    }
+}
+
+async function runStagedPath(
+    client: any,
+    config: Config.Config,
+    data: FileCardData,
+    outputName: string,
+    stream: ReadableStream<Uint8Array>,
+): Promise<DownloadedSource> {
+    const remux = await import("./videoRemux")
+    if (data.size >= remux.MAX_FFMPEG_INPUT_BYTES) {
+        throw new Error(`Browser conversion is limited to files smaller than ${remux.MAX_FFMPEG_INPUT_BYTES.toLocaleString()} bytes by FFmpeg WebAssembly.`)
+    }
+
+    showStatus("MP4 metadata is trailing; staging the source in temporary OPFS...", true)
+    const downloaded = await stagePlaintextStreamToTemporaryFile(
+        stream,
+        outputName,
+        data.size,
+        (progress) => showStatus(`Staging trailing-metadata MP4 ${progress}%`, true),
+        { allowMemoryFallback: false },
+    )
+
+    showStatus("Preparing FFmpeg conversion from temporary storage...", true)
+    const converted = await remux.remuxToStreamingMp4(downloaded.file, "mp4", (progress) => {
+        showStatus(`Making MP4 previewable ${progress}%`, true)
+    })
+    remux.markVideoPreviewReady(converted)
+
+    showStatus("Starting encrypted upload of the new MP4...", true)
+    const Telegram = await import("../telegram")
+    await Telegram.fileUpload(client, config, [converted], { parentFolderId: parentFolderId(data) })
+    showStatus("MP4 upload flow finished")
+    return downloaded
+}
+
 async function makePreviewable() {
     if (busy) return
     const selected = selectedMp4()
@@ -111,7 +207,7 @@ async function makePreviewable() {
 
     const confirmed = confirm(
         `Create a new previewable MP4 from "${selected.name}"?\n\n` +
-        "The original MP4 and file card will remain unchanged. TGLFS will stream-download and decrypt the source, losslessly remux it when possible, re-encode incompatible tracks when necessary, then upload a new compressed and encrypted MP4. You will be asked for the source password and the new upload password.",
+        "The original remains unchanged. TGLFS first inspects the MP4 layout while decrypting it. Front-loaded MP4s are converted and uploaded as one bounded stream without a temporary file. MP4s whose moov metadata is after media data are staged in temporary OPFS, because they require random access.",
     )
     if (!confirmed) return
     const sourcePassword = prompt("Source MP4 decryption password (leave empty if none):")
@@ -122,29 +218,23 @@ async function makePreviewable() {
     let downloaded: DownloadedSource | null = null
     try {
         const data = await loadFileCard(client, selected)
-        const remux = await import("./videoRemux")
-        if (data.size >= remux.MAX_FFMPEG_INPUT_BYTES) {
-            throw new Error(`Browser conversion is limited to files smaller than ${remux.MAX_FFMPEG_INPUT_BYTES.toLocaleString()} bytes by FFmpeg WebAssembly.`)
+        const outputName = getPreviewableMp4Name(data.name)
+        let sourcePhase = "Inspecting MP4 metadata layout"
+        const plaintext = await createFileCardPlaintextStream(client, data, sourcePassword, (progress) => {
+            showStatus(`${sourcePhase} ${progress}%`, true)
+        })
+        const probed = await probeMp4MetadataPlacement(plaintext)
+
+        if (probed.placement === "front-loaded") {
+            sourcePhase = "Streaming source MP4"
+            await runStreamingPath(client, config, data, outputName, probed.stream)
+            return
         }
 
-        const outputName = getPreviewableMp4Name(data.name)
-        showStatus("Downloading and decrypting source MP4...", true)
-        downloaded = await downloadFileCardToTemporaryFile(client, data, sourcePassword, outputName, (progress) => {
-            showStatus(`Downloading and decrypting ${progress}%`, true)
-        })
-
-        showStatus("Preparing FFmpeg conversion...", true)
-        const converted = await remux.remuxToStreamingMp4(downloaded.file, "mp4", (progress) => {
-            showStatus(`Making MP4 previewable ${progress}%`, true)
-        })
-        remux.markVideoPreviewReady(converted)
-        await downloaded.cleanup()
-        downloaded = null
-
-        showStatus("Starting encrypted upload of the new MP4...", true)
-        const Telegram = await import("../telegram")
-        await Telegram.fileUpload(client, config, [converted], { parentFolderId: parentFolderId(data) })
-        showStatus("MP4 upload flow finished")
+        sourcePhase = probed.placement === "trailing"
+            ? "Downloading trailing-metadata MP4"
+            : "Downloading MP4 with an unconfirmed metadata layout"
+        downloaded = await runStagedPath(client, config, data, outputName, probed.stream)
     } catch (error) {
         console.error(error)
         alert(`Unable to make this MP4 previewable.\n\n${error instanceof Error ? error.message : String(error)}`)
