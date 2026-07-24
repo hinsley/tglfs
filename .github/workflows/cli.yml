@@ -1,0 +1,29 @@
+name: CLI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/tglfs-cli/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/cli.yml"
+  pull_request:
+    paths:
+      - "packages/tglfs-cli/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/cli.yml"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:cli
+      - run: npm test
