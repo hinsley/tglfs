@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url"
 import { dirname, resolve } from "node:path"
 
 import {
+    inspectMp4InitializationSegment,
     parseFfmpegDurationSeconds,
     readMp4MovieDurationSeconds,
     writeMp4MovieDuration,
@@ -87,6 +88,18 @@ test("FFmpeg duration parsing and mvhd patching produce a finite movie duration"
     assert.equal(readMp4MovieDurationSeconds(patched), 123.456)
 })
 
+test("MP4 initialization inspection finds duration before a trailing media box is complete", () => {
+    const patched = writeMp4MovieDuration(minimalFragmentedMp4(), 123.456)
+    assert.deepEqual(inspectMp4InitializationSegment(patched.subarray(0, 10)), {
+        complete: false,
+        durationSeconds: null,
+    })
+    assert.deepEqual(inspectMp4InitializationSegment(patched.subarray(0, patched.length - 1)), {
+        complete: true,
+        durationSeconds: 123.456,
+    })
+})
+
 test("MP4 buffer policy limits forward buffering and finds safe old ranges to evict", () => {
     const buffered = ranges([0, 8], [10, 42])
     assert.equal(getBufferedAheadSeconds(buffered, 12), 30)
@@ -104,7 +117,7 @@ test("Preview registers desktop and mobile MP4 conversion actions", async () => 
     assert.match(actionSource, /actionMakeMp4PreviewableItem/)
 })
 
-test("MP4 conversion writes duration metadata and Preview applies bounded MSE backpressure", async () => {
+test("MP4 conversion writes duration metadata and Preview explicitly sets the MSE duration", async () => {
     const remuxSource = await readFile(resolve(repositoryRoot, "src/web/videoRemux.ts"), "utf8")
     const actionSource = await readFile(resolve(repositoryRoot, "src/web/mp4Previewable.ts"), "utf8")
     const previewSource = await readFile(resolve(repositoryRoot, "src/web/preview.ts"), "utf8")
@@ -126,5 +139,7 @@ test("MP4 conversion writes duration metadata and Preview applies bounded MSE ba
     assert.match(previewSource, /QuotaExceededError/)
     assert.match(previewSource, /waitForMp4BufferCapacity/)
     assert.match(previewSource, /sourceBuffer\.mode = "segments"/)
-    assert.match(fragmentSource, /Number\.isFinite\(video\.duration\)/)
+    assert.match(previewSource, /mediaSource\.duration = state\.durationSeconds/)
+    assert.match(previewSource, /Duration: \$\{formatDuration/)
+    assert.match(fragmentSource, /mediaSource\.duration = metadata\.durationSeconds/)
 })
