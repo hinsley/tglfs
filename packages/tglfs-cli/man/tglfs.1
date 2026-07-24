@@ -1,6 +1,6 @@
-.TH TGLFS 1 "March 2026" "tglfs 0.1.2" "User Commands"
+.TH TGLFS 1 "July 2026" "tglfs 0.1.2" "User Commands"
 .SH NAME
-tglfs \- authenticate with Telegram, manage TGLFS file cards, transfer files, and download TGLFS files by UFID
+tglfs \- authenticate with Telegram, manage TGLFS files, transfer files, and create previewable MP4 copies
 .SH SYNOPSIS
 .B tglfs
 [\fIOPTIONS\fR] [\fICOMMAND\fR]
@@ -10,7 +10,7 @@ tglfs \- authenticate with Telegram, manage TGLFS file cards, transfer files, an
 Disable interactive prompts and fail instead of prompting.
 .SH DESCRIPTION
 .B tglfs
-is a global command-line client for authenticating with Telegram, uploading files, managing TGLFS file cards, transferring files between peers, searching mailboxes, and downloading current-format or legacy TGLFS files by UFID.
+is a global command-line client for authenticating with Telegram, uploading files, managing TGLFS file cards, transferring files between peers, searching mailboxes, converting stored MP4 files for streaming Preview, and downloading current-format or legacy TGLFS files by UFID.
 .PP
 Run
 .B tglfs help <command>
@@ -35,6 +35,9 @@ Search TGLFS file cards in Saved Messages or another peer mailbox.
 .B download <ufid>
 Download a current-format or legacy TGLFS file by UFID.
 .TP
+.B make-previewable <ufid>
+Create a new fragmented MP4 copy suitable for streaming Preview. Front-loaded MP4s are converted and uploaded as one bounded stream; trailing-metadata MP4s use a temporary source file. The original remains unchanged.
+.TP
 .B rename <ufid> <new-name>
 Rename an owned TGLFS file card.
 .TP
@@ -42,13 +45,13 @@ Rename an owned TGLFS file card.
 Delete one or more owned TGLFS files.
 .TP
 .B send <ufid...> --to <peer>
-Send one or more owned TGLFS files to another peer. Users, groups, and channels can all work if Telegram/GramJS can resolve the value, including public usernames and many already-accessible private dialogs.
+Send one or more owned TGLFS files to another peer.
 .TP
 .B receive <source> <ufid...>
-Receive one or more TGLFS files from another peer into Saved Messages. The source value names the mailbox to search, not necessarily the original uploader.
+Receive one or more TGLFS files from another peer into Saved Messages.
 .TP
 .B unsend <source> <ufid...>
-Delete one or more received TGLFS files from another peer mailbox. The source value names the mailbox to modify, not necessarily the original uploader.
+Delete one or more received TGLFS files from another peer mailbox.
 .TP
 .B inspect <ufid>
 Inspect file-card metadata and chunk references; use
@@ -61,7 +64,9 @@ Initialize, push, pull, list, and inspect folder sync roots backed by TGLFS sync
 .B help [command]
 Display help for a command.
 .SH FILES
-The CLI stores config and session files in OS-standard per-user app directories.
+The CLI stores config and session files in OS-standard per-user app directories. Temporary MP4 source files are created only for inputs whose
+.B moov
+metadata follows media data and are removed after conversion.
 .SH SEE ALSO
 .BR tglfs-login (1),
 .BR tglfs-status (1),
@@ -69,6 +74,7 @@ The CLI stores config and session files in OS-standard per-user app directories.
 .BR tglfs-upload (1),
 .BR tglfs-search (1),
 .BR tglfs-download (1),
+.BR tglfs-make-previewable (1),
 .BR tglfs-rename (1),
 .BR tglfs-delete (1),
 .BR tglfs-send (1),
