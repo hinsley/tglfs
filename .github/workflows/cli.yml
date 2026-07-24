@@ -24,6 +24,12 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - name: Install dependencies
+        shell: bash
+        run: |
+          if ! npm ci >/tmp/npm-ci.log 2>&1; then
+            tail -80 /tmp/npm-ci.log
+            exit 1
+          fi
       - run: npm run build:cli
       - run: npm test
