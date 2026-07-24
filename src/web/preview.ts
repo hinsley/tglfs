@@ -9,10 +9,24 @@ import {
     MP4_BUFFER_BEHIND_SECONDS,
     MP4_QUOTA_BUFFER_BEHIND_SECONDS,
 } from "./mp4BufferPolicy"
+import { inspectMp4InitializationSegment } from "./mp4Fragment"
 
 const LEGACY_FIXED_MP4_MIME = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"'
+const MP4_INITIALIZATION_BUFFER_LIMIT = 8 * 1024 * 1024
 const mp4SourceBuffers = new WeakSet<SourceBuffer>()
-const mp4BufferStates = new WeakMap<SourceBuffer, { totalAppendedBytes: number; furthestBufferedEnd: number }>()
+
+type Mp4BufferState = {
+    totalAppendedBytes: number
+    furthestBufferedEnd: number
+    mediaSource: MediaSource
+    initializationChunks: Uint8Array[]
+    initializationBytes: number
+    initializationComplete: boolean
+    durationSeconds: number | null
+    durationApplied: boolean
+}
+
+const mp4BufferStates = new WeakMap<SourceBuffer, Mp4BufferState>()
 
 function extension(name: string): string {
     const parts = name.toLowerCase().split(".")
@@ -21,6 +35,24 @@ function extension(name: string): string {
 
 function previewVideo(): HTMLVideoElement | null {
     return document.getElementById("previewVideo") as HTMLVideoElement | null
+}
+
+function formatDuration(seconds: number): string {
+    const totalSeconds = Math.max(0, Math.round(seconds))
+    const hours = Math.floor(totalSeconds / 3600)
+    const minutes = Math.floor((totalSeconds % 3600) / 60)
+    const remainder = totalSeconds % 60
+    const padded = (value: number) => value.toString().padStart(2, "0")
+    return hours > 0 ? `${hours}:${padded(minutes)}:${padded(remainder)}` : `${minutes}:${padded(remainder)}`
+}
+
+function updateDurationLabel(durationSeconds: number) {
+    const metadata = document.getElementById("previewFileMeta")
+    if (!metadata) return
+    const base = (metadata.textContent ?? "").replace(/\s+•\s+Duration:\s+[^•]+$/, "")
+    metadata.textContent = Number.isFinite(durationSeconds) && durationSeconds > 0
+        ? `${base} • Duration: ${formatDuration(durationSeconds)}`
+        : base
 }
 
 function abortError() {
@@ -104,7 +136,7 @@ async function evictOldMp4Data(
     media: HTMLMediaElement,
     signal: AbortSignal,
     keepBehindSeconds: number,
-    minimumSeconds: number
+    minimumSeconds: number,
 ): Promise<boolean> {
     const range = getMp4EvictionRange(sourceBuffer.buffered, media.currentTime, keepBehindSeconds, minimumSeconds)
     if (!range) return false
@@ -112,7 +144,7 @@ async function evictOldMp4Data(
     return true
 }
 
-async function waitForMp4BufferCapacity(sourceBuffer : SourceBuffer, media: HTMLMediaElement, signal: AbortSignal) {
+async function waitForMp4BufferCapacity(sourceBuffer: SourceBuffer, media: HTMLMediaElement, signal: AbortSignal) {
     const state = mp4BufferStates.get(sourceBuffer)
     const limits = getMp4BufferLimits(state?.totalAppendedBytes ?? 0, state?.furthestBufferedEnd ?? 0)
     if (getBufferedAheadSeconds(sourceBuffer.buffered, media.currentTime) < limits.highWaterSeconds) return
@@ -126,9 +158,54 @@ async function waitForMp4BufferCapacity(sourceBuffer : SourceBuffer, media: HTML
     }
 }
 
+function concatenateChunks(chunks: Uint8Array[], totalBytes: number): Uint8Array {
+    const output = new Uint8Array(totalBytes)
+    let offset = 0
+    for (const chunk of chunks) {
+        output.set(chunk, offset)
+        offset += chunk.byteLength
+    }
+    return output
+}
+
+function collectMp4Initialization(state: Mp4BufferState, chunk: Uint8Array): Uint8Array | null {
+    if (state.initializationComplete) return chunk
+
+    const storedChunk = chunk.slice()
+    state.initializationChunks.push(storedChunk)
+    state.initializationBytes += storedChunk.byteLength
+    const combined = concatenateChunks(state.initializationChunks, state.initializationBytes)
+    const metadata = inspectMp4InitializationSegment(combined)
+    if (!metadata.complete && state.initializationBytes < MP4_INITIALIZATION_BUFFER_LIMIT) return null
+
+    state.initializationComplete = true
+    state.durationSeconds = metadata.durationSeconds
+    state.initializationChunks = []
+    state.initializationBytes = 0
+    return combined
+}
+
+function applyMp4Duration(sourceBuffer: SourceBuffer, state: Mp4BufferState) {
+    if (state.durationApplied || !state.durationSeconds) return
+    if (state.mediaSource.readyState !== "open" || sourceBuffer.updating) return
+    try {
+        // MSE allows the application to set the full presentation duration. Setting it before the
+        // initialization segment is appended prevents a fragmented MP4 from being treated as live/Infinity.
+        state.mediaSource.duration = state.durationSeconds
+        state.durationApplied = true
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+        throw new Error(`Unable to set the MP4 preview duration. ${detail}`)
+    }
+}
+
 export class PreviewModal extends CorePreviewModal {
     constructor(client: any) {
         super(client)
+
+        previewVideo()?.addEventListener("durationchange", (event) => {
+            updateDurationLabel((event.currentTarget as HTMLVideoElement).duration)
+        })
 
         const originalMime = (this as any).getStreamMimeType?.bind(this)
         ;(this as any).getStreamMimeType = (name: string, type: "video" | "audio") => {
@@ -154,7 +231,16 @@ export class PreviewModal extends CorePreviewModal {
                     // Fragmented MP4 carries real decode timestamps; segments mode preserves them and seeking geometry.
                     sourceBuffer.mode = "segments"
                     mp4SourceBuffers.add(sourceBuffer)
-                    mp4BufferStates.set(sourceBuffer, { totalAppendedBytes: 0, furthestBufferedEnd: 0 })
+                    mp4BufferStates.set(sourceBuffer, {
+                        totalAppendedBytes: 0,
+                        furthestBufferedEnd: 0,
+                        mediaSource: result.mediaSource,
+                        initializationChunks: [],
+                        initializationBytes: 0,
+                        initializationComplete: false,
+                        durationSeconds: null,
+                        durationApplied: false,
+                    })
                     return sourceBuffer
                 }),
             }
@@ -166,17 +252,19 @@ export class PreviewModal extends CorePreviewModal {
                 return await originalAppendBuffer(sourceBuffer, chunk, signal)
             }
             const media = previewVideo()
-            if (!media) return await originalAppendBuffer(sourceBuffer, chunk, signal)
+            const state = mp4BufferStates.get(sourceBuffer)
+            if (!media || !state) return await originalAppendBuffer(sourceBuffer, chunk, signal)
+
+            const appendChunk = collectMp4Initialization(state, chunk)
+            if (!appendChunk) return
+            applyMp4Duration(sourceBuffer, state)
 
             while (true) {
                 await waitForMp4BufferCapacity(sourceBuffer, media, signal)
                 try {
-                    await originalAppendBuffer(sourceBuffer, chunk, signal)
-                    const state = mp4BufferStates.get(sourceBuffer)
-                    if (state) {
-                        state.totalAppendedBytes += chunk.byteLength
-                        state.furthestBufferedEnd = Math.max(state.furthestBufferedEnd, getFurthestBufferedEnd(sourceBuffer.buffered))
-                    }
+                    await originalAppendBuffer(sourceBuffer, appendChunk, signal)
+                    state.totalAppendedBytes += appendChunk.byteLength
+                    state.furthestBufferedEnd = Math.max(state.furthestBufferedEnd, getFurthestBufferedEnd(sourceBuffer.buffered))
                     await evictOldMp4Data(sourceBuffer, media, signal, MP4_BUFFER_BEHIND_SECONDS, 5)
                     return
                 } catch (error) {
