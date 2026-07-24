@@ -40,5 +40,20 @@ jobs:
       - name: Fail if dependency installation failed
         if: steps.install.outputs.status != '0'
         run: exit 1
-      - run: npm run build:cli
+      - name: Capture CLI build
+        id: build
+        shell: bash
+        run: |
+          set +e
+          npm run build:cli >cli-build.log 2>&1
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-build-log
+          path: cli-build.log
+      - name: Fail if CLI build failed
+        if: steps.build.outputs.status != '0'
+        run: exit 1
       - run: npm test
