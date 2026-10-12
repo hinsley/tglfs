@@ -8,6 +8,7 @@
 import type { Api as TelegramApi, TelegramClient } from "telegram"
 
 import * as Config from "./config"
+import { requestConfirm, requestText, showToast } from "./web/dialogs"
 import { getGramJs } from "./gramjs"
 import {
     buildFileCardSearchQuery,
@@ -339,15 +340,7 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
     }
 
     // Hide UI and show progress bar.
-    const controlsDiv = document.getElementById("controls")
-    const browserDiv = document.getElementById("fileBrowser")
-    const progressDiv = document.getElementById("progressBarContainer")
-    const controlsWasVisible = !!controlsDiv && !controlsDiv.hasAttribute("hidden")
-    const browserWasVisible = !!browserDiv && !browserDiv.hasAttribute("hidden")
-    if (controlsDiv) controlsDiv.setAttribute("hidden", "")
-    if (browserDiv) browserDiv.setAttribute("hidden", "")
-    document.body.classList.remove("file-browser-active")
-    progressDiv?.removeAttribute("hidden")
+    const { browserWasVisible, restore: restoreTransferUi } = showTransferProgress()
 
     // Set up progress bar view.
     const progressBarText = document.getElementById("progressBarText")
@@ -561,7 +554,7 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
         const serviceWorkerRegistration = await navigator.serviceWorker.ready
         if (serviceWorkerRegistration.active) {
             await downloadFile(serviceWorkerRegistration)
-            alert("Download complete.") // TODO: Remove.
+            showToast("Download complete", { tone: "success" })
         } else {
             console.error("Service worker is not active.")
             alert("Service worker is not active. Cannot proceed with the download.")
@@ -580,18 +573,7 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
         console.error(error)
     } finally {
         // Restore previous UI.
-        progressDiv?.setAttribute("hidden", "")
-        if (browserWasVisible) {
-            browserDiv?.removeAttribute("hidden")
-            document.body.classList.add("file-browser-active")
-        } else if (controlsWasVisible) {
-            controlsDiv?.removeAttribute("hidden")
-            document.body.classList.remove("file-browser-active")
-        } else {
-            // Default to showing controls.
-            controlsDiv?.removeAttribute("hidden")
-            document.body.classList.remove("file-browser-active")
-        }
+        restoreTransferUi()
     }
 }
 
@@ -644,15 +626,7 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
     }
 
     // Hide UI and show progress bar.
-    const controlsDiv = document.getElementById("controls")
-    const browserDiv = document.getElementById("fileBrowser")
-    const progressDiv = document.getElementById("progressBarContainer")
-    const controlsWasVisible = !!controlsDiv && !controlsDiv.hasAttribute("hidden")
-    const browserWasVisible = !!browserDiv && !browserDiv.hasAttribute("hidden")
-    if (controlsDiv) controlsDiv.setAttribute("hidden", "")
-    if (browserDiv) browserDiv.setAttribute("hidden", "")
-    document.body.classList.remove("file-browser-active")
-    progressDiv?.removeAttribute("hidden")
+    const { browserWasVisible, restore: restoreTransferUi } = showTransferProgress()
 
     // Set up progress bar view.
     const progressBarText = document.getElementById("progressBarText")
@@ -818,7 +792,7 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
         const serviceWorkerRegistration = await navigator.serviceWorker.ready
         if (serviceWorkerRegistration.active) {
             await downloadFile(serviceWorkerRegistration)
-            alert("Download complete.") // TODO: Remove.
+            showToast("Download complete", { tone: "success" })
         } else {
             console.error("Service worker is not active.")
             alert("Service worker is not active. Cannot proceed with the download.")
@@ -837,18 +811,7 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
         console.error(error)
     } finally {
         // Restore previous UI.
-        progressDiv?.setAttribute("hidden", "")
-        if (browserWasVisible) {
-            browserDiv?.removeAttribute("hidden")
-            document.body.classList.add("file-browser-active")
-        } else if (controlsWasVisible) {
-            controlsDiv?.removeAttribute("hidden")
-            document.body.classList.remove("file-browser-active")
-        } else {
-            // Default to showing controls.
-            controlsDiv?.removeAttribute("hidden")
-            document.body.classList.remove("file-browser-active")
-        }
+        restoreTransferUi()
     }
 }
 
@@ -1173,6 +1136,26 @@ export function resolveUploadParentFolderId(
     return browserParentFolderId || TGLFS_ROOT_PARENT_ID
 }
 
+/**
+ * Shows the transfer progress overlay above the file browser (which stays mounted underneath)
+ * and returns a callback that hides it again.
+ */
+function showTransferProgress() {
+    const browserDiv = document.getElementById("fileBrowser")
+    const progressDiv = document.getElementById("progressBarContainer")
+    const browserWasVisible = !!browserDiv && !browserDiv.hasAttribute("hidden")
+    if (progressDiv) delete progressDiv.dataset.mode
+    progressDiv?.removeAttribute("hidden")
+    document.body.classList.add("fx-progress-active")
+    return {
+        browserWasVisible,
+        restore: () => {
+            progressDiv?.setAttribute("hidden", "")
+            document.body.classList.remove("fx-progress-active")
+        },
+    }
+}
+
 export function restoreUploadUiAndMaybeRefreshBrowser(restoreUploadUi: () => void, uploadCompleted: boolean) {
     restoreUploadUi()
     if (uploadCompleted) {
@@ -1210,7 +1193,15 @@ export async function fileUpload(
     let file = files[0]
     console.log(single ? `Selected file: ${file.name}` : `Selected ${files.length} files for archive upload.`)
 
-    let password = prompt("(Optional) Encryption password:")
+    let password = await requestText({
+        title: single ? "Upload file" : `Upload ${files.length} files`,
+        message: single ? file.name : "Multiple files are packed into a single archive before upload.",
+        label: "Encryption password (optional)",
+        inputType: "password",
+        allowEmpty: true,
+        confirmLabel: "Upload",
+        icon: "upload",
+    })
     if (password === null) {
         return
     }
@@ -1223,32 +1214,18 @@ export async function fileUpload(
     }
     const shouldRemuxForStreaming =
         remuxModule !== null && remuxKind !== null
-            ? confirm(remuxModule.getRemuxConfirmMessage(file, remuxKind))
+            ? await requestConfirm({
+                title: "Optimize video for streaming?",
+                message: remuxModule.getRemuxConfirmMessage(file, remuxKind),
+                confirmLabel: "Optimize",
+                cancelLabel: "Upload as is",
+                icon: "film",
+            })
             : false
     
     // Hide UI and show progress bar.
-    const controlsDiv = document.getElementById("controls")
-    const browserDiv = document.getElementById("fileBrowser")
-    const progressDiv = document.getElementById("progressBarContainer")
-    const controlsWasVisible = !!controlsDiv && !controlsDiv.hasAttribute("hidden")
-    const browserWasVisible = !!browserDiv && !browserDiv.hasAttribute("hidden")
-    if (controlsDiv) controlsDiv.setAttribute("hidden", "")
-    if (browserDiv) browserDiv.setAttribute("hidden", "")
-    document.body.classList.remove("file-browser-active")
-    progressDiv?.removeAttribute("hidden")
-    const restoreUploadUi = () => {
-        progressDiv?.setAttribute("hidden", "")
-        if (browserWasVisible) {
-            browserDiv?.removeAttribute("hidden")
-            document.body.classList.add("file-browser-active")
-        } else if (controlsWasVisible) {
-            controlsDiv?.removeAttribute("hidden")
-            document.body.classList.remove("file-browser-active")
-        } else {
-            controlsDiv?.removeAttribute("hidden")
-            document.body.classList.remove("file-browser-active")
-        }
-    }
+    const { browserWasVisible, restore: restoreTransferUi } = showTransferProgress()
+    const restoreUploadUi = restoreTransferUi
     
     // Set up progress bar view.
     const progressBarText = document.getElementById("progressBarText")
@@ -2542,15 +2519,7 @@ export async function downloadFileCard(
     // Lightweight wrapper calling existing fileDownload code path with minor factoring would be ideal.
     // For now, reuse core logic by temporarily stashing into window and invoking a specialized path is not necessary.
     // We inline minimal setup and call the internal logic similar to fileDownload, but without prompts.
-    const controlsDiv = document.getElementById("controls")
-    const browserDiv = document.getElementById("fileBrowser")
-    const progressDiv = document.getElementById("progressBarContainer")
-    const controlsWasVisible = !!controlsDiv && !controlsDiv.hasAttribute("hidden")
-    const browserWasVisible = !!browserDiv && !browserDiv.hasAttribute("hidden")
-    if (controlsDiv) controlsDiv.setAttribute("hidden", "")
-    if (browserDiv) browserDiv.setAttribute("hidden", "")
-    document.body.classList.remove("file-browser-active")
-    progressDiv?.removeAttribute("hidden")
+    const { browserWasVisible, restore: restoreTransferUi } = showTransferProgress()
 
     const progressBarText = document.getElementById("progressBarText")
     const progressBar = document.getElementById("progress")
@@ -2724,7 +2693,7 @@ export async function downloadFileCard(
         const serviceWorkerRegistration = await navigator.serviceWorker.ready
         if (serviceWorkerRegistration.active) {
             await downloadFile(serviceWorkerRegistration)
-            alert("Download complete.")
+            showToast("Download complete", { tone: "success" })
         } else {
             console.error("Service worker is not active.")
             alert("Service worker is not active. Cannot proceed with the download.")
@@ -2739,18 +2708,7 @@ export async function downloadFileCard(
         document.body.removeChild(a)
         URL.revokeObjectURL(url)
     } finally {
-        progressDiv?.setAttribute("hidden", "")
-        if (browserWasVisible) {
-            browserDiv?.removeAttribute("hidden")
-            document.body.classList.add("file-browser-active")
-        } else if (controlsWasVisible) {
-            controlsDiv?.removeAttribute("hidden")
-            document.body.classList.remove("file-browser-active")
-        } else {
-            // Default to showing controls.
-            controlsDiv?.removeAttribute("hidden")
-            document.body.classList.remove("file-browser-active")
-        }
+        restoreTransferUi()
     }
 }
 

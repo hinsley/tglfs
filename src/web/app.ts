@@ -1,4 +1,6 @@
 import "./polyfills"
+import { hydrateIcons, icon } from "./icons"
+import { requestConfirm, showToast } from "./dialogs"
 
 type TelegramModule = typeof import("../telegram")
 type BrowserModule = typeof import("./browser")
@@ -26,6 +28,7 @@ type SharedFileRecord = {
 
 let loginAttempt = 0
 let controlsBound = false
+let fileBrowserInitialized = false
 
 type LoginStep = "phone" | "code" | "password"
 
@@ -82,15 +85,47 @@ async function startMockFolderBrowser() {
     const { client, config } = createMockFolderBrowserSession()
     await finalizeLogin(client, config, "mock-folder-browser")
     document.cookie = "phone=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT"
+}
 
-    const controlsDiv = document.getElementById("controls")
+async function openFileBrowser() {
+    if (!activeClient || !activeConfig) {
+        return
+    }
     const fileBrowserDiv = document.getElementById("fileBrowser")
-    controlsDiv?.setAttribute("hidden", "")
     fileBrowserDiv?.removeAttribute("hidden")
     document.body.classList.add("file-browser-active")
     const { initFileBrowser } = await getBrowserModule()
-    await initFileBrowser(client, config)
-    window.dispatchEvent(new Event("tglfs:refresh-browser"))
+    await initFileBrowser(activeClient, activeConfig)
+    if (fileBrowserInitialized) {
+        window.dispatchEvent(new Event("tglfs:refresh-browser"))
+    }
+    fileBrowserInitialized = true
+}
+
+function syncProgressDecorations() {
+    const progressBar = document.getElementById("progress")
+    const percent = document.getElementById("progressPercent")
+    const title = document.getElementById("progressBarText")
+    const badge = document.querySelector<HTMLElement>("#progressBarContainer .fx-progress-badge")
+    if (!progressBar || !percent) {
+        return
+    }
+    const update = () => {
+        const text = (progressBar.textContent ?? "").trim()
+        percent.textContent = text || ""
+        const downloading = /download|receiv|migrat|fold/i.test(title?.textContent ?? "")
+        const kind = /migrat|fold/i.test(title?.textContent ?? "") ? "wrench" : downloading ? "download" : "cloudUp"
+        if (badge && badge.dataset.kind !== kind) {
+            badge.dataset.kind = kind
+            badge.innerHTML = icon(kind)
+        }
+    }
+    const observer = new MutationObserver(update)
+    observer.observe(progressBar, { childList: true, characterData: true, subtree: true })
+    if (title) {
+        observer.observe(title, { childList: true, characterData: true, subtree: true })
+    }
+    update()
 }
 
 function clearShareTargetQuery() {
@@ -116,6 +151,9 @@ function renderDirectoryMigrationProgress(progress: DirectoryParentMigrationProg
     const progressBar = document.getElementById("progress") as HTMLElement | null
     const progressBytesText = document.getElementById("progressBytesText")
     const progressTimeText = document.getElementById("progressTimeText")
+    if (progressDiv) {
+        progressDiv.dataset.mode = "background"
+    }
     progressDiv?.removeAttribute("hidden")
 
     const total = progress.total ?? 0
@@ -615,15 +653,11 @@ async function logout() {
     document.cookie = "phone=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT"
     clearStoredSession()
 
-    const controlsDiv = document.getElementById("controls")
-    if (controlsDiv) {
-        controlsDiv.setAttribute("hidden", "")
-    }
     const fileBrowserDiv = document.getElementById("fileBrowser")
     if (fileBrowserDiv) {
         fileBrowserDiv.setAttribute("hidden", "")
     }
-    document.body.classList.remove("file-browser-active")
+    document.body.classList.remove("file-browser-active", "fx-selecting")
 
     cancelLoginFlow()
     loginUi.setVisible(true)
@@ -645,11 +679,10 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
     if (loginDiv) {
         loginDiv.setAttribute("hidden", "")
     }
-    const controlsDiv = document.getElementById("controls")
-    if (controlsDiv) {
-        controlsDiv.removeAttribute("hidden")
+    const accountPhone = document.getElementById("accountPhone")
+    if (accountPhone) {
+        accountPhone.textContent = phoneValue
     }
-    const fileBrowserDiv = document.getElementById("fileBrowser")
 
     const splashDivAtInit = document.getElementById("splash")
     if (splashDivAtInit) {
@@ -663,7 +696,12 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
                 return
             }
             const Telegram = await getTelegramModule()
-            await Telegram.fileUpload(activeClient, activeConfig)
+            try {
+                await Telegram.fileUpload(activeClient, activeConfig)
+            } finally {
+                // Allow selecting the same file again.
+                uploadFileInput.value = ""
+            }
         })
         const downloadFileLegacyButton = document.getElementById("downloadFileLegacyButton") as HTMLButtonElement | null
         downloadFileLegacyButton?.addEventListener("click", async () => {
@@ -679,15 +717,18 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
             if (!activeClient) {
                 return
             }
-            const ok = confirm(
-                "Migrate folder indexing?\n\nThis will edit TGLFS folder and file-card messages in your Telegram Saved Messages so directory browsing can use parent references.\n\nThe migration edits about one record per minute to stay under Telegram rate limits and may pause if Telegram asks it to wait.",
-            )
+            const ok = await requestConfirm({
+                title: "Migrate folder index?",
+                message: "This edits TGLFS folder and file-card messages in your Telegram Saved Messages so directory browsing can use parent references. It edits about one record per minute to stay under Telegram rate limits and may pause if Telegram asks it to wait. You can keep browsing while it runs.",
+                confirmLabel: "Start migration",
+                icon: "wrench",
+            })
             if (!ok) return
 
-            const originalText = migrateDirectoryParentsButton.textContent ?? "Migrate Folder Index"
+            const label = migrateDirectoryParentsButton.querySelector("span") ?? migrateDirectoryParentsButton.lastChild
+            const originalText = label?.textContent ?? "Migrate folder index"
             migrateDirectoryParentsButton.disabled = true
-            migrateDirectoryParentsButton.textContent = "Migrating..."
-            let migrationSucceeded = false
+            if (label) label.textContent = "Migrating…"
             try {
                 const Telegram = await getTelegramModule()
                 renderDirectoryMigrationProgress({
@@ -698,55 +739,29 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
                 const result = await Telegram.migrateDirectoryParentRefs(activeClient, {
                     onProgress: renderDirectoryMigrationProgress,
                 })
-                migrationSucceeded = true
-                const conflictLines = [
-                    result.folderParentConflicts.length
-                        ? `Folder conflicts skipped: ${result.folderParentConflicts.length}`
-                        : "",
-                    result.fileParentConflicts.length
-                        ? `File conflicts skipped: ${result.fileParentConflicts.length}`
-                        : "",
-                ].filter(Boolean)
-                alert([
-                    "Folder index migration complete.",
-                    "",
-                    `Folders scanned: ${result.foldersScanned}`,
-                    `Folder manifests read: ${result.manifestsRead}`,
-                    `Files scanned: ${result.filesScanned}`,
-                    `Folders updated: ${result.foldersUpdated}`,
-                    `Files updated: ${result.filesUpdated}`,
-                    ...conflictLines,
-                ].join("\n"))
+                const conflicts = result.folderParentConflicts.length + result.fileParentConflicts.length
+                showToast(
+                    [
+                        `Folder index migrated: ${result.foldersUpdated} folders and ${result.filesUpdated} files updated`,
+                        `(${result.foldersScanned} folders, ${result.filesScanned} files scanned)`,
+                        conflicts ? `· ${conflicts} conflicts skipped` : "",
+                    ].filter(Boolean).join(" "),
+                    { tone: "success", durationMs: 8000 },
+                )
                 window.dispatchEvent(new Event("tglfs:refresh-browser"))
             } catch (error) {
                 console.error(error)
                 const message = error instanceof Error ? error.message : String(error)
-                renderDirectoryMigrationProgress({
-                    phase: "failed",
-                    message: "Folder index migration failed.",
-                    completed: 0,
-                })
-                alert(`Folder index migration failed.\n\n${message}`)
+                showToast(`Folder index migration failed: ${message}`, { tone: "error", durationMs: 8000 })
             } finally {
                 migrateDirectoryParentsButton.disabled = false
-                migrateDirectoryParentsButton.textContent = originalText
-                if (migrationSucceeded) {
-                    document.getElementById("progressBarContainer")?.setAttribute("hidden", "")
+                if (label) label.textContent = originalText
+                const progressDiv = document.getElementById("progressBarContainer")
+                progressDiv?.setAttribute("hidden", "")
+                if (progressDiv) {
+                    delete progressDiv.dataset.mode
                 }
             }
-        })
-
-        const fileBrowserButton = document.getElementById("fileBrowserButton") as HTMLButtonElement | null
-        fileBrowserButton?.addEventListener("click", async () => {
-            if (!activeClient || !activeConfig) {
-                return
-            }
-            controlsDiv?.setAttribute("hidden", "")
-            fileBrowserDiv?.removeAttribute("hidden")
-            document.body.classList.add("file-browser-active")
-            const { initFileBrowser } = await getBrowserModule()
-            await initFileBrowser(activeClient, activeConfig)
-            window.dispatchEvent(new Event("tglfs:refresh-browser"))
         })
 
         const logoutButton = document.getElementById("logoutButton") as HTMLButtonElement | null
@@ -756,6 +771,7 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
         controlsBound = true
     }
 
+    await openFileBrowser()
     await maybeUploadSharedFiles()
 }
 
@@ -960,6 +976,8 @@ function wireLoginHandlers() {
     elements.loginPasswordInput.addEventListener("input", () => loginUi.clearError())
 }
 
+hydrateIcons()
+syncProgressDecorations()
 wireLoginHandlers()
 
 window.addEventListener("load", async () => {

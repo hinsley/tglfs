@@ -13,88 +13,27 @@ import { getPreviewableMp4Name, isMp4FileName } from "./mp4PreviewableName"
 import { probeMp4MetadataPlacement } from "./mp4MetadataPlacement"
 import { createStreamingPreviewableMp4 } from "./streamingMp4Conversion"
 import { uploadGeneratedFileStream } from "./generatedUpload"
+import { notifyBrowserActionsChanged, registerBrowserAction, type BrowserSelectionItem } from "./browserActions"
+import { requestConfirm, requestText, showToast } from "./dialogs"
 
 const DESKTOP_ID = "browserActionMakeMp4Previewable"
 const MOBILE_ID = "actionMakeMp4PreviewableItem"
 let busy = false
-let toastTimer: number | undefined
 
 type SelectedMp4 = { msgId: number; name: string }
 type AppWindow = Window & { client?: any; config?: Config.Config }
 
-function ensureActions() {
-    if (!document.getElementById(DESKTOP_ID)) {
-        const preview = document.getElementById("browserActionPreview")
-        if (preview) {
-            const button = document.createElement("button")
-            button.id = DESKTOP_ID
-            button.type = "button"
-            button.className = "btn btn-sm btn-secondary action-hidden"
-            button.textContent = "Make MP4 previewable"
-            button.disabled = true
-            preview.insertAdjacentElement("afterend", button)
-        }
-    }
-    if (!document.getElementById(MOBILE_ID)) {
-        const previewItem = document.getElementById("actionPreviewItem")
-        if (previewItem?.parentElement) {
-            const row = document.createElement("li")
-            row.className = "d-none"
-            const item = document.createElement("a")
-            item.id = MOBILE_ID
-            item.className = "dropdown-item"
-            item.href = "#"
-            item.textContent = "🎞️ Make MP4 previewable"
-            row.append(item)
-            previewItem.parentElement.insertAdjacentElement("afterend", row)
-        }
-    }
-}
-
-function selectedMp4(): SelectedMp4 | null {
-    const selectedNodes = Array.from(document.querySelectorAll<HTMLElement>("[data-browser-id].selected"))
-    const ids = new Set(selectedNodes.map((node) => node.dataset.browserId).filter((id): id is string => !!id))
-    if (ids.size !== 1) return null
-    const id = ids.values().next().value as string
-    if (!id.startsWith("file:")) return null
-
-    const nodes = Array.from(document.querySelectorAll<HTMLElement>("[data-browser-id]"))
-        .filter((node) => node.dataset.browserId === id)
-    const msgId = Number(nodes.map((node) => node.dataset.msgid).find(Boolean))
-    const name = nodes.map((node) => node.querySelector<HTMLElement>(".file-name-scroll")?.textContent?.trim()).find(Boolean)
-        ?? nodes.map((node) => node.querySelector<HTMLElement>("td.name")?.textContent?.trim()).find(Boolean)
-    return Number.isInteger(msgId) && msgId > 0 && name && isMp4FileName(name) ? { msgId, name } : null
-}
-
-function updateActionVisibility() {
-    ensureActions()
-    const visible = selectedMp4() !== null
-    const button = document.getElementById(DESKTOP_ID) as HTMLButtonElement | null
-    const item = document.getElementById(MOBILE_ID) as HTMLAnchorElement | null
-    if (button) {
-        button.classList.toggle("action-hidden", !visible)
-        button.disabled = !visible || busy
-    }
-    if (item) {
-        item.closest("li")?.classList.toggle("d-none", !visible)
-        item.setAttribute("aria-disabled", String(!visible || busy))
-    }
+function selectedMp4(selection: BrowserSelectionItem[]): SelectedMp4 | null {
+    if (selection.length !== 1) return null
+    const [item] = selection
+    if (item.kind !== "file" || !item.msgId) return null
+    return Number.isInteger(item.msgId) && item.msgId > 0 && isMp4FileName(item.name)
+        ? { msgId: item.msgId, name: item.name }
+        : null
 }
 
 function showStatus(message: string, persistent = false) {
-    const toast = document.getElementById("ufidToast")
-    if (!toast) return
-    toast.textContent = message
-    toast.setAttribute("aria-hidden", "false")
-    toast.classList.remove("is-visible")
-    void toast.offsetWidth
-    toast.classList.add("is-visible")
-    if (toastTimer !== undefined) window.clearTimeout(toastTimer)
-    toastTimer = persistent ? undefined : window.setTimeout(() => {
-        toast.classList.remove("is-visible")
-        toast.setAttribute("aria-hidden", "true")
-        toastTimer = undefined
-    }, 2200)
+    showToast(message, { durationMs: persistent ? null : 2200 })
 }
 
 function parentFolderId(data: FileCardData): string | undefined {
@@ -113,16 +52,17 @@ async function loadFileCard(client: any, selected: SelectedMp4): Promise<FileCar
 
 async function reportGeneratedUploadComplete(record: Awaited<ReturnType<typeof uploadGeneratedFileStream>>) {
     window.dispatchEvent(new Event("tglfs:refresh-browser"))
-    showStatus(`Created ${record.data.name}`)
-    alert([
-        "Previewable MP4 upload complete.",
-        "",
-        `Name: ${record.data.name}`,
-        `UFID: ${record.data.ufid}`,
-        `Size: ${formatFileCardSize(record.data.size)}`,
-    ].join("\n"))
-    try { await navigator.clipboard.writeText(record.data.ufid) }
-    catch (error) { console.warn("Unable to copy generated MP4 UFID", error) }
+    let copied = false
+    try {
+        await navigator.clipboard.writeText(record.data.ufid)
+        copied = true
+    } catch (error) {
+        console.warn("Unable to copy generated MP4 UFID", error)
+    }
+    showToast(
+        `Created ${record.data.name} (${formatFileCardSize(record.data.size)})${copied ? " · UFID copied" : ""}`,
+        { tone: "success", durationMs: 4000 },
+    )
 }
 
 async function runStreamingPath(
@@ -132,7 +72,14 @@ async function runStreamingPath(
     outputName: string,
     stream: ReadableStream<Uint8Array>,
 ) {
-    const uploadPassword = prompt("(Optional) Encryption password for the new previewable MP4:")
+    const uploadPassword = await requestText({
+        title: "Encrypt previewable MP4",
+        label: "Encryption password (optional)",
+        inputType: "password",
+        allowEmpty: true,
+        confirmLabel: "Start",
+        icon: "lock",
+    })
     if (uploadPassword === null) {
         await stream.cancel("Previewable MP4 creation cancelled.")
         return
@@ -195,26 +142,36 @@ async function runStagedPath(
     return downloaded
 }
 
-async function makePreviewable() {
+async function makePreviewable(selection: BrowserSelectionItem[]) {
     if (busy) return
-    const selected = selectedMp4()
+    const selected = selectedMp4(selection)
     if (!selected) return
     const { client, config } = window as AppWindow
     if (!client || !config) {
-        alert("TGLFS is not connected to Telegram.")
+        showToast("TGLFS is not connected to Telegram.", { tone: "error" })
         return
     }
 
-    const confirmed = confirm(
-        `Create a new previewable MP4 from "${selected.name}"?\n\n` +
-        "The original remains unchanged. TGLFS first inspects the MP4 layout while decrypting it. Front-loaded MP4s are converted and uploaded as one bounded stream without a temporary file. MP4s whose moov metadata is after media data are staged in temporary OPFS, because they require random access.",
-    )
+    const confirmed = await requestConfirm({
+        title: "Make MP4 previewable?",
+        message: `Creates a new streaming-friendly copy of "${selected.name}". The original remains unchanged. ` +
+            "Front-loaded MP4s are converted and uploaded as one bounded stream; MP4s with trailing metadata are staged in temporary browser storage first.",
+        confirmLabel: "Continue",
+        icon: "film",
+    })
     if (!confirmed) return
-    const sourcePassword = prompt("Source MP4 decryption password (leave empty if none):")
+    const sourcePassword = await requestText({
+        title: "Decrypt source MP4",
+        label: "Decryption password (leave empty if none)",
+        inputType: "password",
+        allowEmpty: true,
+        confirmLabel: "Continue",
+        icon: "key",
+    })
     if (sourcePassword === null) return
 
     busy = true
-    updateActionVisibility()
+    notifyBrowserActionsChanged()
     let downloaded: DownloadedSource | null = null
     try {
         const data = await loadFileCard(client, selected)
@@ -237,35 +194,24 @@ async function makePreviewable() {
         downloaded = await runStagedPath(client, config, data, outputName, probed.stream)
     } catch (error) {
         console.error(error)
-        alert(`Unable to make this MP4 previewable.\n\n${error instanceof Error ? error.message : String(error)}`)
-        showStatus("MP4 conversion failed")
+        showToast(
+            `Unable to make this MP4 previewable: ${error instanceof Error ? error.message : String(error)}`,
+            { tone: "error", durationMs: 6000 },
+        )
     } finally {
         await downloaded?.cleanup()
         busy = false
-        updateActionVisibility()
+        notifyBrowserActionsChanged()
     }
 }
 
-function setup() {
-    ensureActions()
-    const button = document.getElementById(DESKTOP_ID)
-    const item = document.getElementById(MOBILE_ID)
-    button?.addEventListener("click", () => void makePreviewable())
-    item?.addEventListener("click", (event) => {
-        event.preventDefault()
-        void makePreviewable()
-    })
-    const browser = document.getElementById("fileBrowser")
-    if (browser) {
-        new MutationObserver(updateActionVisibility).observe(browser, {
-            subtree: true,
-            childList: true,
-            attributes: true,
-            attributeFilter: ["class", "hidden"],
-        })
-    }
-    updateActionVisibility()
-}
-
-if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", setup, { once: true })
-else setup()
+registerBrowserAction({
+    id: DESKTOP_ID,
+    menuId: MOBILE_ID,
+    label: "Make MP4 previewable",
+    shortLabel: "Make MP4",
+    icon: "film",
+    isVisible: (selection) => selectedMp4(selection) !== null,
+    isBusy: () => busy,
+    run: (selection) => makePreviewable(selection),
+})

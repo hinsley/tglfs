@@ -2,6 +2,7 @@ import type { Api as TelegramApi } from "telegram"
 import * as Encryption from "./encryption"
 import { getGramJs } from "../gramjs"
 import { FileCardData } from "../types/models"
+import { requestText, showToast } from "./dialogs"
 
 let Api!: typeof import("telegram")["Api"]
 let getFileInfo!: typeof import("telegram/Utils")["getFileInfo"]
@@ -137,6 +138,7 @@ export class PreviewModal {
     private mediaSource: MediaSource | null = null
     private sourceBuffer: SourceBuffer | null = null
     private openState = false
+    private lastPassword: string | null = null
     private touchStartX: number | null = null
     private touchStartY: number | null = null
 
@@ -175,7 +177,7 @@ export class PreviewModal {
         const previewableItems = items.filter((item) => detectFileType(item.data.name) !== "unsupported")
         const index = previewableItems.findIndex((item) => item.msgId === entry.msgId)
         if (index < 0) {
-            alert("Preview not available for this file type")
+            showToast("Preview isn't available for this file type")
             return
         }
         this.currentItems = previewableItems
@@ -194,6 +196,7 @@ export class PreviewModal {
     }
 
     close() {
+        this.lastPassword = null
         this.abortController?.abort()
         this.abortController = null
         if (this.blobUrl) {
@@ -225,16 +228,19 @@ export class PreviewModal {
         const entry = this.currentItems[index]
         const type = detectFileType(entry.data.name)
         if (type === "unsupported") {
-            alert("Preview not available for this file type")
+            showToast("Preview isn't available for this file type")
             return
         }
-        const password = prompt("Decryption password (leave empty if none):")
+        const password = await this.requestPassword(entry)
         if (password === null) return
 
         this.currentIndex = index
         this.openState = true
         this.modal.removeAttribute("hidden")
         this.setFileInfo(entry)
+        this.modal.dispatchEvent(new CustomEvent("preview:change", {
+            detail: { index, total: this.currentItems.length },
+        }))
         if (type === "video" || type === "audio") {
             this.resetMedia()
             this.hideLoading()
@@ -269,6 +275,22 @@ export class PreviewModal {
             }
             this.showError(err?.message ?? "Preview failed.")
         }
+    }
+
+    private async requestPassword(entry: PreviewEntry): Promise<string | null> {
+        // Reuse the password from the previous item so swiping through a gallery doesn't re-prompt.
+        if (this.openState && this.lastPassword !== null) return this.lastPassword
+        const password = await requestText({
+            title: "Preview file",
+            message: entry.data.name,
+            label: "Decryption password (leave empty if none)",
+            inputType: "password",
+            allowEmpty: true,
+            confirmLabel: "Open",
+            icon: "eye",
+        })
+        this.lastPassword = password
+        return password
     }
 
     private showLoading(resetProgress = true, text = "Downloading...") {
@@ -338,6 +360,7 @@ export class PreviewModal {
     }
 
     private showError(message: string) {
+        this.lastPassword = null
         if (this.loading) this.loading.removeAttribute("hidden")
         if (this.mediaContainer) this.mediaContainer.setAttribute("hidden", "")
         if (this.spinner) this.spinner.setAttribute("hidden", "")

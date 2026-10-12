@@ -25,13 +25,32 @@ import {
 import type { TglfsFolder, TglfsFolderManifest, TglfsFolderManifestEntry, TglfsFolderManifestRecord, TglfsFolderRecord } from "../../packages/tglfs-cli/src/folders"
 import { TGLFS_ROOT_PARENT_ID } from "../../packages/tglfs-cli/src/shared/constants"
 import { PreviewModal, type PreviewEntry } from "./preview"
+import { fileKindForName, fileKindIcon, icon, type FileKind, type IconName } from "./icons"
+import {
+    closeMenu,
+    escapeHtml,
+    isCompactViewport,
+    isMenuOpen,
+    openMenu,
+    requestChoice,
+    requestConfirm,
+    requestText,
+    showToast,
+    type MenuItem,
+} from "./dialogs"
+import {
+    BROWSER_ACTIONS_CHANGED_EVENT,
+    getExtraBrowserActions,
+    type BrowserSelectionItem,
+} from "./browserActions"
 
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"])
 const VIDEO_EXTS = new Set(["mp4", "webm", "mov", "avi", "mkv", "m4v"])
 const AUDIO_EXTS = new Set(["mp3", "wav", "ogg", "flac", "m4a", "aac"])
-const DOC_EXTS = new Set(["pdf", "doc", "docx", "txt", "rtf", "md"])
-const ARCHIVE_EXTS = new Set(["zip", "rar", "7z", "tar", "gz"])
-const CODE_EXTS = new Set(["js", "ts", "py", "go", "rs", "c", "cpp", "h"])
+
+const VIEW_STORAGE_KEY = "tglfs.browser.view"
+const SORT_STORAGE_KEY = "tglfs.browser.sort"
+const LONG_PRESS_MS = 420
 
 type SortMode = "date_desc" | "date_asc" | "name_asc" | "name_desc" | "size_desc" | "size_asc"
 
@@ -75,8 +94,10 @@ type BrowserState = {
     lastFolderOffsetId: number | undefined
     selected: Map<string, BrowserEntry>
     lastClickedIndex: number | null
+    focusIndex: number | null
     hasMore: boolean
     totalPages: number | null
+    totalItems: number | null
     currentFolder: FolderBrowserEntry | null
     currentFolderTrail: FolderBrowserEntry[]
 }
@@ -91,42 +112,25 @@ const state: BrowserState = {
     query: "",
     sort: "date_desc",
     viewMode: "list",
-    pageSize: 10,
+    pageSize: 50,
     currentPage: 0,
     pages: [],
     lastOffsetId: undefined,
     lastFolderOffsetId: undefined,
     selected: new Map(),
     lastClickedIndex: null,
+    focusIndex: null,
     hasMore: true,
     totalPages: null,
+    totalItems: null,
     currentFolder: null,
     currentFolderTrail: [],
 }
 
 let previewModal: PreviewModal | null = null
-let ufidToastTimer: number | undefined
 let activeBrowserClient: any = null
 let refreshBrowser: ((options?: BrowserRefreshOptions) => Promise<void>) | null = null
 let browserRefreshSequence = 0
-
-type BrowserDialogOptions = {
-    title: string
-    message?: string
-    label?: string
-    initialValue?: string
-    confirmLabel?: string
-    cancelLabel?: string
-    inputType?: string
-    allowEmpty?: boolean
-    danger?: boolean
-}
-
-type BrowserChoiceOption = {
-    value: string
-    label: string
-    detail?: string
-}
 
 type MoveDestination =
     | { kind: "folder"; record: TglfsFolderRecord; label: string }
@@ -152,21 +156,34 @@ type PreparedFolderMove = {
     newPath: string
 }
 
+type SelectionAction = {
+    key: string
+    id: string
+    menuId: string
+    label: string
+    shortLabel?: string
+    icon: IconName
+    hint?: string
+    danger?: boolean
+    disabled?: boolean
+    menuOnly?: boolean
+    run: () => void | Promise<void>
+}
+
+let activeBrowserConfig: Config.Config | null = null
+let lastPointerType: string =
+    typeof window !== "undefined" && window.matchMedia("(hover: none)").matches ? "touch" : "mouse"
+let suppressNextClick = false
+let keyboardNavigation = false
+let currentBarActions = new Map<string, SelectionAction>()
+const folderCache = new Map<string, FolderBrowserEntry>()
+
+/* ------------------------------------------------------------- Helpers */
+
 function getExtension(name: string): string {
     const parts = name.toLowerCase().split(".")
     if (parts.length < 2) return ""
     return parts.pop() ?? ""
-}
-
-function getFileTypeIcon(name: string): string {
-    const ext = getExtension(name)
-    if (IMAGE_EXTS.has(ext)) return "🖼️"
-    if (VIDEO_EXTS.has(ext)) return "🎬"
-    if (AUDIO_EXTS.has(ext)) return "🎵"
-    if (DOC_EXTS.has(ext)) return "📄"
-    if (ARCHIVE_EXTS.has(ext)) return "📦"
-    if (CODE_EXTS.has(ext)) return "💻"
-    return "📄"
 }
 
 function isPreviewableName(name: string): boolean {
@@ -174,180 +191,65 @@ function isPreviewableName(name: string): boolean {
     return IMAGE_EXTS.has(ext) || VIDEO_EXTS.has(ext) || AUDIO_EXTS.has(ext)
 }
 
-function escapeHtml(value: string) {
-    return value.replace(/[&<>"']/g, (char) => {
-        switch (char) {
-            case "&":
-                return "&amp;"
-            case "<":
-                return "&lt;"
-            case ">":
-                return "&gt;"
-            case "\"":
-                return "&quot;"
-            default:
-                return "&#39;"
-        }
-    })
+function showUfidToast(message: string, options?: { durationMs?: number | null; tone?: "default" | "success" | "error" }) {
+    showToast(message, options)
 }
 
-function showUfidToast(message: string, options?: { durationMs?: number | null }) {
-    const toast = document.getElementById("ufidToast")
-    if (!toast) return
-    toast.textContent = message
-    toast.setAttribute("aria-hidden", "false")
-    toast.classList.remove("is-visible")
-    void toast.offsetWidth
-    toast.classList.add("is-visible")
-    if (ufidToastTimer !== undefined) {
-        window.clearTimeout(ufidToastTimer)
-        ufidToastTimer = undefined
+const requestBrowserText = requestText
+const requestBrowserConfirm = requestConfirm
+const requestBrowserChoice = requestChoice
+
+function readPreference(key: string): string | null {
+    try {
+        return localStorage.getItem(key)
+    } catch {
+        return null
     }
-    const durationMs = options?.durationMs === undefined ? 1200 : options.durationMs
-    if (durationMs === null) return
-    ufidToastTimer = window.setTimeout(() => {
-        toast.classList.remove("is-visible")
-        toast.setAttribute("aria-hidden", "true")
-    }, durationMs)
 }
 
-function closeBrowserDialog(dialog: HTMLElement) {
-    dialog.remove()
+function writePreference(key: string, value: string) {
+    try {
+        localStorage.setItem(key, value)
+    } catch {
+        // Preferences are best-effort.
+    }
 }
 
-function requestBrowserText(options: BrowserDialogOptions): Promise<string | null> {
-    return new Promise((resolve) => {
-        const dialog = document.createElement("div")
-        dialog.className = "browser-dialog-backdrop"
-        dialog.innerHTML = `
-            <div class="browser-dialog" role="dialog" aria-modal="true" aria-labelledby="browserDialogTitle">
-                <h2 id="browserDialogTitle">${escapeHtml(options.title)}</h2>
-                ${options.message ? `<p>${escapeHtml(options.message)}</p>` : ""}
-                <label class="form-label" for="browserDialogInput">${escapeHtml(options.label ?? "Value")}</label>
-                <input id="browserDialogInput" class="form-control" type="${escapeHtml(options.inputType ?? "text")}" value="${escapeHtml(options.initialValue ?? "")}" />
-                <div class="browser-dialog-actions">
-                    <button type="button" class="btn btn-sm btn-outline-secondary" data-dialog-cancel>${escapeHtml(options.cancelLabel ?? "Cancel")}</button>
-                    <button type="button" class="btn btn-sm btn-primary" data-dialog-confirm>${escapeHtml(options.confirmLabel ?? "Save")}</button>
-                </div>
-            </div>`
-        document.body.appendChild(dialog)
-        const input = dialog.querySelector<HTMLInputElement>("#browserDialogInput")
-        const confirmButton = dialog.querySelector<HTMLButtonElement>("[data-dialog-confirm]")
-        const cancelButton = dialog.querySelector<HTMLButtonElement>("[data-dialog-cancel]")
-
-        const finish = (value: string | null) => {
-            closeBrowserDialog(dialog)
-            resolve(value)
-        }
-        const submit = () => {
-            const value = input?.value ?? ""
-            if (!options.allowEmpty && value.trim() === "") {
-                input?.focus()
-                return
-            }
-            finish(value)
-        }
-
-        confirmButton?.addEventListener("click", submit)
-        cancelButton?.addEventListener("click", () => finish(null))
-        dialog.addEventListener("keydown", (event) => {
-            if (event.key === "Escape") {
-                event.preventDefault()
-                finish(null)
-            }
-            if (event.key === "Enter") {
-                event.preventDefault()
-                submit()
-            }
-        })
-        window.setTimeout(() => {
-            input?.focus()
-            input?.select()
-        }, 0)
-    })
+function isTouchInteraction() {
+    return lastPointerType !== "mouse"
 }
 
-function requestBrowserConfirm(options: BrowserDialogOptions): Promise<boolean> {
-    return new Promise((resolve) => {
-        const dialog = document.createElement("div")
-        dialog.className = "browser-dialog-backdrop"
-        dialog.innerHTML = `
-            <div class="browser-dialog" role="dialog" aria-modal="true" aria-labelledby="browserDialogTitle">
-                <h2 id="browserDialogTitle">${escapeHtml(options.title)}</h2>
-                ${options.message ? `<p>${escapeHtml(options.message)}</p>` : ""}
-                <div class="browser-dialog-actions">
-                    <button type="button" class="btn btn-sm btn-outline-secondary" data-dialog-cancel>${escapeHtml(options.cancelLabel ?? "Cancel")}</button>
-                    <button type="button" class="btn btn-sm ${options.danger ? "btn-danger" : "btn-primary"}" data-dialog-confirm>${escapeHtml(options.confirmLabel ?? "Confirm")}</button>
-                </div>
-            </div>`
-        document.body.appendChild(dialog)
-        const confirmButton = dialog.querySelector<HTMLButtonElement>("[data-dialog-confirm]")
-        const cancelButton = dialog.querySelector<HTMLButtonElement>("[data-dialog-cancel]")
-        const finish = (value: boolean) => {
-            closeBrowserDialog(dialog)
-            resolve(value)
-        }
-        confirmButton?.addEventListener("click", () => finish(true))
-        cancelButton?.addEventListener("click", () => finish(false))
-        dialog.addEventListener("keydown", (event) => {
-            if (event.key === "Escape") {
-                event.preventDefault()
-                finish(false)
-            }
-            if (event.key === "Enter") {
-                event.preventDefault()
-                finish(true)
-            }
-        })
-        window.setTimeout(() => confirmButton?.focus(), 0)
-    })
+function formatSize(size: number) {
+    if (!Number.isFinite(size) || size <= 0) return formatFileCardSize(size)
+    const units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    const unitIndex = Math.min(units.length - 1, Math.floor(Math.log(size) / Math.log(1024)))
+    const value = size / Math.pow(1024, unitIndex)
+    const digits = unitIndex === 0 || value >= 10 ? 0 : 1
+    return `${value.toFixed(digits).replace(/\.0$/, "")} ${units[unitIndex]}`
 }
 
-function requestBrowserChoice(options: BrowserDialogOptions & { choices: BrowserChoiceOption[] }): Promise<string | null> {
-    return new Promise((resolve) => {
-        const dialog = document.createElement("div")
-        dialog.className = "browser-dialog-backdrop"
-        const choices = options.choices.map((choice) => `
-            <option value="${escapeHtml(choice.value)}">${escapeHtml(choice.detail ? `${choice.label} - ${choice.detail}` : choice.label)}</option>
-        `).join("")
-        dialog.innerHTML = `
-            <div class="browser-dialog" role="dialog" aria-modal="true" aria-labelledby="browserDialogTitle">
-                <h2 id="browserDialogTitle">${escapeHtml(options.title)}</h2>
-                ${options.message ? `<p>${escapeHtml(options.message)}</p>` : ""}
-                <label class="form-label" for="browserDialogSelect">${escapeHtml(options.label ?? "Destination")}</label>
-                <select id="browserDialogSelect" class="form-select">${choices}</select>
-                <div class="browser-dialog-actions">
-                    <button type="button" class="btn btn-sm btn-outline-secondary" data-dialog-cancel>${escapeHtml(options.cancelLabel ?? "Cancel")}</button>
-                    <button type="button" class="btn btn-sm btn-primary" data-dialog-confirm>${escapeHtml(options.confirmLabel ?? "Choose")}</button>
-                </div>
-            </div>`
-        document.body.appendChild(dialog)
-        const select = dialog.querySelector<HTMLSelectElement>("#browserDialogSelect")
-        const confirmButton = dialog.querySelector<HTMLButtonElement>("[data-dialog-confirm]")
-        const cancelButton = dialog.querySelector<HTMLButtonElement>("[data-dialog-cancel]")
-        const finish = (value: string | null) => {
-            closeBrowserDialog(dialog)
-            resolve(value)
-        }
-        confirmButton?.addEventListener("click", () => finish(select?.value ?? null))
-        cancelButton?.addEventListener("click", () => finish(null))
-        dialog.addEventListener("keydown", (event) => {
-            if (event.key === "Escape") {
-                event.preventDefault()
-                finish(null)
-            }
-            if (event.key === "Enter") {
-                event.preventDefault()
-                finish(select?.value ?? null)
-            }
-        })
-        window.setTimeout(() => select?.focus(), 0)
-    })
+function formatEntryDate(epochSec: number) {
+    const date = new Date(epochSec * 1000)
+    if (Number.isNaN(date.getTime())) return ""
+    const now = new Date()
+    if (date.toDateString() === now.toDateString()) {
+        return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
+    }
+    if (date.getFullYear() === now.getFullYear()) {
+        return date.toLocaleDateString(undefined, { month: "short", day: "numeric" })
+    }
+    return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })
 }
+
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+    return `${count} ${count === 1 ? singular : plural}`
+}
+
+/* ------------------------------------------------------- Listing state */
 
 function clearViews() {
-    const tbody = document.querySelector<HTMLTableSectionElement>("#browserTable tbody")
-    if (tbody) tbody.innerHTML = ""
+    const rows = document.getElementById("browserRows")
+    if (rows) rows.innerHTML = ""
     const grid = document.getElementById("browserGrid")
     if (grid) grid.innerHTML = ""
 }
@@ -359,37 +261,48 @@ function resetBrowserListingState() {
     state.lastFolderOffsetId = undefined
     state.selected.clear()
     state.lastClickedIndex = null
+    state.focusIndex = null
     state.hasMore = false
     state.totalPages = null
+    state.totalItems = null
 }
 
 function renderBrowserLoading(message = "Loading files...") {
     resetBrowserListingState()
     clearViews()
-    const safeMessage = escapeHtml(message)
     const content = document.getElementById("browserContent")
     content?.setAttribute("aria-busy", "true")
+    document.getElementById("browserEmpty")?.setAttribute("hidden", "")
 
-    const tbody = document.querySelector<HTMLTableSectionElement>("#browserTable tbody")
-    if (tbody) {
-        const tr = document.createElement("tr")
-        tr.className = "browser-loading-row"
-        tr.innerHTML = `<td colspan="5"><span class="browser-loading-indicator"><span class="browser-loading-spinner" aria-hidden="true"></span><span>${safeMessage}</span></span></td>`
-        tbody.appendChild(tr)
+    const rows = document.getElementById("browserRows")
+    if (rows) {
+        const widths = [62, 44, 71, 38, 55, 66, 48, 59]
+        rows.innerHTML = widths.map((width) => `
+            <div class="fx-row fx-skeleton" aria-hidden="true">
+                <div class="fx-cell fx-cell-check"></div>
+                <div class="fx-cell fx-name-cell"><span class="fx-skel fx-skel-icon"></span><span class="fx-skel fx-skel-line" style="width:${width}%"></span></div>
+                <div class="fx-cell fx-cell-size"><span class="fx-skel fx-skel-line" style="width:48px"></span></div>
+                <div class="fx-cell fx-cell-date"><span class="fx-skel fx-skel-line" style="width:72px"></span></div>
+                <div class="fx-cell fx-cell-more"></div>
+            </div>`).join("")
     }
-
     const grid = document.getElementById("browserGrid")
     if (grid) {
-        grid.innerHTML = `<div class="browser-loading-state"><span class="browser-loading-spinner" aria-hidden="true"></span><span>${safeMessage}</span></div>`
+        grid.innerHTML = Array.from({ length: 8 }, () => `
+            <div class="fx-tile fx-skeleton" aria-hidden="true">
+                <div class="fx-tile-art"><span class="fx-skel"></span></div>
+                <div class="fx-tile-body"><span class="fx-skel fx-skel-line" style="width:80%"></span><span class="fx-skel fx-skel-line" style="width:45%;margin-top:8px"></span></div>
+            </div>`).join("")
     }
 
     updateFolderLocation()
     const pageInfo = document.getElementById("browserPageInfo")
-    if (pageInfo) pageInfo.textContent = safeMessage
+    if (pageInfo) pageInfo.textContent = message
     const prevButton = document.getElementById("browserPrevPage") as HTMLButtonElement | null
     const nextButton = document.getElementById("browserNextPage") as HTMLButtonElement | null
     if (prevButton) prevButton.disabled = true
     if (nextButton) nextButton.disabled = true
+    document.getElementById("browserPager")?.classList.add("is-single")
     applyViewMode()
     updateSelectionDisplay()
 }
@@ -450,23 +363,25 @@ function getEntryPath(entry: BrowserEntry) {
     return ""
 }
 
-function getEntryIcon(entry: BrowserEntry) {
-    if (entry.kind === "folder") return "📁"
-    return getFileTypeIcon(getEntryName(entry))
+function getEntryKind(entry: BrowserEntry): FileKind {
+    if (entry.kind === "folder") return "folder"
+    return fileKindForName(getEntryName(entry))
 }
 
 function getEntrySizeText(entry: BrowserEntry) {
     if (entry.kind === "folder") return "Folder"
-    return formatFileCardSize(getEntrySize(entry))
+    return formatSize(getEntrySize(entry))
 }
 
-function getEntryStatus(entry: BrowserEntry) {
-    if (entry.kind === "folder") return { label: "Folder", className: "folder" }
-    if (entry.kind === "missing-file") return { label: "Missing", className: "missing" }
-    return {
-        label: entry.data.uploadComplete ? "Complete" : "Incomplete",
-        className: entry.data.uploadComplete ? "complete" : "incomplete",
-    }
+function getEntryMetaText(entry: BrowserEntry) {
+    const date = formatEntryDate(getEntryDate(entry))
+    return [getEntrySizeText(entry), date].filter(Boolean).join(" · ")
+}
+
+function getEntryBadge(entry: BrowserEntry) {
+    if (entry.kind === "missing-file") return `<span class="fx-badge fx-badge--missing">Missing</span>`
+    if (entry.kind === "file" && !entry.data.uploadComplete) return `<span class="fx-badge fx-badge--incomplete">Incomplete</span>`
+    return ""
 }
 
 function getCopyId(entry: BrowserEntry) {
@@ -477,15 +392,17 @@ function getCopyId(entry: BrowserEntry) {
 
 function applySort(items: BrowserEntry[]) {
     items.sort((a, b) => {
+        // Folders always come first, like every desktop file manager.
+        if (isFolderEntry(a) !== isFolderEntry(b)) return isFolderEntry(a) ? -1 : 1
         switch (state.sort) {
             case "date_desc":
                 return getEntryDate(b) - getEntryDate(a)
             case "date_asc":
                 return getEntryDate(a) - getEntryDate(b)
             case "name_asc":
-                return getEntryName(a).localeCompare(getEntryName(b))
+                return getEntryName(a).localeCompare(getEntryName(b), undefined, { numeric: true, sensitivity: "base" })
             case "name_desc":
-                return getEntryName(b).localeCompare(getEntryName(a))
+                return getEntryName(b).localeCompare(getEntryName(a), undefined, { numeric: true, sensitivity: "base" })
             case "size_desc":
                 return getEntrySize(b) - getEntrySize(a)
             case "size_asc":
@@ -494,45 +411,722 @@ function applySort(items: BrowserEntry[]) {
     })
 }
 
-function applyGridMarquee(item: HTMLElement) {
-    const nameEl = item.querySelector<HTMLElement>(".file-name")
-    const textEl = item.querySelector<HTMLElement>(".file-name-text")
-    const scrollEl = item.querySelector<HTMLElement>(".file-name-scroll")
-    if (!nameEl || !textEl || !scrollEl) return
-    requestAnimationFrame(() => {
-        nameEl.classList.remove("is-marquee")
-        nameEl.style.removeProperty("--marquee-distance")
-        nameEl.style.removeProperty("--marquee-duration")
-        const overflow = scrollEl.scrollWidth - textEl.clientWidth
-        if (overflow > 8) {
-            const gap = 24
-            const distance = overflow + gap
-            const duration = Math.max(6, distance / 24)
-            nameEl.classList.add("is-marquee")
-            nameEl.style.setProperty("--marquee-distance", `${distance}px`)
-            nameEl.style.setProperty("--marquee-duration", `${duration}s`)
-            nameEl.style.setProperty("--marquee-gap", `${gap}px`)
-        }
-    })
+/* ---------------------------------------------------------- Navigation */
+
+type BrowserHistoryState = {
+    tglfs: true
+    trail: string[]
+    preview?: boolean
 }
 
-async function openFolder(entry: FolderBrowserEntry) {
-    const loadingMessage = `Loading ${entry.data.name}...`
-    const immediateTrail = state.currentFolder
-        ? [...(state.currentFolderTrail.length ? state.currentFolderTrail : [state.currentFolder]), entry]
-        : [entry]
-    state.currentFolderTrail = immediateTrail
-    state.currentFolder = entry
+function rememberFolder(entry: FolderBrowserEntry) {
+    folderCache.set(entry.data.folderId, entry)
+}
+
+function currentTrailIds() {
+    if (!state.currentFolder) return []
+    const trail = state.currentFolderTrail.length ? state.currentFolderTrail : [state.currentFolder]
+    return trail.map((folder) => folder.data.folderId)
+}
+
+function historyUrlFor(trailIds: string[]) {
+    const base = `${window.location.pathname}${window.location.search}`
+    const last = trailIds[trailIds.length - 1]
+    return last ? `${base}#/f/${encodeURIComponent(last)}` : base
+}
+
+function writeHistory(mode: "push" | "replace") {
+    const ids = currentTrailIds()
+    const historyState: BrowserHistoryState = { tglfs: true, trail: ids }
+    try {
+        if (mode === "push") {
+            window.history.pushState(historyState, "", historyUrlFor(ids))
+        } else {
+            window.history.replaceState(historyState, "", historyUrlFor(ids))
+        }
+    } catch (error) {
+        console.warn("Unable to update browser history", error)
+    }
+}
+
+function resetSearchInput() {
     state.query = ""
     const searchInput = document.getElementById("browserSearchInput") as HTMLInputElement | null
     if (searchInput) searchInput.value = ""
+    document.getElementById("browserSearchClear")?.setAttribute("hidden", "")
+}
+
+async function navigateTo(
+    target: FolderBrowserEntry | null,
+    options: { push?: boolean; trail?: FolderBrowserEntry[] } = {},
+) {
+    closeMenu()
+    closeSidebar()
+    resetSearchInput()
+    const previousFolder = state.currentFolder
+    if (!target) {
+        state.currentFolder = null
+        state.currentFolderTrail = []
+        if (options.push !== false) writeHistory("push")
+        await refreshBrowser?.({ showLoading: true, loadingMessage: "Loading files..." })
+        return
+    }
+
+    rememberFolder(target)
+    const knownTrail = options.trail
+    state.currentFolderTrail = knownTrail ?? (previousFolder
+        ? [...(state.currentFolderTrail.length ? state.currentFolderTrail : [previousFolder]), target]
+        : [target])
+    state.currentFolder = target
+    if (options.push !== false) writeHistory("push")
+    const loadingMessage = `Loading ${target.data.name}...`
+    if (knownTrail) {
+        await refreshBrowser?.({ showLoading: true, loadingMessage })
+        return
+    }
+
     beginBrowserNavigationLoading(loadingMessage)
     const navigationSequence = browserRefreshSequence
-    const trail = await buildFolderTrail(entry)
+    let trail: FolderBrowserEntry[] = [target]
+    try {
+        trail = await buildFolderTrail(target)
+    } catch (error) {
+        console.warn("Unable to resolve folder trail", error)
+    }
     if (navigationSequence !== browserRefreshSequence) return
-    state.currentFolderTrail = trail.length ? trail : [entry]
-    state.currentFolder = state.currentFolderTrail[state.currentFolderTrail.length - 1] ?? entry
+    state.currentFolderTrail = trail.length ? trail : [target]
+    state.currentFolder = state.currentFolderTrail[state.currentFolderTrail.length - 1] ?? target
+    state.currentFolderTrail.forEach(rememberFolder)
+    writeHistory("replace")
     await refreshBrowser?.({ showLoading: true, loadingMessage })
+}
+
+async function goUp() {
+    const folder = state.currentFolder
+    if (!folder) return
+    const trail = state.currentFolderTrail.length ? state.currentFolderTrail : [folder]
+    if (trail.length >= 2) {
+        await navigateTo(trail[trail.length - 2], { trail: trail.slice(0, -1) })
+        return
+    }
+    const parentId = folder.data.parentFolderId
+    if (parentId && parentId !== TGLFS_ROOT_PARENT_ID && activeBrowserClient) {
+        const parent = await getFolderRecord(activeBrowserClient, parentId)
+        if (parent) {
+            await navigateTo(folderEntryFromRecord(parent))
+            return
+        }
+    }
+    await navigateTo(null)
+}
+
+async function restoreHistoryTrail(ids: string[]) {
+    const current = currentTrailIds()
+    if (current.length === ids.length && current.every((id, index) => id === ids[index])) return
+    if (ids.length === 0) {
+        await navigateTo(null, { push: false })
+        return
+    }
+    const cached = ids.map((id) => folderCache.get(id))
+    if (cached.every((entry): entry is FolderBrowserEntry => !!entry)) {
+        await navigateTo(cached[cached.length - 1], { push: false, trail: cached })
+        return
+    }
+    const lastId = ids[ids.length - 1]
+    let last = folderCache.get(lastId) ?? null
+    if (!last && activeBrowserClient) {
+        const record = await getFolderRecord(activeBrowserClient, lastId).catch(() => null)
+        last = record ? folderEntryFromRecord(record) : null
+    }
+    await navigateTo(last, { push: false })
+}
+
+function updateFolderLocation() {
+    const breadcrumb = document.getElementById("browserBreadcrumb")
+    if (!breadcrumb) return
+    breadcrumb.textContent = ""
+    const trail = state.currentFolder
+        ? (state.currentFolderTrail.length ? state.currentFolderTrail : [state.currentFolder])
+        : []
+
+    const addSeparator = () => {
+        const separator = document.createElement("span")
+        separator.className = "fx-crumb-sep"
+        separator.innerHTML = icon("chevronRight")
+        breadcrumb.appendChild(separator)
+    }
+    const addCrumb = (label: string, isCurrent: boolean, onClick?: () => void) => {
+        const button = document.createElement("button")
+        button.type = "button"
+        button.className = `fx-crumb${isCurrent ? " is-current" : ""}`
+        button.textContent = label
+        button.title = label
+        if (isCurrent) {
+            button.setAttribute("aria-current", "page")
+        } else if (onClick) {
+            button.addEventListener("click", onClick)
+        }
+        breadcrumb.appendChild(button)
+    }
+
+    addCrumb("All files", trail.length === 0, () => void navigateTo(null))
+    for (const [index, folder] of trail.entries()) {
+        addSeparator()
+        const isCurrent = index === trail.length - 1
+        addCrumb(folder.data.name, isCurrent, () => void navigateTo(folder, { trail: trail.slice(0, index + 1) }))
+    }
+    requestAnimationFrame(() => {
+        breadcrumb.scrollLeft = breadcrumb.scrollWidth
+    })
+
+    const upButton = document.getElementById("browserUpButton")
+    upButton?.toggleAttribute("hidden", !state.currentFolder)
+    document.getElementById("navAllFiles")?.classList.toggle("is-active", !state.currentFolder)
+    const searchInput = document.getElementById("browserSearchInput") as HTMLInputElement | null
+    if (searchInput) {
+        searchInput.placeholder = state.currentFolder ? `Search in ${state.currentFolder.data.name}` : "Search files"
+    }
+    const dropTarget = document.getElementById("dropTarget")
+    if (dropTarget) {
+        dropTarget.textContent = state.currentFolder ? `into ${state.currentFolder.data.name}` : "into All files"
+    }
+}
+
+/* ----------------------------------------------------------- Rendering */
+
+function checkboxHtml(label: string) {
+    return `<button type="button" class="fx-check" role="checkbox" aria-checked="false" tabindex="-1" aria-label="Select ${escapeHtml(label)}">${icon("check")}</button>`
+}
+
+function moreButtonHtml(label: string) {
+    return `<button type="button" class="fx-icon-btn fx-more" tabindex="-1" aria-haspopup="menu" aria-label="More actions for ${escapeHtml(label)}">${icon("more")}</button>`
+}
+
+function applyEntryDataset(element: HTMLElement, entry: BrowserEntry, index: number) {
+    element.dataset.browserId = entry.id
+    element.dataset.kind = entry.kind
+    element.dataset.index = String(index)
+    element.dataset.name = getEntryName(entry)
+    if (isFileEntry(entry)) element.dataset.msgid = String(entry.msgId)
+}
+
+function renderList(items: BrowserEntry[]) {
+    const rows = document.getElementById("browserRows")
+    if (!rows) return
+    const fragment = document.createDocumentFragment()
+    for (const [index, entry] of items.entries()) {
+        const name = getEntryName(entry)
+        const safeName = escapeHtml(name)
+        const path = entry.kind === "missing-file" ? getEntryPath(entry) : ""
+        const sub = path ? escapeHtml(path) : escapeHtml(getEntryMetaText(entry))
+        const row = document.createElement("div")
+        row.className = "fx-row"
+        row.setAttribute("role", "row")
+        row.tabIndex = -1
+        applyEntryDataset(row, entry, index)
+        row.innerHTML = `
+            <div class="fx-cell fx-cell-check">${checkboxHtml(name)}</div>
+            <div class="fx-cell fx-name-cell">
+                ${fileKindIcon(getEntryKind(entry))}
+                <div class="fx-name-wrap">
+                    <div class="fx-name-line"><span class="fx-name" title="${safeName}">${safeName}</span>${getEntryBadge(entry)}</div>
+                    <div class="fx-sub${path ? " is-path" : ""}">${sub}</div>
+                </div>
+            </div>
+            <div class="fx-cell fx-cell-size">${entry.kind === "folder" ? "—" : escapeHtml(getEntrySizeText(entry))}</div>
+            <div class="fx-cell fx-cell-date" title="${escapeHtml(formatFileCardDate(getEntryDate(entry)))}">${escapeHtml(formatEntryDate(getEntryDate(entry)))}</div>
+            <div class="fx-cell fx-cell-more">${moreButtonHtml(name)}</div>`
+        attachEntryHandlers(row, entry, index)
+        fragment.appendChild(row)
+    }
+    rows.appendChild(fragment)
+}
+
+function renderGrid(items: BrowserEntry[]) {
+    const grid = document.getElementById("browserGrid")
+    if (!grid) return
+    const fragment = document.createDocumentFragment()
+    for (const [index, entry] of items.entries()) {
+        const name = getEntryName(entry)
+        const safeName = escapeHtml(name)
+        const tile = document.createElement("div")
+        tile.className = "fx-tile"
+        tile.setAttribute("role", "gridcell")
+        tile.tabIndex = -1
+        applyEntryDataset(tile, entry, index)
+        tile.innerHTML = `
+            <div class="fx-tile-art">${fileKindIcon(getEntryKind(entry), "lg")}${getEntryBadge(entry)}</div>
+            ${checkboxHtml(name)}
+            ${moreButtonHtml(name)}
+            <div class="fx-tile-body">
+                <div class="fx-tile-name" title="${safeName}">${safeName}</div>
+                <div class="fx-tile-meta">${escapeHtml(getEntryMetaText(entry))}</div>
+            </div>`
+        attachEntryHandlers(tile, entry, index)
+        fragment.appendChild(tile)
+    }
+    grid.appendChild(fragment)
+}
+
+function renderEmptyState(visible: boolean) {
+    const empty = document.getElementById("browserEmpty")
+    if (!empty) return
+    if (!visible) {
+        empty.setAttribute("hidden", "")
+        return
+    }
+    const searching = state.query.length > 0
+    const title = searching
+        ? `No results for “${state.query}”`
+        : state.currentFolder ? "This folder is empty" : "No files yet"
+    const text = searching
+        ? "Try a different name, or search for a UFID."
+        : "Upload files or drop them here. Everything is encrypted in your browser before it reaches Telegram."
+    empty.innerHTML = `
+        <span class="fx-empty-art">${icon(searching ? "search" : "cloudUp")}</span>
+        <h2>${escapeHtml(title)}</h2>
+        <p>${escapeHtml(text)}</p>
+        <div class="fx-empty-actions">
+            ${searching
+                ? `<button type="button" class="fx-btn fx-btn-secondary" data-empty-action="clear">${icon("close")}Clear search</button>`
+                : `<button type="button" class="fx-btn fx-btn-primary" data-empty-action="upload">${icon("upload")}Upload files</button>
+                   <button type="button" class="fx-btn fx-btn-secondary" data-empty-action="folder">${icon("folderPlus")}New folder</button>`}
+        </div>`
+    empty.removeAttribute("hidden")
+}
+
+function updatePager(items: BrowserEntry[]) {
+    const pager = document.getElementById("browserPager")
+    const pageInfo = document.getElementById("browserPageInfo")
+    const prevButton = document.getElementById("browserPrevPage") as HTMLButtonElement | null
+    const nextButton = document.getElementById("browserNextPage") as HTMLButtonElement | null
+    const hasPrev = state.currentPage > 0
+    const hasNext = !(state.currentPage >= state.pages.length - 1 && !state.hasMore)
+    if (prevButton) prevButton.disabled = !hasPrev
+    if (nextButton) nextButton.disabled = !hasNext
+    const single = !hasPrev && !hasNext
+    pager?.classList.toggle("is-single", single)
+    pager?.toggleAttribute("hidden", items.length === 0)
+    if (!pageInfo) return
+    if (single) {
+        pageInfo.textContent = pluralize(items.length, "item")
+        return
+    }
+    const start = state.currentPage * state.pageSize + 1
+    const end = start + items.length - 1
+    pageInfo.textContent = state.totalItems !== null
+        ? `${start}–${end} of ${state.totalItems}`
+        : `${start}–${end} · Page ${state.currentPage + 1} of ${visibleTotalPages()}`
+}
+
+function renderBrowser(items: BrowserEntry[]) {
+    const content = document.getElementById("browserContent")
+    content?.setAttribute("aria-busy", "false")
+    clearViews()
+    applySort(items)
+    for (const entry of items) {
+        if (isFolderEntry(entry)) rememberFolder(entry)
+    }
+    if (state.focusIndex !== null && state.focusIndex >= items.length) state.focusIndex = null
+    renderList(items)
+    renderGrid(items)
+    renderEmptyState(items.length === 0)
+    updateFolderLocation()
+    updatePager(items)
+    applyViewMode()
+    updateSelectionDisplay()
+}
+
+function applyViewMode() {
+    const listView = document.getElementById("browserList")
+    const gridView = document.getElementById("browserGrid")
+    const listButton = document.getElementById("viewList")
+    const gridButton = document.getElementById("viewGrid")
+    const empty = !document.getElementById("browserEmpty")?.hasAttribute("hidden")
+    listView?.toggleAttribute("hidden", state.viewMode !== "list" || empty)
+    gridView?.toggleAttribute("hidden", state.viewMode !== "grid" || empty)
+    listButton?.classList.toggle("is-active", state.viewMode === "list")
+    gridButton?.classList.toggle("is-active", state.viewMode === "grid")
+    listButton?.setAttribute("aria-pressed", String(state.viewMode === "list"))
+    gridButton?.setAttribute("aria-pressed", String(state.viewMode === "grid"))
+}
+
+function setViewMode(mode: "list" | "grid") {
+    state.viewMode = mode
+    writePreference(VIEW_STORAGE_KEY, mode)
+    applyViewMode()
+    applyFocusDisplay()
+}
+
+/* ----------------------------------------------------------- Selection */
+
+function toggleSelection(entry: BrowserEntry, index: number) {
+    if (state.selected.has(entry.id)) {
+        state.selected.delete(entry.id)
+    } else {
+        state.selected.set(entry.id, entry)
+    }
+    state.lastClickedIndex = index
+    state.focusIndex = index
+    updateSelectionDisplay()
+}
+
+function selectOnly(entry: BrowserEntry, index: number) {
+    state.selected.clear()
+    state.selected.set(entry.id, entry)
+    state.lastClickedIndex = index
+    state.focusIndex = index
+    updateSelectionDisplay()
+}
+
+function selectRange(fromIndex: number, toIndex: number, additive: boolean) {
+    const items = getVisibleItems()
+    if (!additive) state.selected.clear()
+    const [start, end] = fromIndex <= toIndex ? [fromIndex, toIndex] : [toIndex, fromIndex]
+    for (let i = start; i <= end; i++) {
+        const entry = items[i]
+        if (entry) state.selected.set(entry.id, entry)
+    }
+    state.focusIndex = toIndex
+    updateSelectionDisplay()
+}
+
+function selectAllVisible() {
+    const items = getVisibleItems()
+    const allSelected = items.length > 0 && items.every((entry) => state.selected.has(entry.id))
+    if (allSelected) {
+        clearSelection()
+        return
+    }
+    for (const entry of items) state.selected.set(entry.id, entry)
+    updateSelectionDisplay()
+}
+
+function clearSelection() {
+    state.selected.clear()
+    state.lastClickedIndex = null
+    updateSelectionDisplay()
+}
+
+function applyFocusDisplay(scroll = false) {
+    document.querySelectorAll<HTMLElement>("[data-browser-id].is-focused").forEach((node) => node.classList.remove("is-focused"))
+    if (state.focusIndex === null || !keyboardNavigation) return
+    const container = state.viewMode === "grid" ? "#browserGrid" : "#browserRows"
+    const node = document.querySelector<HTMLElement>(`${container} [data-index="${state.focusIndex}"]`)
+    if (!node) return
+    node.classList.add("is-focused")
+    if (scroll) node.scrollIntoView({ block: "nearest" })
+}
+
+function updateSelectionDisplay() {
+    const selectedIds = new Set(state.selected.keys())
+    document.querySelectorAll<HTMLElement>("[data-browser-id]").forEach((node) => {
+        const id = node.dataset.browserId
+        const selected = !!id && selectedIds.has(id)
+        node.classList.toggle("selected", selected)
+        node.setAttribute("aria-selected", String(selected))
+        node.querySelector(".fx-check")?.setAttribute("aria-checked", String(selected))
+    })
+    const items = getVisibleItems()
+    const selectedVisible = items.filter((entry) => selectedIds.has(entry.id)).length
+    const headCheck = document.getElementById("browserSelectAllCheck")
+    headCheck?.setAttribute(
+        "aria-checked",
+        selectedVisible === 0 ? "false" : selectedVisible === items.length ? "true" : "mixed",
+    )
+    applyFocusDisplay()
+    updateActionStates()
+}
+
+function toSelectionItems(entries: BrowserEntry[]): BrowserSelectionItem[] {
+    return entries.map((entry) => ({
+        kind: entry.kind,
+        id: entry.id,
+        name: getEntryName(entry),
+        msgId: isFileEntry(entry) ? entry.msgId : undefined,
+    }))
+}
+
+function getSelectionActions(entries: BrowserEntry[]): SelectionAction[] {
+    const client = activeBrowserClient
+    const single = entries.length === 1 ? entries[0] : null
+    const files = entries.filter(isFileEntry)
+    const folders = entries.filter(isFolderEntry)
+    const allFilesOrFolders = entries.length > 0 && files.length + folders.length === entries.length
+    const actions: SelectionAction[] = []
+
+    if (single && isFolderEntry(single)) {
+        actions.push({ key: "open", id: "browserActionPreview", menuId: "actionPreviewItem", label: "Open", icon: "open", hint: "↵", run: () => runSingleOpenAction(single) })
+    } else if (single && isFileEntry(single) && isPreviewableName(single.data.name)) {
+        actions.push({ key: "open", id: "browserActionPreview", menuId: "actionPreviewItem", label: "Preview", icon: "eye", hint: "↵", run: () => runSingleOpenAction(single) })
+    }
+    if (single && isFileEntry(single)) {
+        actions.push({ key: "download", id: "browserActionDownload", menuId: "actionDownloadItem", label: "Download", icon: "download", run: () => downloadEntry(single) })
+    }
+    const selectionItems = toSelectionItems(entries)
+    for (const extra of getExtraBrowserActions()) {
+        if (!extra.isVisible(selectionItems)) continue
+        actions.push({
+            key: `extra:${extra.id}`,
+            id: extra.id,
+            menuId: extra.menuId,
+            label: extra.label,
+            shortLabel: extra.shortLabel,
+            icon: extra.icon,
+            disabled: extra.isBusy?.() ?? false,
+            run: () => extra.run(selectionItems),
+        })
+    }
+    if (single && (isFileEntry(single) || isFolderEntry(single))) {
+        actions.push({ key: "rename", id: "browserActionRename", menuId: "actionRenameItem", label: "Rename", icon: "pencil", hint: "F2", run: () => renameEntry(single) })
+    }
+    if (allFilesOrFolders && client) {
+        actions.push({ key: "move", id: "browserActionMove", menuId: "actionMoveItem", label: "Move", icon: "move", run: () => moveSelectedEntries(client) })
+    }
+    if (entries.length > 0 && files.length === entries.length) {
+        actions.push({ key: "send", id: "browserActionSend", menuId: "actionSendItem", label: "Send", icon: "send", run: () => sendEntries(files) })
+    }
+    if (single) {
+        const copy = getCopyId(single)
+        actions.push({ key: "copy", id: "browserActionCopyId", menuId: "actionCopyIdItem", label: `Copy ${copy.label}`, icon: "copy", menuOnly: true, run: () => copyEntryId(single) })
+    }
+    if (allFilesOrFolders) {
+        actions.push({ key: "delete", id: "browserActionDelete", menuId: "actionDeleteItem", label: "Delete", icon: "trash", danger: true, hint: "Del", run: () => deleteSelectedEntries() })
+    }
+    return actions
+}
+
+function updateActionStates() {
+    const selectedEntries = Array.from(state.selected.values())
+    const selectedCount = selectedEntries.length
+    const browserDiv = document.getElementById("fileBrowser")
+    const browserVisible = !!browserDiv && !browserDiv.hasAttribute("hidden")
+    const active = browserVisible && selectedCount > 0
+    document.body.classList.toggle("fx-selecting", active)
+    browserDiv?.classList.toggle("fx-selecting", active)
+
+    const bar = document.getElementById("fileActionsBar")
+    bar?.toggleAttribute("hidden", !active)
+    const info = document.getElementById("selectionInfo")
+    if (info) info.textContent = selectedCount > 0 ? `${selectedCount} selected` : ""
+    const selectAllButton = document.getElementById("selectAllBtn")
+    if (selectAllButton) {
+        const items = getVisibleItems()
+        const allSelected = items.length > 0 && items.every((entry) => state.selected.has(entry.id))
+        selectAllButton.textContent = allSelected ? "Deselect all" : "Select all"
+    }
+
+    const container = document.getElementById("fileActionsButtons")
+    if (!container) return
+    currentBarActions = new Map()
+    if (!active) {
+        container.innerHTML = ""
+        return
+    }
+    const actions = getSelectionActions(selectedEntries).filter((action) => !action.menuOnly)
+    const compact = isCompactViewport()
+    const max = compact ? 5 : 8
+    const visible = actions.length > max ? actions.slice(0, max - 1) : actions
+    const overflow = actions.length > max ? actions.slice(max - 1) : []
+    const buttonHtml = (action: SelectionAction) => `
+        <button type="button" id="${escapeHtml(action.id)}" class="fx-sel-action${action.danger ? " is-danger" : ""}"
+            data-action-key="${escapeHtml(action.key)}" title="${escapeHtml(action.hint ? `${action.label} (${action.hint})` : action.label)}"
+            ${action.disabled ? "disabled" : ""}>
+            ${icon(action.icon)}<span>${escapeHtml(compact ? action.shortLabel ?? action.label : action.label)}</span>
+        </button>`
+    container.innerHTML = visible.map(buttonHtml).join("") + (overflow.length
+        ? `<button type="button" class="fx-sel-action" data-action-key="__more" title="More actions">${icon("more")}<span>More</span></button>`
+        : "")
+    for (const action of actions) currentBarActions.set(action.key, action)
+    currentBarActions.set("__more", {
+        key: "__more",
+        id: "",
+        menuId: "",
+        label: "More",
+        icon: "more",
+        run: () => {
+            const anchor = container.querySelector<HTMLElement>('[data-action-key="__more"]') ?? undefined
+            openMenu({ anchor, items: overflow.map(actionToMenuItem) })
+        },
+    })
+}
+
+function actionToMenuItem(action: SelectionAction): MenuItem {
+    return {
+        id: action.menuId,
+        label: action.label,
+        icon: action.icon,
+        hint: action.hint,
+        danger: action.danger,
+        disabled: action.disabled,
+        onSelect: action.run,
+    }
+}
+
+function openEntryMenu(entry: BrowserEntry, index: number, anchor?: HTMLElement | { x: number; y: number }) {
+    // On touch, opening one item's sheet must not leave the browser in selection mode afterwards.
+    const transient = !state.selected.has(entry.id) && (isTouchInteraction() || isCompactViewport())
+    const restoreSelection = () => {
+        if (!transient) return
+        if (state.selected.size === 1 && state.selected.has(entry.id)) clearSelection()
+    }
+    if (!state.selected.has(entry.id)) selectOnly(entry, index)
+    const entries = Array.from(state.selected.values())
+    const actions = getSelectionActions(entries)
+    const items: MenuItem[] = []
+    for (const action of actions) {
+        if (action.danger && items.length) items.push({ divider: true })
+        const item = actionToMenuItem(action)
+        if ("onSelect" in item) {
+            item.onSelect = async () => {
+                try {
+                    await action.run()
+                } finally {
+                    restoreSelection()
+                }
+            }
+        }
+        items.push(item)
+    }
+    const onClose = (chosen: boolean) => {
+        if (!chosen) restoreSelection()
+    }
+    if (entries.length === 1) {
+        openMenu({
+            anchor,
+            headerHtml: fileKindIcon(getEntryKind(entry)),
+            title: getEntryName(entry),
+            subtitle: entry.kind === "missing-file" ? `Missing file · ${getEntryPath(entry)}` : getEntryMetaText(entry),
+            items,
+            onClose,
+        })
+    } else {
+        openMenu({ anchor, title: `${entries.length} items selected`, items, onClose })
+    }
+}
+
+/* -------------------------------------------------------- Interaction */
+
+function attachEntryHandlers(element: HTMLElement, entry: BrowserEntry, index: number) {
+    let pressTimer: number | undefined
+    let pressStart: { x: number; y: number } | null = null
+    const cancelPress = () => {
+        if (pressTimer !== undefined) window.clearTimeout(pressTimer)
+        pressTimer = undefined
+        pressStart = null
+    }
+
+    element.addEventListener("pointerdown", (event) => {
+        lastPointerType = event.pointerType || "mouse"
+        if (event.pointerType === "mouse") return
+        if ((event.target as HTMLElement).closest(".fx-more")) return
+        pressStart = { x: event.clientX, y: event.clientY }
+        pressTimer = window.setTimeout(() => {
+            pressTimer = undefined
+            suppressNextClick = true
+            if (!state.selected.has(entry.id)) {
+                state.selected.set(entry.id, entry)
+                state.lastClickedIndex = index
+                updateSelectionDisplay()
+            }
+            navigator.vibrate?.(10)
+        }, LONG_PRESS_MS)
+    })
+    element.addEventListener("pointermove", (event) => {
+        if (!pressStart) return
+        if (Math.abs(event.clientX - pressStart.x) > 8 || Math.abs(event.clientY - pressStart.y) > 8) cancelPress()
+    })
+    element.addEventListener("pointerup", cancelPress)
+    element.addEventListener("pointercancel", cancelPress)
+
+    element.addEventListener("click", (event) => {
+        if (suppressNextClick) {
+            suppressNextClick = false
+            return
+        }
+        const target = event.target as HTMLElement
+        if (target.closest(".fx-check")) {
+            if (event.shiftKey && state.lastClickedIndex !== null) {
+                selectRange(state.lastClickedIndex, index, true)
+            } else {
+                toggleSelection(entry, index)
+            }
+            return
+        }
+        const moreButton = target.closest<HTMLElement>(".fx-more")
+        if (moreButton) {
+            openEntryMenu(entry, index, moreButton)
+            return
+        }
+        if (event.shiftKey && state.lastClickedIndex !== null) {
+            selectRange(state.lastClickedIndex, index, event.metaKey || event.ctrlKey)
+            return
+        }
+        if (event.metaKey || event.ctrlKey) {
+            toggleSelection(entry, index)
+            return
+        }
+        if (isTouchInteraction()) {
+            if (state.selected.size > 0) {
+                toggleSelection(entry, index)
+            } else {
+                state.focusIndex = index
+                void openEntry(entry, index)
+            }
+            return
+        }
+        selectOnly(entry, index)
+    })
+    element.addEventListener("dblclick", (event) => {
+        const target = event.target as HTMLElement
+        if (target.closest(".fx-check, .fx-more") || isTouchInteraction()) return
+        event.preventDefault()
+        void openEntry(entry, index)
+    })
+    element.addEventListener("contextmenu", (event) => {
+        if (lastPointerType !== "mouse") {
+            // Long-press on touch devices selects instead of opening the system menu.
+            event.preventDefault()
+            return
+        }
+        event.preventDefault()
+        openEntryMenu(entry, index, { x: event.clientX, y: event.clientY })
+    })
+}
+
+async function openEntry(entry: BrowserEntry, index: number) {
+    if (isFolderEntry(entry)) {
+        await navigateTo(entry)
+        return
+    }
+    if (isFileEntry(entry) && isPreviewableName(entry.data.name)) {
+        await runSingleOpenAction(entry)
+        return
+    }
+    if (entry.kind === "missing-file") {
+        showUfidToast("This file card could not be found in Telegram", { tone: "error" })
+        return
+    }
+    const node = document.querySelector<HTMLElement>(
+        `${state.viewMode === "grid" ? "#browserGrid" : "#browserRows"} [data-index="${index}"] .fx-more`,
+    )
+    openEntryMenu(entry, index, isCompactViewport() ? undefined : node ?? undefined)
+}
+
+/* ------------------------------------------------------------ Sidebar */
+
+function openSidebar() {
+    document.getElementById("fxSidebar")?.classList.add("is-open")
+    document.getElementById("fxScrim")?.removeAttribute("hidden")
+}
+
+function closeSidebar() {
+    document.getElementById("fxSidebar")?.classList.remove("is-open")
+    document.getElementById("fxScrim")?.setAttribute("hidden", "")
+}
+
+function isSidebarOpen() {
+    return !!document.getElementById("fxSidebar")?.classList.contains("is-open")
 }
 
 function currentDirectoryParentId() {
@@ -568,26 +1162,6 @@ async function buildFolderTrail(entry: FolderBrowserEntry): Promise<FolderBrowse
     }
 
     return records.map(folderEntryFromRecord)
-}
-
-async function openBreadcrumbFolder(index: number) {
-    const entry = state.currentFolderTrail[index]
-    if (!entry) return
-    state.currentFolderTrail = state.currentFolderTrail.slice(0, index + 1)
-    state.currentFolder = entry
-    state.query = ""
-    const searchInput = document.getElementById("browserSearchInput") as HTMLInputElement | null
-    if (searchInput) searchInput.value = ""
-    await refreshBrowser?.({ showLoading: true, loadingMessage: `Loading ${entry.data.name}...` })
-}
-
-async function openGlobalView() {
-    state.currentFolder = null
-    state.currentFolderTrail = []
-    state.query = ""
-    const searchInput = document.getElementById("browserSearchInput") as HTMLInputElement | null
-    if (searchInput) searchInput.value = ""
-    await refreshBrowser?.({ showLoading: true, loadingMessage: "Loading all files..." })
 }
 
 function createRecordId(prefix: string) {
@@ -696,286 +1270,6 @@ async function writeMoveTombstones(client: any, batches: Map<string, MoveTombsto
             (entry.kind === "file" && !!entry.ufid && batch.fileUfids.has(entry.ufid)) ||
             (entry.kind === "folder" && !!entry.folderId && batch.folderIds.has(entry.folderId)),
         )
-    }
-}
-
-function attachSelectionHandlers(root: HTMLElement, entry: BrowserEntry, index: number) {
-    root.addEventListener("click", (e) => {
-        const target = e.target as HTMLElement | null
-        if (target?.closest("button, a, code")) return
-        toggleSelection(entry, index)
-    })
-    root.addEventListener("dblclick", async (e) => {
-        const target = e.target as HTMLElement | null
-        if (target?.closest("button, a, code")) return
-        if (isFolderEntry(entry)) {
-            e.preventDefault()
-            await openFolder(entry)
-        }
-    })
-}
-
-async function attachCopyHandler(root: HTMLElement, entry: BrowserEntry) {
-    const idEl = root.querySelector<HTMLElement>("[data-copy-id]")
-    if (!idEl) return
-    idEl.addEventListener("click", async () => {
-        const copy = getCopyId(entry)
-        try {
-            await navigator.clipboard.writeText(copy.value)
-            showUfidToast(`${copy.label} copied to clipboard`)
-        } catch {
-            showUfidToast(`Unable to copy ${copy.label.toLowerCase()}`)
-        }
-    })
-}
-
-function renderList(items: BrowserEntry[]) {
-    const tbody = document.querySelector<HTMLTableSectionElement>("#browserTable tbody")
-    for (const [index, entry] of items.entries()) {
-        const icon = getEntryIcon(entry)
-        const name = escapeHtml(getEntryName(entry))
-        const path = entry.kind === "folder" ? "" : getEntryPath(entry)
-        const pathHtml = path ? `<div class="entry-subtitle">${escapeHtml(path)}</div>` : ""
-        const date = formatFileCardDate(getEntryDate(entry))
-        const status = getEntryStatus(entry)
-        const copy = getCopyId(entry)
-        const copyTitle = `Click to copy ${copy.label}`
-
-        if (tbody) {
-            const tr = document.createElement("tr")
-            tr.dataset.browserId = entry.id
-            if (isFileEntry(entry)) tr.dataset.msgid = String(entry.msgId)
-            tr.innerHTML = `
-                <td class="name"><span class="entry-name-cell"><span class="file-type-icon">${icon}</span><span><span>${name}</span>${pathHtml}</span></span></td>
-                <td class="size">${getEntrySizeText(entry)}</td>
-                <td class="ufid"><code title="${copyTitle}" data-copy-id>${escapeHtml(copy.value)}</code></td>
-                <td class="date">${date}</td>
-                <td class="status"><span class="pill ${status.className}">${status.label}</span></td>`
-            tbody.appendChild(tr)
-            attachSelectionHandlers(tr, entry, index)
-            void attachCopyHandler(tr, entry)
-        }
-    }
-}
-
-function renderGrid(items: BrowserEntry[]) {
-    const grid = document.getElementById("browserGrid")
-    if (!grid) return
-    for (const [index, entry] of items.entries()) {
-        const icon = getEntryIcon(entry)
-        const item = document.createElement("div")
-        item.className = "file-grid-item fade-in"
-        item.dataset.browserId = entry.id
-        if (isFileEntry(entry)) item.dataset.msgid = String(entry.msgId)
-        const name = escapeHtml(getEntryName(entry))
-        const date = formatFileCardDate(getEntryDate(entry)).split(" ")[0]
-        item.innerHTML = `
-            <div class="file-icon">${icon}</div>
-            <div class="file-info">
-                <div class="file-name" title="${name}">
-                    <span class="file-name-text"><span class="file-name-scroll">${name}</span></span>
-                </div>
-                <div class="file-meta">
-                    <span>${getEntrySizeText(entry)}</span>
-                    <span class="dot-separator">•</span>
-                    <span>${date}</span>
-                </div>
-            </div>`
-        grid.appendChild(item)
-        attachSelectionHandlers(item, entry, index)
-        applyGridMarquee(item)
-    }
-}
-
-function updateFolderLocation() {
-    const breadcrumb = document.getElementById("browserBreadcrumb")
-    const pathEl = document.getElementById("browserPathCrumbs")
-    if (!breadcrumb || !pathEl) return
-    breadcrumb.removeAttribute("hidden")
-    pathEl.textContent = ""
-    if (!state.currentFolder) {
-        return
-    }
-
-    const trail = state.currentFolderTrail.length ? state.currentFolderTrail : [state.currentFolder]
-    for (const [index, folder] of trail.entries()) {
-        const separator = document.createElement("span")
-        separator.className = "fx-breadcrumb-separator"
-        separator.textContent = "/"
-        pathEl.appendChild(separator)
-
-        const isCurrent = index === trail.length - 1
-        if (isCurrent) {
-            const current = document.createElement("span")
-            current.className = "fx-breadcrumb-current"
-            current.textContent = folder.data.name
-            pathEl.appendChild(current)
-            continue
-        }
-
-        const button = document.createElement("button")
-        button.type = "button"
-        button.className = "btn btn-sm btn-link fx-breadcrumb-segment"
-        button.textContent = folder.data.name
-        button.addEventListener("click", () => {
-            void openBreadcrumbFolder(index)
-        })
-        pathEl.appendChild(button)
-    }
-}
-
-function renderBrowser(items: BrowserEntry[]) {
-    const content = document.getElementById("browserContent")
-    content?.setAttribute("aria-busy", "false")
-    clearViews()
-    applySort(items)
-    renderList(items)
-    renderGrid(items)
-    updateFolderLocation()
-    const pageInfo = document.getElementById("browserPageInfo")
-    if (pageInfo) {
-        const k = state.currentPage + 1
-        const n = visibleTotalPages()
-        pageInfo.textContent = `Page ${k}/${n}`
-    }
-    const prevButton = document.getElementById("browserPrevPage") as HTMLButtonElement | null
-    const nextButton = document.getElementById("browserNextPage") as HTMLButtonElement | null
-    if (prevButton) prevButton.disabled = state.currentPage === 0
-    if (nextButton) nextButton.disabled = state.currentPage >= state.pages.length - 1 && !state.hasMore
-    applyViewMode()
-    updateSelectionDisplay()
-}
-
-function applyViewMode() {
-    const listView = document.getElementById("browserList")
-    const gridView = document.getElementById("browserGrid")
-    const listButton = document.getElementById("viewList")
-    const gridButton = document.getElementById("viewGrid")
-    if (state.viewMode === "grid") {
-        listView?.setAttribute("hidden", "")
-        gridView?.removeAttribute("hidden")
-        listButton?.classList.remove("active")
-        gridButton?.classList.add("active")
-        requestAnimationFrame(() => {
-            document.querySelectorAll<HTMLElement>(".file-grid-item").forEach((item) => {
-                applyGridMarquee(item)
-            })
-        })
-    } else {
-        gridView?.setAttribute("hidden", "")
-        listView?.removeAttribute("hidden")
-        gridButton?.classList.remove("active")
-        listButton?.classList.add("active")
-    }
-}
-
-function toggleSelection(entry: BrowserEntry, index: number) {
-    if (state.selected.has(entry.id)) {
-        state.selected.delete(entry.id)
-    } else {
-        state.selected.set(entry.id, entry)
-    }
-    state.lastClickedIndex = index
-    updateSelectionDisplay()
-}
-
-function clearSelection() {
-    state.selected.clear()
-    state.lastClickedIndex = null
-    updateSelectionDisplay()
-}
-
-function updateSelectionDisplay() {
-    const selectedIds = new Set(state.selected.keys())
-    document.querySelectorAll<HTMLElement>("[data-browser-id]").forEach((node) => {
-        const id = node.dataset.browserId
-        node.classList.toggle("selected", !!id && selectedIds.has(id))
-    })
-    updateActionStates()
-}
-
-function updateActionStates() {
-    const selectedEntries = Array.from(state.selected.values())
-    const selectedCount = selectedEntries.length
-    const hasAny = selectedCount > 0
-    const hasSingle = selectedCount === 1
-    const selectedEntry = hasSingle ? selectedEntries[0] : null
-    const selectedFiles = selectedEntries.filter(isFileEntry)
-    const selectedFolders = selectedEntries.filter(isFolderEntry)
-    const allSelectedFiles = selectedFiles.length === selectedEntries.length
-    const allSelectedFilesOrFolders = selectedFiles.length + selectedFolders.length === selectedEntries.length
-    const previewEnabled = !!selectedEntry && (
-        isFolderEntry(selectedEntry) ||
-        (isFileEntry(selectedEntry) && isPreviewableName(selectedEntry.data.name))
-    )
-
-    const setButtonVisible = (id: string, visible: boolean) => {
-        const btn = document.getElementById(id) as HTMLButtonElement | null
-        if (btn) {
-            btn.classList.toggle("action-hidden", !visible)
-            btn.disabled = !visible
-        }
-    }
-    setButtonVisible("browserActionPreview", previewEnabled)
-    setButtonVisible("browserActionRename", hasSingle && (isFileEntry(selectedEntry as BrowserEntry) || isFolderEntry(selectedEntry as BrowserEntry)))
-    setButtonVisible("browserActionDownload", hasSingle && isFileEntry(selectedEntry as BrowserEntry))
-    setButtonVisible("browserActionMove", hasAny && allSelectedFilesOrFolders)
-    setButtonVisible("browserActionDelete", hasAny && allSelectedFilesOrFolders)
-    setButtonVisible("browserActionSend", hasAny && allSelectedFiles)
-
-    const previewBtn = document.getElementById("browserActionPreview") as HTMLButtonElement | null
-    if (previewBtn) previewBtn.textContent = selectedEntry && isFolderEntry(selectedEntry) ? "Open" : "Preview"
-
-    const actionsBtn = document.getElementById("browserActionsBtn") as HTMLButtonElement | null
-    if (actionsBtn) actionsBtn.disabled = !hasAny
-
-    const setDropdownVisible = (id: string, visible: boolean) => {
-        const item = document.getElementById(id) as HTMLAnchorElement | null
-        if (!item) return
-        const li = item.closest("li")
-        if (li) li.classList.toggle("d-none", !visible)
-    }
-    setDropdownVisible("actionPreviewItem", previewEnabled)
-    setDropdownVisible("actionRenameItem", hasSingle && (isFileEntry(selectedEntry as BrowserEntry) || isFolderEntry(selectedEntry as BrowserEntry)))
-    setDropdownVisible("actionDownloadItem", hasSingle && isFileEntry(selectedEntry as BrowserEntry))
-    setDropdownVisible("actionMoveItem", hasAny && allSelectedFilesOrFolders)
-    setDropdownVisible("actionDeleteItem", hasAny && allSelectedFilesOrFolders)
-    setDropdownVisible("actionSendItem", hasAny && allSelectedFiles)
-    const previewItem = document.getElementById("actionPreviewItem")
-    if (previewItem) previewItem.textContent = selectedEntry && isFolderEntry(selectedEntry) ? "Open" : "Preview"
-
-    const fileActionsBar = document.getElementById("fileActionsBar")
-    const fileActionsDropdown = document.getElementById("fileActionsDropdown")
-    const browserDiv = document.getElementById("fileBrowser")
-    const browserVisible = !!browserDiv && !browserDiv.hasAttribute("hidden")
-
-    if (fileActionsBar) {
-        if (browserVisible && selectedCount > 0) {
-            fileActionsBar.removeAttribute("hidden")
-        } else {
-            fileActionsBar.setAttribute("hidden", "")
-        }
-    }
-    if (fileActionsDropdown) {
-        if (browserVisible && selectedCount > 0) {
-            fileActionsDropdown.removeAttribute("hidden")
-        } else {
-            fileActionsDropdown.setAttribute("hidden", "")
-        }
-    }
-
-    const selectionInfoEl = document.getElementById("selectionInfo")
-    if (selectionInfoEl) {
-        selectionInfoEl.textContent = selectedCount > 0 ? `${selectedCount} selected` : ""
-    }
-
-    const deselectAllBtn = document.getElementById("deselectAllBtn") as HTMLButtonElement | null
-    if (deselectAllBtn) {
-        deselectAllBtn.classList.toggle("action-hidden", selectedCount === 0)
-    }
-    const deselectAllBtnMobile = document.getElementById("selectAllBtnMobile") as HTMLButtonElement | null
-    if (deselectAllBtnMobile) {
-        deselectAllBtnMobile.classList.toggle("action-hidden", selectedCount === 0)
     }
 }
 
@@ -1119,6 +1413,7 @@ async function loadFirstPage(client: any, refreshSequence = browserRefreshSequen
     state.selected.clear()
     state.lastClickedIndex = null
     state.totalPages = null
+    state.totalItems = null
     const parentFolderId = currentDirectoryParentId()
     const countPromise = countDirectoryEntries(client, {
         parentFolderId,
@@ -1134,6 +1429,7 @@ async function loadFirstPage(client: any, refreshSequence = browserRefreshSequen
             if (!counts) return
             if (refreshSequence !== browserRefreshSequence) return
             state.totalPages = Math.max(1, Math.ceil(counts.total / state.pageSize))
+            state.totalItems = counts.total
             renderBrowser(state.pages[state.currentPage] ?? page.items)
         })
     state.lastOffsetId = page.lastOffsetId
@@ -1261,9 +1557,11 @@ async function getFolderManifestForMutation(
 
 async function createFolderInCurrentLocation(client: any) {
     const name = validateFolderName(await requestBrowserText({
-        title: "New Folder",
+        title: "New folder",
         label: "Folder name",
+        placeholder: "Untitled folder",
         confirmLabel: "Create",
+        icon: "folderPlus",
     }))
     if (!name) return
 
@@ -1384,10 +1682,11 @@ async function updateFolderTreeForRename(
 
 async function renameFolderEntry(client: any, entry: FolderBrowserEntry) {
     const newName = validateFolderName(await requestBrowserText({
-        title: "Rename Folder",
+        title: "Rename folder",
         label: "Folder name",
         initialValue: entry.data.name,
         confirmLabel: "Rename",
+        icon: "pencil",
     }))
     if (!newName || newName === entry.data.name) return
 
@@ -1549,13 +1848,15 @@ async function requestMoveDestination(client: any, selectedEntries: BrowserEntry
     }
 
     const choice = await requestBrowserChoice({
-        title: "Move to Folder",
+        title: "Move to folder",
         message: selectedEntries.length === 1 ? `Move "${getEntryName(selectedEntries[0])}"` : `Move ${selectedEntries.length} items`,
         label: "Destination folder",
         confirmLabel: "Move",
+        icon: "move",
         choices: destinations.map((destination) => ({
             value: destination.kind === "root" ? ROOT_MOVE_DESTINATION : destination.record.data.folderId,
             label: destination.label,
+            icon: destination.kind === "root" ? "home" : "folder",
         })),
     })
     if (!choice) return null
@@ -1773,10 +2074,12 @@ async function moveSelectedEntries(client: any) {
     }
 }
 
+/* ------------------------------------------------------------- Actions */
+
 async function runSingleOpenAction(selected: BrowserEntry | null) {
     if (!selected) return
     if (isFolderEntry(selected)) {
-        await openFolder(selected)
+        await navigateTo(selected)
         return
     }
     if (isFileEntry(selected)) {
@@ -1784,110 +2087,397 @@ async function runSingleOpenAction(selected: BrowserEntry | null) {
     }
 }
 
+async function downloadEntry(entry: FileBrowserEntry) {
+    const client = activeBrowserClient
+    const config = activeBrowserConfig
+    if (!client || !config) return
+    const password = await requestBrowserText({
+        title: "Download file",
+        message: entry.data.name,
+        label: "Decryption password (optional)",
+        inputType: "password",
+        allowEmpty: true,
+        confirmLabel: "Download",
+        icon: "download",
+    })
+    if (password === null) return
+    await downloadFileCard(client, config, entry.data, password)
+}
+
+async function renameEntry(entry: BrowserEntry) {
+    const client = activeBrowserClient
+    if (!client) return
+    if (isFolderEntry(entry)) {
+        await renameFolderEntry(client, entry)
+        return
+    }
+    if (!isFileEntry(entry)) return
+    const newName = await requestBrowserText({
+        title: "Rename file",
+        label: "File name",
+        initialValue: entry.data.name,
+        confirmLabel: "Rename",
+        icon: "pencil",
+        selectStem: true,
+    })
+    if (!newName || newName.trim() === "" || newName.trim() === entry.data.name) return
+    await renameFileCard(client, entry.msgId, "me", entry.data, newName.trim())
+    entry.data.name = newName.trim()
+    renderBrowser(state.pages[state.currentPage] ?? [])
+    showUfidToast("Renamed", { tone: "success" })
+}
+
+async function sendEntries(entries: FileBrowserEntry[]) {
+    const client = activeBrowserClient
+    if (!client || entries.length === 0) return
+    const recipient = await requestBrowserText({
+        title: entries.length === 1 ? "Send file" : `Send ${entries.length} files`,
+        message: entries.length === 1 ? entries[0].data.name : undefined,
+        label: "Recipient (username, phone, or chat)",
+        placeholder: "@username",
+        confirmLabel: "Send",
+        icon: "send",
+    })
+    if (!recipient || recipient.trim() === "") return
+    showUfidToast(`Sending ${pluralize(entries.length, "file")}...`, { durationMs: null })
+    for (const entry of entries) {
+        await sendFileCard(client, entry.data, recipient.trim())
+    }
+    showUfidToast(entries.length === 1 ? "File sent" : "Files sent", { tone: "success" })
+}
+
+async function copyEntryId(entry: BrowserEntry) {
+    const copy = getCopyId(entry)
+    try {
+        await navigator.clipboard.writeText(copy.value)
+        showUfidToast(`${copy.label} copied to clipboard`)
+    } catch {
+        showUfidToast(`Unable to copy ${copy.label.toLowerCase()}`, { tone: "error" })
+    }
+}
+
+async function deleteSelectedEntries() {
+    const client = activeBrowserClient
+    if (!client) return
+    const selectedEntries = Array.from(state.selected.values())
+    const files = selectedEntries.filter(isFileEntry)
+    const folders = selectedEntries.filter(isFolderEntry)
+    if (selectedEntries.length === 0 || files.length + folders.length !== selectedEntries.length) return
+
+    if (selectedEntries.length === 1) {
+        const selected = selectedEntries[0]
+        const kind = isFolderEntry(selected) ? "folder" : "file"
+        const ok = await requestBrowserConfirm({
+            title: `Delete ${kind}?`,
+            message: isFolderEntry(selected)
+                ? `"${getEntryName(selected)}" and everything inside it will be deleted.`
+                : `"${getEntryName(selected)}" will be permanently deleted from Telegram.`,
+            confirmLabel: "Delete",
+            danger: true,
+            icon: "trash",
+        })
+        if (!ok) return
+    } else {
+        const names = selectedEntries.slice(0, 5).map(getEntryName).join(", ")
+        const more = selectedEntries.length > 5 ? ` and ${selectedEntries.length - 5} more` : ""
+        const ok = await requestBrowserConfirm({
+            title: `Delete ${selectedEntries.length} items?`,
+            message: `${names}${more}`,
+            confirmLabel: "Delete",
+            danger: true,
+            icon: "trash",
+        })
+        if (!ok) return
+    }
+
+    showUfidToast(`Deleting ${pluralize(selectedEntries.length, "item")}...`, { durationMs: null })
+    for (const file of files) {
+        await deleteFileCard(client, file.msgId, file.data)
+    }
+    const now = new Date().toISOString()
+    for (const folder of folders) {
+        const record = await resolveFolderRecordForMutation(client, folder)
+        if (!record) continue
+        await tombstoneFolderInParentManifest(client, record, now)
+        await tombstoneFolderTree(client, record, now)
+    }
+
+    if (files.length > 0 && folders.length === 0) {
+        const ids = new Set(files.map((entry) => entry.msgId))
+        const page = state.pages[state.currentPage]
+        if (page) {
+            state.pages[state.currentPage] = page.filter((entry) => !isFileEntry(entry) || !ids.has(entry.msgId))
+        }
+    }
+    clearSelection()
+    await refreshBrowser?.()
+    showUfidToast(`Deleted ${pluralize(selectedEntries.length, "item")}`)
+}
+
+function uploadFiles(files?: File[]) {
+    const config = activeBrowserConfig
+    const client = activeBrowserClient
+    if (!client || !config) return
+    setNextUploadParentFromBrowserState()
+    if (files && files.length > 0) {
+        void import("../telegram").then((Telegram) => Telegram.fileUpload(client, config, files))
+        return
+    }
+    const uploadInput = document.getElementById("uploadFileInput") as HTMLInputElement | null
+    uploadInput?.click()
+}
+
+async function createFolderHere() {
+    if (!activeBrowserClient) return
+    await createFolderInCurrentLocation(activeBrowserClient)
+}
+
+async function receiveFile() {
+    if (!activeBrowserClient || !activeBrowserConfig) return
+    await (await import("../telegram")).fileReceive(activeBrowserClient, activeBrowserConfig)
+}
+
+function openNewMenu(anchor?: HTMLElement) {
+    closeSidebar()
+    openMenu({
+        anchor,
+        sheet: !anchor,
+        title: anchor ? undefined : "Create",
+        items: [
+            { id: "browserActionUploadItem", label: "Upload files", icon: "upload", onSelect: () => uploadFiles() },
+            { id: "browserActionNewFolderItem", label: "New folder", icon: "folderPlus", onSelect: () => createFolderHere() },
+            { divider: true },
+            { id: "browserActionReceiveItem", label: "Receive file", icon: "inbox", onSelect: () => receiveFile() },
+        ],
+    })
+}
+
+/* ------------------------------------------------------------- Keyboard */
+
+function gridColumnCount() {
+    const grid = document.getElementById("browserGrid")
+    if (!grid || grid.hasAttribute("hidden")) return 1
+    const columns = getComputedStyle(grid).gridTemplateColumns.split(" ").filter(Boolean).length
+    return Math.max(1, columns)
+}
+
+function moveFocus(delta: number, extend: boolean) {
+    keyboardNavigation = true
+    const items = getVisibleItems()
+    if (items.length === 0) return
+    const current = state.focusIndex ?? state.lastClickedIndex
+    const next = current === null
+        ? (delta > 0 ? 0 : items.length - 1)
+        : Math.max(0, Math.min(items.length - 1, current + delta))
+    const entry = items[next]
+    if (!entry) return
+    if (extend) {
+        state.selected.set(entry.id, entry)
+        state.focusIndex = next
+        updateSelectionDisplay()
+    } else {
+        selectOnly(entry, next)
+    }
+    applyFocusDisplay(true)
+}
+
+function isEditableTarget(target: EventTarget | null) {
+    const element = target as HTMLElement | null
+    return !!element && (
+        element.tagName === "INPUT" ||
+        element.tagName === "TEXTAREA" ||
+        element.tagName === "SELECT" ||
+        element.isContentEditable
+    )
+}
+
+async function handleKeydown(event: KeyboardEvent) {
+    const browserDiv = document.getElementById("fileBrowser")
+    if (!browserDiv || browserDiv.hasAttribute("hidden")) return
+    if (document.querySelector(".fx-dialog-backdrop") || isMenuOpen()) return
+    if (!document.getElementById("progressBarContainer")?.hasAttribute("hidden") &&
+        document.getElementById("progressBarContainer")?.dataset.mode !== "background") return
+
+    if (previewModal?.isOpen()) {
+        if (event.key === "Escape") {
+            event.preventDefault()
+            previewModal.close()
+        } else if (event.key === "ArrowLeft") {
+            event.preventDefault()
+            await previewModal.showPrevious()
+        } else if (event.key === "ArrowRight") {
+            event.preventDefault()
+            await previewModal.showNext()
+        }
+        return
+    }
+
+    const mod = event.metaKey || event.ctrlKey
+    if (isEditableTarget(event.target)) {
+        if (event.key === "Escape" && (event.target as HTMLElement).id === "browserSearchInput") {
+            const input = event.target as HTMLInputElement
+            if (input.value) {
+                input.value = ""
+                input.dispatchEvent(new Event("input"))
+            } else {
+                input.blur()
+            }
+        } else if (event.key === "ArrowDown" && (event.target as HTMLElement).id === "browserSearchInput") {
+            event.preventDefault()
+            ;(event.target as HTMLElement).blur()
+            moveFocus(1, false)
+        }
+        return
+    }
+
+    if (event.key === "Escape") {
+        if (isSidebarOpen()) {
+            closeSidebar()
+        } else if (state.selected.size > 0) {
+            clearSelection()
+        }
+        return
+    }
+    if (event.key === "/" || (mod && event.key.toLowerCase() === "k")) {
+        event.preventDefault()
+        const input = document.getElementById("browserSearchInput") as HTMLInputElement | null
+        input?.focus()
+        input?.select()
+        return
+    }
+    if (mod && event.key.toLowerCase() === "a") {
+        event.preventDefault()
+        const items = getVisibleItems()
+        for (const entry of items) state.selected.set(entry.id, entry)
+        updateSelectionDisplay()
+        return
+    }
+    if (event.key === "Backspace" && mod && state.selected.size > 0) {
+        event.preventDefault()
+        await deleteSelectedEntries()
+        return
+    }
+    if (event.key === "Backspace" || (event.altKey && event.key === "ArrowUp")) {
+        if (state.currentFolder) {
+            event.preventDefault()
+            await goUp()
+        }
+        return
+    }
+    if (event.key === "Delete" && state.selected.size > 0) {
+        const entries = Array.from(state.selected.values())
+        if (entries.every((entry) => isFileEntry(entry) || isFolderEntry(entry))) {
+            event.preventDefault()
+            await deleteSelectedEntries()
+        }
+        return
+    }
+    if (event.key === "F2" && state.selected.size === 1) {
+        event.preventDefault()
+        await renameEntry(Array.from(state.selected.values())[0])
+        return
+    }
+    if (event.key === "Enter") {
+        const selected = state.selected.size === 1 ? Array.from(state.selected.values())[0] : null
+        if (selected) {
+            event.preventDefault()
+            await openEntry(selected, getVisibleItems().indexOf(selected))
+        }
+        return
+    }
+    const columns = state.viewMode === "grid" ? gridColumnCount() : 1
+    const deltas: Record<string, number> = state.viewMode === "grid"
+        ? { ArrowDown: columns, ArrowUp: -columns, ArrowRight: 1, ArrowLeft: -1 }
+        : { ArrowDown: 1, ArrowUp: -1 }
+    if (event.key in deltas && !event.altKey && !mod) {
+        event.preventDefault()
+        moveFocus(deltas[event.key], event.shiftKey)
+    }
+}
+
+/* -------------------------------------------------------------- Preview */
+
+function wirePreviewChrome() {
+    const modal = document.getElementById("previewModal")
+    const prev = document.getElementById("previewPrev")
+    const next = document.getElementById("previewNext")
+    const counter = document.getElementById("previewCounter")
+    prev?.addEventListener("click", () => void previewModal?.showPrevious())
+    next?.addEventListener("click", () => void previewModal?.showNext())
+    modal?.addEventListener("preview:change", (event) => {
+        const detail = (event as CustomEvent<{ index: number; total: number }>).detail
+        prev?.toggleAttribute("hidden", detail.index <= 0)
+        next?.toggleAttribute("hidden", detail.index >= detail.total - 1)
+        if (counter) counter.textContent = detail.total > 1 ? `${detail.index + 1} / ${detail.total}` : ""
+    })
+    if (!modal) return
+    // Opening a preview adds a history entry so the system back gesture closes it.
+    new MutationObserver(() => {
+        const open = !modal.hasAttribute("hidden")
+        const historyState = window.history.state as BrowserHistoryState | null
+        if (open && !historyState?.preview) {
+            try {
+                window.history.pushState({ tglfs: true, trail: currentTrailIds(), preview: true }, "", window.location.href)
+            } catch {}
+        } else if (!open && historyState?.preview) {
+            window.history.back()
+        }
+    }).observe(modal, { attributes: true, attributeFilter: ["hidden"] })
+}
+
+/* --------------------------------------------------------------- Init */
+
 export async function initFileBrowser(client: any, config: Config.Config) {
-    if (state.initialized) return
+    if (state.initialized) {
+        // A new login reuses the existing DOM bindings with the new Telegram session.
+        activeBrowserClient = client
+        activeBrowserConfig = config
+        if (previewModal) (previewModal as any).client = client
+        return
+    }
     state.initialized = true
     activeBrowserClient = client
+    activeBrowserConfig = config
 
     previewModal = new PreviewModal(client)
+    wirePreviewChrome()
+
+    const savedView = readPreference(VIEW_STORAGE_KEY)
+    if (savedView === "grid" || savedView === "list") state.viewMode = savedView
+    const savedSort = readPreference(SORT_STORAGE_KEY) as SortMode | null
+    const sortModes: SortMode[] = ["date_desc", "date_asc", "name_asc", "name_desc", "size_desc", "size_asc"]
+    if (savedSort && sortModes.includes(savedSort)) state.sort = savedSort
 
     const searchInput = document.getElementById("browserSearchInput") as HTMLInputElement
+    const searchClear = document.getElementById("browserSearchClear") as HTMLButtonElement | null
     const sortSelect = document.getElementById("browserSortSelect") as HTMLSelectElement
     const prevButton = document.getElementById("browserPrevPage") as HTMLButtonElement
     const nextButton = document.getElementById("browserNextPage") as HTMLButtonElement
-    const viewList = document.getElementById("viewList") as HTMLButtonElement
-    const viewGrid = document.getElementById("viewGrid") as HTMLButtonElement
-    const actionPreview = document.getElementById("browserActionPreview") as HTMLButtonElement
-    const actionDownload = document.getElementById("browserActionDownload") as HTMLButtonElement
-    const actionRename = document.getElementById("browserActionRename") as HTMLButtonElement
-    const actionMove = document.getElementById("browserActionMove") as HTMLButtonElement
-    const actionDelete = document.getElementById("browserActionDelete") as HTMLButtonElement
-    const actionSend = document.getElementById("browserActionSend") as HTMLButtonElement
-    const actionUpload = document.getElementById("browserActionUpload") as HTMLButtonElement
-    const actionNewFolder = document.getElementById("browserActionNewFolder") as HTMLButtonElement
-    const actionReceive = document.getElementById("browserActionReceive") as HTMLButtonElement
-    const actionUploadItem = document.getElementById("browserActionUploadItem") as HTMLAnchorElement | null
-    const actionNewFolderItem = document.getElementById("browserActionNewFolderItem") as HTMLAnchorElement | null
-    const actionReceiveItem = document.getElementById("browserActionReceiveItem") as HTMLAnchorElement | null
-    const actionUnsend = document.getElementById("browserActionUnsend") as HTMLButtonElement
-    const homeButton = document.getElementById("browserHomeButton") as HTMLButtonElement
-    const rootCrumb = document.getElementById("browserRootCrumb") as HTMLButtonElement | null
-    const bulkDownload = document.getElementById("bulkDownload") as HTMLButtonElement | null
-    const bulkDelete = document.getElementById("bulkDelete") as HTMLButtonElement | null
-    const bulkSend = document.getElementById("bulkSend") as HTMLButtonElement | null
-    const actionPreviewItem = document.getElementById("actionPreviewItem") as HTMLAnchorElement
-    const actionDownloadItem = document.getElementById("actionDownloadItem") as HTMLAnchorElement
-    const actionRenameItem = document.getElementById("actionRenameItem") as HTMLAnchorElement
-    const actionMoveItem = document.getElementById("actionMoveItem") as HTMLAnchorElement
-    const actionDeleteItem = document.getElementById("actionDeleteItem") as HTMLAnchorElement
-    const actionSendItem = document.getElementById("actionSendItem") as HTMLAnchorElement
-    const actionUnsendItem = document.getElementById("actionUnsendItem") as HTMLAnchorElement | null
+    sortSelect.value = state.sort
 
-    const getSingleSelection = () => {
-        if (state.selected.size !== 1) return null
-        return Array.from(state.selected.values())[0]
-    }
-    const getSelectedFileEntries = () => Array.from(state.selected.values()).filter(isFileEntry)
-    const removeFileEntriesFromPage = (ids: Set<number>) => {
-        const page = state.pages[state.currentPage]
-        if (!page) return
-        state.pages[state.currentPage] = page.filter((entry) => !isFileEntry(entry) || !ids.has(entry.msgId))
-    }
-    const deleteSelectedEntries = async () => {
-        const selectedEntries = Array.from(state.selected.values())
-        const files = selectedEntries.filter(isFileEntry)
-        const folders = selectedEntries.filter(isFolderEntry)
-        if (selectedEntries.length === 0 || files.length + folders.length !== selectedEntries.length) return
-
-        if (selectedEntries.length === 1) {
-            const selected = selectedEntries[0]
-            const kind = isFolderEntry(selected) ? "folder" : "file"
-            const ok = await requestBrowserConfirm({
-                title: `Delete ${kind}`,
-                message: `Delete "${getEntryName(selected)}"?`,
-                confirmLabel: "Delete",
-                danger: true,
-            })
-            if (!ok) return
-        } else {
-            const names = selectedEntries.slice(0, 5).map(getEntryName).join(", ")
-            const more = selectedEntries.length > 5 ? ` and ${selectedEntries.length - 5} more` : ""
-            const ok = await requestBrowserConfirm({
-                title: `Delete ${selectedEntries.length} items`,
-                message: `${names}${more}`,
-                confirmLabel: "Delete",
-                danger: true,
-            })
-            if (!ok) return
+    document.addEventListener("pointerdown", (event) => {
+        lastPointerType = event.pointerType || "mouse"
+        if (keyboardNavigation) {
+            keyboardNavigation = false
+            applyFocusDisplay()
         }
-
-        for (const file of files) {
-            await deleteFileCard(client, file.msgId, file.data)
-        }
-        const now = new Date().toISOString()
-        for (const folder of folders) {
-            const record = await resolveFolderRecordForMutation(client, folder)
-            if (!record) continue
-            await tombstoneFolderInParentManifest(client, record, now)
-            await tombstoneFolderTree(client, record, now)
-        }
-
-        if (files.length > 0 && folders.length === 0) {
-            removeFileEntriesFromPage(new Set(files.map((entry) => entry.msgId)))
-        }
-        clearSelection()
-        await refreshBrowser?.()
-    }
+    }, { capture: true, passive: true })
 
     const doRefresh = async (options?: BrowserRefreshOptions) => {
-        if (activeBrowserClient !== client) activeBrowserClient = client
         const refreshSequence = ++browserRefreshSequence
         if (options?.showLoading) {
             renderBrowserLoading(options.loadingMessage)
         }
-        const items = await loadFirstPage(client, refreshSequence)
-        if (!items || refreshSequence !== browserRefreshSequence) return
-        renderBrowser(items)
+        try {
+            const items = await loadFirstPage(activeBrowserClient ?? client, refreshSequence)
+            if (!items || refreshSequence !== browserRefreshSequence) return
+            renderBrowser(items)
+        } catch (error) {
+            if (refreshSequence !== browserRefreshSequence) return
+            console.error(error)
+            renderBrowser([])
+            showUfidToast("Unable to load files. Check your connection.", { tone: "error", durationMs: 5000 })
+        }
     }
     refreshBrowser = doRefresh
 
@@ -1897,10 +2487,31 @@ export async function initFileBrowser(client: any, config: Config.Config) {
             await doRefresh()
         }
     })
+    window.addEventListener(BROWSER_ACTIONS_CHANGED_EVENT, () => updateActionStates())
+    let resizeTimer: number | undefined
+    window.addEventListener("resize", () => {
+        window.clearTimeout(resizeTimer)
+        resizeTimer = window.setTimeout(() => updateActionStates(), 120)
+    })
+    window.addEventListener("popstate", (event) => {
+        const historyState = event.state as BrowserHistoryState | null
+        if (previewModal?.isOpen()) {
+            if (!historyState?.preview) previewModal.close()
+            return
+        }
+        closeMenu()
+        if (historyState?.preview) {
+            window.history.back()
+            return
+        }
+        void restoreHistoryTrail(historyState?.tglfs ? historyState.trail : [])
+    })
 
+    /* Search */
     let searchTimer: number | undefined
     const scheduleSearch = (immediate: boolean) => {
         const nextQuery = (searchInput.value || "").trim()
+        searchClear?.toggleAttribute("hidden", searchInput.value.length === 0)
         if (!immediate && nextQuery === state.query) return
         if (searchTimer !== undefined) {
             window.clearTimeout(searchTimer)
@@ -1908,7 +2519,7 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         }
         const run = async () => {
             state.query = nextQuery
-            await doRefresh()
+            await doRefresh({ showLoading: true, loadingMessage: nextQuery ? `Searching for “${nextQuery}”...` : "Loading files..." })
         }
         if (immediate) {
             void run()
@@ -1916,307 +2527,156 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         }
         searchTimer = window.setTimeout(() => {
             void run()
-        }, 250)
+        }, 300)
     }
-
-    searchInput.addEventListener("input", () => {
-        scheduleSearch(false)
-    })
-    searchInput.addEventListener("keydown", async (e) => {
-        if (e.key === "Enter") {
+    searchInput.addEventListener("input", () => scheduleSearch(false))
+    searchInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
             scheduleSearch(true)
+            if (isCompactViewport()) searchInput.blur()
         }
     })
+    searchClear?.addEventListener("click", () => {
+        searchInput.value = ""
+        scheduleSearch(false)
+        searchInput.focus()
+    })
 
+    /* Sort, view, paging */
     sortSelect.addEventListener("change", () => {
         state.sort = sortSelect.value as SortMode
+        writePreference(SORT_STORAGE_KEY, state.sort)
         if (state.pages[state.currentPage]) {
             renderBrowser(state.pages[state.currentPage])
         }
     })
+    document.getElementById("viewList")?.addEventListener("click", () => setViewMode("list"))
+    document.getElementById("viewGrid")?.addEventListener("click", () => setViewMode("grid"))
 
     prevButton.addEventListener("click", () => {
         if (state.currentPage > 0) {
             state.currentPage--
             state.hasMore = state.currentPage < state.pages.length - 1 || state.hasMore
             renderBrowser(state.pages[state.currentPage])
+            document.getElementById("browserContent")?.scrollTo({ top: 0 })
         }
     })
-
     nextButton.addEventListener("click", async () => {
         if (state.currentPage < state.pages.length - 1 && state.pages[state.currentPage + 1]?.length) {
             state.currentPage++
             state.hasMore = state.currentPage < state.pages.length - 1 || state.hasMore
             renderBrowser(state.pages[state.currentPage])
+            document.getElementById("browserContent")?.scrollTo({ top: 0 })
             return
         }
-        const items = await loadNextPage(client)
+        nextButton.disabled = true
+        const items = await loadNextPage(activeBrowserClient ?? client)
         if (items.length > 0) {
             state.currentPage++
             renderBrowser(items)
+            document.getElementById("browserContent")?.scrollTo({ top: 0 })
             return
         }
         renderBrowser(state.pages[state.currentPage] ?? [])
     })
 
-    viewList.addEventListener("click", () => {
-        state.viewMode = "list"
-        applyViewMode()
-    })
-    viewGrid.addEventListener("click", () => {
-        state.viewMode = "grid"
-        applyViewMode()
-    })
-
-    rootCrumb?.addEventListener("click", () => {
-        void openGlobalView()
-    })
-
-    const deselectAllBtn = document.getElementById("deselectAllBtn") as HTMLButtonElement | null
-    deselectAllBtn?.addEventListener("click", () => {
-        clearSelection()
-    })
-    const deselectAllBtnMobile = document.getElementById("selectAllBtnMobile") as HTMLButtonElement | null
-    deselectAllBtnMobile?.addEventListener("click", () => {
-        clearSelection()
-    })
-
-    homeButton.addEventListener("click", () => {
-        const controlsDiv = document.getElementById("controls")
-        const browserDiv = document.getElementById("fileBrowser")
-        browserDiv?.setAttribute("hidden", "")
-        controlsDiv?.removeAttribute("hidden")
-        document.body.classList.remove("file-browser-active")
-        clearSelection()
-    })
-    actionUpload.addEventListener("click", () => {
-        setNextUploadParentFromBrowserState()
-        const uploadInput = document.getElementById("uploadFileInput") as HTMLInputElement | null
-        if (uploadInput) uploadInput.click()
-    })
-    actionNewFolder.addEventListener("click", async () => {
-        await createFolderInCurrentLocation(client)
-    })
-    actionReceive.addEventListener("click", async () => {
-        await (await import("../telegram")).fileReceive(client, config)
-    })
-    actionUploadItem?.addEventListener("click", (e) => {
-        e.preventDefault()
-        setNextUploadParentFromBrowserState()
-        const uploadInput = document.getElementById("uploadFileInput") as HTMLInputElement | null
-        if (uploadInput) uploadInput.click()
-    })
-    actionNewFolderItem?.addEventListener("click", async (e) => {
-        e.preventDefault()
-        await createFolderInCurrentLocation(client)
-    })
-    actionReceiveItem?.addEventListener("click", async (e) => {
-        e.preventDefault()
-        await (await import("../telegram")).fileReceive(client, config)
-    })
-    actionUnsend.addEventListener("click", async () => {
-        await (await import("../telegram")).fileUnsend(client, config)
-    })
-
-    actionPreview.addEventListener("click", async () => {
-        await runSingleOpenAction(getSingleSelection())
-    })
-    actionDownload.addEventListener("click", async () => {
-        const selected = getSingleSelection()
-        if (!selected || !isFileEntry(selected)) return
-        const password = await requestBrowserText({
-            title: "Download File",
-            label: "Optional decryption password",
-            inputType: "password",
-            allowEmpty: true,
-            confirmLabel: "Download",
+    /* Navigation chrome */
+    document.getElementById("browserUpButton")?.addEventListener("click", () => void goUp())
+    document.getElementById("navAllFiles")?.addEventListener("click", () => void navigateTo(null))
+    document.getElementById("sidebarToggle")?.addEventListener("click", openSidebar)
+    document.getElementById("sidebarClose")?.addEventListener("click", closeSidebar)
+    document.getElementById("fxScrim")?.addEventListener("click", closeSidebar)
+    document.querySelectorAll<HTMLElement>("#fxSidebar .fx-nav-item").forEach((item) => {
+        item.addEventListener("click", () => {
+            if (item.id !== "navAllFiles") closeSidebar()
         })
-        if (password === null) return
-        await downloadFileCard(client, config, selected.data, password)
     })
-    actionRename.addEventListener("click", async () => {
-        const selected = getSingleSelection()
-        if (!selected) return
-        if (isFolderEntry(selected)) {
-            await renameFolderEntry(client, selected)
+
+    /* Create */
+    const sidebarNew = document.getElementById("sidebarNewButton") as HTMLButtonElement | null
+    sidebarNew?.addEventListener("click", () => openNewMenu(sidebarNew))
+    document.getElementById("fxFab")?.addEventListener("click", () => openNewMenu())
+    document.getElementById("topbarUploadButton")?.addEventListener("click", () => uploadFiles())
+    document.getElementById("browserActionUpload")?.addEventListener("click", () => uploadFiles())
+    document.getElementById("browserActionNewFolder")?.addEventListener("click", () => void createFolderHere())
+    document.getElementById("browserActionReceive")?.addEventListener("click", () => void receiveFile())
+    document.getElementById("browserActionUnsend")?.addEventListener("click", async () => {
+        await (await import("../telegram")).fileUnsend(activeBrowserClient ?? client, activeBrowserConfig ?? config)
+    })
+    document.getElementById("browserEmpty")?.addEventListener("click", (event) => {
+        const action = (event.target as HTMLElement).closest<HTMLElement>("[data-empty-action]")?.dataset.emptyAction
+        if (action === "upload") uploadFiles()
+        if (action === "folder") void createFolderHere()
+        if (action === "clear") {
+            searchInput.value = ""
+            scheduleSearch(true)
+        }
+    })
+
+    /* Selection chrome */
+    document.getElementById("deselectAllBtn")?.addEventListener("click", () => clearSelection())
+    document.getElementById("selectAllBtn")?.addEventListener("click", () => selectAllVisible())
+    document.getElementById("browserSelectAllCheck")?.addEventListener("click", () => selectAllVisible())
+    document.getElementById("fileActionsButtons")?.addEventListener("click", (event) => {
+        const button = (event.target as HTMLElement).closest<HTMLButtonElement>("[data-action-key]")
+        if (!button || button.disabled) return
+        const action = currentBarActions.get(button.dataset.actionKey ?? "")
+        if (action) void action.run()
+    })
+    document.getElementById("browserContent")?.addEventListener("click", (event) => {
+        // Clicking empty space clears the selection, like a desktop file manager.
+        const target = event.target as HTMLElement
+        if (target.closest("[data-browser-id], button, a, input, .fx-list-head")) return
+        if (state.selected.size > 0 && !isTouchInteraction()) clearSelection()
+    })
+
+    /* Drag and drop upload */
+    const browserDiv = document.getElementById("fileBrowser")
+    const dropOverlay = document.getElementById("dropOverlay")
+    let dragDepth = 0
+    const hasFiles = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes("Files")
+    browserDiv?.addEventListener("dragenter", (event) => {
+        if (!hasFiles(event)) return
+        event.preventDefault()
+        dragDepth++
+        dropOverlay?.removeAttribute("hidden")
+    })
+    browserDiv?.addEventListener("dragover", (event) => {
+        if (!hasFiles(event)) return
+        event.preventDefault()
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "copy"
+    })
+    browserDiv?.addEventListener("dragleave", (event) => {
+        if (!hasFiles(event)) return
+        dragDepth = Math.max(0, dragDepth - 1)
+        if (dragDepth === 0) dropOverlay?.setAttribute("hidden", "")
+    })
+    browserDiv?.addEventListener("drop", (event) => {
+        if (!hasFiles(event)) return
+        event.preventDefault()
+        dragDepth = 0
+        dropOverlay?.setAttribute("hidden", "")
+        const files = Array.from(event.dataTransfer?.files ?? []).filter((file) => file.size > 0 || file.type !== "")
+        if (files.length === 0) {
+            showUfidToast("Folders can't be dropped yet — drop files instead", { tone: "error" })
             return
         }
-        if (isFileEntry(selected)) {
-            const newName = await requestBrowserText({
-                title: "Rename File",
-                label: "File name",
-                initialValue: selected.data.name,
-                confirmLabel: "Rename",
-            })
-            if (!newName || newName.trim() === "") return
-            await renameFileCard(client, selected.msgId, "me", selected.data, newName.trim())
-            selected.data.name = newName.trim()
-            renderBrowser(state.pages[state.currentPage])
-        }
-    })
-    actionDelete.addEventListener("click", async () => {
-        await deleteSelectedEntries()
-    })
-    actionMove.addEventListener("click", async () => {
-        await moveSelectedEntries(client)
-    })
-    actionSend.addEventListener("click", async () => {
-        const entries = getSelectedFileEntries()
-        if (entries.length === 0) return
-        const recipient = await requestBrowserText({
-            title: "Send Files",
-            label: "Recipient",
-            confirmLabel: "Send",
-        })
-        if (!recipient || recipient.trim() === "") return
-        for (const entry of entries) {
-            await sendFileCard(client, entry.data, recipient.trim())
-        }
-        showUfidToast(entries.length === 1 ? "File sent" : "Files sent")
+        uploadFiles(files)
     })
 
-    bulkDownload?.addEventListener("click", async () => {
-        const selected = getSingleSelection()
-        if (!selected || !isFileEntry(selected)) return
-        const password = await requestBrowserText({
-            title: "Download File",
-            label: "Optional decryption password",
-            inputType: "password",
-            allowEmpty: true,
-            confirmLabel: "Download",
-        })
-        if (password === null) return
-        await downloadFileCard(client, config, selected.data, password)
-    })
-    bulkDelete?.addEventListener("click", async () => {
-        await deleteSelectedEntries()
-    })
-    bulkSend?.addEventListener("click", async () => {
-        const entries = getSelectedFileEntries()
-        if (entries.length === 0) return
-        const recipient = await requestBrowserText({
-            title: "Send Files",
-            label: "Recipient",
-            confirmLabel: "Send",
-        })
-        if (!recipient || recipient.trim() === "") return
-        for (const entry of entries) {
-            await sendFileCard(client, entry.data, recipient.trim())
-        }
-        showUfidToast("Files sent")
+    window.addEventListener("keydown", (event) => {
+        void handleKeydown(event)
     })
 
-    actionPreviewItem.addEventListener("click", async (e) => {
-        e.preventDefault()
-        await runSingleOpenAction(getSingleSelection())
-    })
-    actionDownloadItem.addEventListener("click", async (e) => {
-        e.preventDefault()
-        const selected = getSingleSelection()
-        if (!selected || !isFileEntry(selected)) return
-        const password = await requestBrowserText({
-            title: "Download File",
-            label: "Optional decryption password",
-            inputType: "password",
-            allowEmpty: true,
-            confirmLabel: "Download",
-        })
-        if (password === null) return
-        await downloadFileCard(client, config, selected.data, password)
-    })
-    actionRenameItem.addEventListener("click", async (e) => {
-        e.preventDefault()
-        const selected = getSingleSelection()
-        if (!selected) return
-        if (isFolderEntry(selected)) {
-            await renameFolderEntry(client, selected)
+    // Deep link: #/f/<folderId> opens that folder directly.
+    const deepLinkMatch = window.location.hash.match(/^#\/f\/(.+)$/)
+    if (deepLinkMatch) {
+        const record = await getFolderRecord(client, decodeURIComponent(deepLinkMatch[1])).catch(() => null)
+        if (record && !record.data.deleted) {
+            await navigateTo(folderEntryFromRecord(record), { push: false })
             return
         }
-        if (isFileEntry(selected)) {
-            const newName = await requestBrowserText({
-                title: "Rename File",
-                label: "File name",
-                initialValue: selected.data.name,
-                confirmLabel: "Rename",
-            })
-            if (!newName || newName.trim() === "") return
-            await renameFileCard(client, selected.msgId, "me", selected.data, newName.trim())
-            selected.data.name = newName.trim()
-            renderBrowser(state.pages[state.currentPage])
-        }
-    })
-    actionDeleteItem.addEventListener("click", async (e) => {
-        e.preventDefault()
-        await deleteSelectedEntries()
-    })
-    actionMoveItem.addEventListener("click", async (e) => {
-        e.preventDefault()
-        await moveSelectedEntries(client)
-    })
-    actionSendItem.addEventListener("click", async (e) => {
-        e.preventDefault()
-        const entries = getSelectedFileEntries()
-        if (entries.length === 0) return
-        const recipient = await requestBrowserText({
-            title: "Send Files",
-            label: "Recipient",
-            confirmLabel: "Send",
-        })
-        if (!recipient || recipient.trim() === "") return
-        for (const entry of entries) {
-            await sendFileCard(client, entry.data, recipient.trim())
-        }
-        showUfidToast(entries.length === 1 ? "File sent" : "Files sent")
-    })
-    actionUnsendItem?.addEventListener("click", async (e) => {
-        e.preventDefault()
-        await (await import("../telegram")).fileUnsend(client, config)
-    })
-
-    window.addEventListener("keydown", async (e) => {
-        const target = e.target as HTMLElement | null
-        if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
-            return
-        }
-        const browserDiv = document.getElementById("fileBrowser")
-        if (!browserDiv || browserDiv.hasAttribute("hidden")) return
-
-        if (e.key === "Escape") {
-            if (previewModal?.isOpen()) {
-                previewModal.close()
-            } else if (state.selected.size > 0) {
-                clearSelection()
-            } else if (state.currentFolder) {
-                await openGlobalView()
-            }
-            return
-        }
-        if (e.key === "Delete" && state.selected.size > 0) {
-            const entries = Array.from(state.selected.values())
-            if (entries.every((entry) => isFileEntry(entry) || isFolderEntry(entry))) {
-                e.preventDefault()
-                await deleteSelectedEntries()
-            }
-            return
-        }
-        if (e.key === "Enter") {
-            const selected = getSingleSelection()
-            if (selected) {
-                e.preventDefault()
-                await runSingleOpenAction(selected)
-            }
-            return
-        }
-        if (previewModal?.isOpen()) {
-            if (e.key === "ArrowLeft") {
-                e.preventDefault()
-                await previewModal.showPrevious()
-            } else if (e.key === "ArrowRight") {
-                e.preventDefault()
-                await previewModal.showNext()
-            }
-        }
-    })
-
+    }
+    writeHistory("replace")
     await doRefresh({ showLoading: true, loadingMessage: "Loading files..." })
 }

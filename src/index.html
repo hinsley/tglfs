@@ -4,236 +4,261 @@
 <head>
     <meta charset="utf-8" />
     <title>TGLFS</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"
-        integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" crossorigin="anonymous" />
-    <link href="./style.css" rel="stylesheet" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0e1116" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="./style.css" rel="stylesheet" />
     <link rel="icon" href="/icons/TGLFS logo 192.png" sizes="192x192" type="image/png" />
+    <link rel="apple-touch-icon" href="/icons/TGLFS logo 192.png" />
     <link rel="manifest" href="/manifest.json" />
     <script type="module" src="web/app.ts"></script>
 </head>
 
-<body class="text-center">
+<body>
     <div id="app">
-        <div id="logo">🗂️</div>
-        <h1 id="title" class="h3 mb-3 font-weight-normal">Telegram Large File Storage</h1>
-        <div id="splash">Loading...</div>
-        <div id="login" hidden>
-            <div class="login-card">
-                <div class="login-header">
-                    <div class="login-kicker">Secure Login</div>
-                    <h2 class="login-title">Sign in to TGLFS</h2>
-                    <p class="login-subtitle">Use your Telegram account to access your files.</p>
+        <div id="splash" class="fx-splash" role="status" aria-live="polite">
+            <img src="/icons/TGLFS logo 192.png" alt="" class="fx-splash-logo" />
+            <span class="fx-spinner" aria-hidden="true"></span>
+            <span class="fx-visually-hidden">Loading…</span>
+        </div>
+
+        <!-- Sign in -->
+        <section id="login" class="auth" hidden>
+            <div class="auth-card">
+                <div class="auth-brand">
+                    <img src="/icons/TGLFS logo 192.png" alt="" class="auth-logo" />
+                    <div>
+                        <div class="auth-brand-name">TGLFS</div>
+                        <div class="auth-brand-tag">Telegram Large File Storage</div>
+                    </div>
                 </div>
-                <div id="loginStepIndicator" class="login-step-indicator">Step 1 of 3</div>
-                <div id="loginStatus" class="login-status" role="status" aria-live="polite" hidden>
-                    <span class="spinner" aria-hidden="true"></span>
+                <div class="auth-header">
+                    <h1 class="auth-title">Sign in</h1>
+                    <p class="auth-subtitle">Use your Telegram account to access your encrypted files.</p>
+                </div>
+                <div id="loginStepIndicator" class="auth-step">Step 1 of 3</div>
+                <div id="loginStatus" class="auth-status" role="status" aria-live="polite" hidden>
+                    <span class="fx-spinner fx-spinner--sm" aria-hidden="true"></span>
                     <span id="loginStatusText"></span>
                 </div>
-                <div id="loginError" class="login-error" role="alert" aria-live="assertive" hidden></div>
-                <form id="loginPhoneForm" class="login-step" autocomplete="on">
-                    <label class="form-label" for="phone">Phone number</label>
-                    <input type="tel" id="phone" class="form-control" name="phone" placeholder="+1 555 555 5555"
-                        autocomplete="tel" inputmode="tel" />
-                    <button id="loginButton" type="submit" class="btn btn-lg btn-primary btn-block w-100">Send code</button>
-                    <p class="login-hint">We will send a login code via Telegram.</p>
+                <div id="loginError" class="auth-error" role="alert" aria-live="assertive" hidden></div>
+                <form id="loginPhoneForm" class="auth-form" autocomplete="on">
+                    <label class="fx-field">
+                        <span class="fx-field-label">Phone number</span>
+                        <input type="tel" id="phone" class="fx-input fx-input--lg" name="phone" placeholder="+1 555 555 5555"
+                            autocomplete="tel" inputmode="tel" />
+                    </label>
+                    <button id="loginButton" type="submit" class="fx-btn fx-btn-primary fx-btn-lg fx-btn-block">Send code</button>
+                    <p class="auth-hint">We will send a login code via Telegram.</p>
                 </form>
-                <form id="loginCodeForm" class="login-step" autocomplete="one-time-code" hidden>
-                    <label class="form-label" for="loginCode">Login code</label>
-                    <input type="text" id="loginCode" class="form-control" placeholder="12345" inputmode="numeric"
-                        autocomplete="one-time-code" />
-                    <div class="login-action-row">
-                        <button id="loginCodeSubmit" type="submit" class="btn btn-primary w-100">Verify code</button>
-                        <button id="loginPasteCode" type="button" class="btn btn-outline-secondary w-100">Paste code</button>
+                <form id="loginCodeForm" class="auth-form" autocomplete="one-time-code" hidden>
+                    <label class="fx-field">
+                        <span class="fx-field-label">Login code</span>
+                        <input type="text" id="loginCode" class="fx-input fx-input--lg fx-input--code" placeholder="12345"
+                            inputmode="numeric" autocomplete="one-time-code" />
+                    </label>
+                    <div class="auth-row">
+                        <button id="loginCodeSubmit" type="submit" class="fx-btn fx-btn-primary fx-btn-lg">Verify code</button>
+                        <button id="loginPasteCode" type="button" class="fx-btn fx-btn-secondary fx-btn-lg">Paste code</button>
                     </div>
-                    <div class="login-link-row">
-                        <a id="loginOpenTelegram" class="btn btn-link" href="tg://">Open Telegram</a>
-                        <button id="loginChangePhone" type="button" class="btn btn-link">Change phone</button>
+                    <div class="auth-links">
+                        <a id="loginOpenTelegram" class="fx-link" href="tg://">Open Telegram</a>
+                        <button id="loginChangePhone" type="button" class="fx-link">Change phone</button>
                     </div>
-                    <p class="login-hint">Codes usually arrive within a few seconds.</p>
+                    <p class="auth-hint">Codes usually arrive within a few seconds.</p>
                 </form>
-                <form id="loginPasswordForm" class="login-step" hidden>
-                    <label class="form-label" for="loginPassword">Telegram password</label>
-                    <input type="password" id="loginPassword" class="form-control" autocomplete="current-password" />
-                    <button id="loginPasswordSubmit" type="submit" class="btn btn-primary w-100">Continue</button>
-                    <div class="login-link-row">
-                        <button id="loginResetLogin" type="button" class="btn btn-link">Use a different number</button>
+                <form id="loginPasswordForm" class="auth-form" hidden>
+                    <label class="fx-field">
+                        <span class="fx-field-label">Telegram password</span>
+                        <input type="password" id="loginPassword" class="fx-input fx-input--lg" autocomplete="current-password" />
+                    </label>
+                    <button id="loginPasswordSubmit" type="submit" class="fx-btn fx-btn-primary fx-btn-lg fx-btn-block">Continue</button>
+                    <div class="auth-links">
+                        <button id="loginResetLogin" type="button" class="fx-link">Use a different number</button>
                     </div>
-                    <p class="login-hint">This is your Telegram two-step verification password.</p>
+                    <p class="auth-hint">This is your Telegram two-step verification password.</p>
                 </form>
             </div>
-        </div>
-        <div id="controls" class="button-group" hidden>
-            <input type="file" id="uploadFileInput" multiple style="display: none !important;" />
-            <button id="fileBrowserButton" class="btn btn-lg btn-outline-primary btn-block w-100">
-                File Browser
-            </button>
-            <button id="migrateDirectoryParentsButton" class="btn btn-lg btn-outline-primary btn-block w-100">
-                Migrate Folder Index
-            </button>
-            <button id="downloadFileLegacyButton" class="btn btn-lg btn-outline-primary btn-block w-100">
-                Download (Legacy)
-            </button>
-            <button id="logoutButton" class="btn btn-lg btn-outline-secondary btn-block w-100">
-                Log out
-            </button>
-        </div>
-        <div id="progressBarContainer" hidden>
-            <div id="progressBarText"></div>
-            <div id="progressBar" class="progress text-center">
-                <div id="progress" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar"
-                    style="width: 25%;" aria-valuenow="25" aria-valuemin="0" aria-valuemax="100">25%</div>
-            </div>
-            <div id="progressBytesText" class="text-muted">0 / 0 bytes</div>
-            <div id="progressTimeText" class="text-muted">Elapsed: 00:00:00 • Remaining: --:--:--</div>
-        </div>
-        <div id="fileBrowser" hidden>
-            <div class="fx-header">
-                <div class="fx-header-row">
-                    <button id="browserHomeButton" class="btn btn-sm btn-outline-secondary fx-logo-button" aria-label="Home">
-                        <img src="/icons/TGLFS logo 192.png" alt="TGLFS" class="fx-logo-img" />
-                    </button>
-                    <div class="btn-group view-toggle" role="group">
-                        <button id="viewList" class="btn btn-sm btn-outline-secondary active" title="List">☰</button>
-                        <button id="viewGrid" class="btn btn-sm btn-outline-secondary" title="Grid">▦</button>
+            <p class="auth-footer">Files are encrypted in your browser and stored in your Telegram Saved Messages.</p>
+        </section>
+
+        <!-- File browser shell -->
+        <div id="fileBrowser" class="fx-shell" hidden>
+            <input type="file" id="uploadFileInput" multiple hidden />
+
+            <aside id="fxSidebar" class="fx-sidebar" aria-label="Navigation">
+                <div class="fx-brand">
+                    <img src="/icons/TGLFS logo 192.png" alt="" class="fx-brand-logo" />
+                    <span class="fx-brand-name">TGLFS</span>
+                    <button id="sidebarClose" class="fx-icon-btn fx-only-compact" type="button" aria-label="Close menu" data-icon="close"></button>
+                </div>
+                <button id="sidebarNewButton" class="fx-btn fx-btn-primary fx-new-btn" type="button" data-icon="plus">New</button>
+                <nav class="fx-nav">
+                    <button id="navAllFiles" class="fx-nav-item is-active" type="button" data-icon="home">All files</button>
+                    <button id="browserActionUpload" class="fx-nav-item" type="button" data-icon="upload">Upload files</button>
+                    <button id="browserActionNewFolder" class="fx-nav-item" type="button" data-icon="folderPlus">New folder</button>
+                    <button id="browserActionReceive" class="fx-nav-item" type="button" data-icon="inbox">Receive file</button>
+                </nav>
+                <div class="fx-nav-section">Tools</div>
+                <nav class="fx-nav">
+                    <button id="migrateDirectoryParentsButton" class="fx-nav-item" type="button" data-icon="wrench">Migrate folder index</button>
+                    <button id="downloadFileLegacyButton" class="fx-nav-item" type="button" data-icon="key">Download by UFID (legacy)</button>
+                    <button id="browserActionUnsend" class="fx-nav-item" type="button" data-icon="send" hidden>Unsend</button>
+                </nav>
+                <div class="fx-sidebar-foot">
+                    <div class="fx-account">
+                        <span class="fx-avatar" aria-hidden="true" data-icon="lock"></span>
+                        <span class="fx-account-text">
+                            <span class="fx-account-label">Signed in</span>
+                            <span id="accountPhone" class="fx-account-phone"></span>
+                        </span>
+                        <button id="logoutButton" class="fx-icon-btn" type="button" aria-label="Log out" title="Log out" data-icon="logout"></button>
                     </div>
-                    <input id="browserSearchInput" class="form-control form-control-sm fx-search"
-                        placeholder="Search..." />
-                    <select id="browserSortSelect" class="form-select form-select-sm fx-sort">
-                        <option value="date_desc">Newest</option>
-                        <option value="date_asc">Oldest</option>
-                        <option value="name_asc">A–Z</option>
-                        <option value="name_desc">Z–A</option>
-                        <option value="size_desc">Largest</option>
-                        <option value="size_asc">Smallest</option>
-                    </select>
-                    <div class="fx-actions">
-                        <button id="browserActionUpload" class="btn btn-sm btn-primary fx-action-btn">+ Upload</button>
-                        <button id="browserActionNewFolder" class="btn btn-sm btn-outline-primary fx-action-btn">+ Folder</button>
-                        <button id="browserActionReceive" class="btn btn-sm btn-outline-primary fx-action-btn">Receive</button>
-                        <div class="dropdown fx-actions-dropdown">
-                            <button id="browserQuickActionsBtn" class="btn btn-sm btn-primary dropdown-toggle" type="button"
-                                data-bs-toggle="dropdown" aria-expanded="false">
-                                Actions
-                            </button>
-                            <ul class="dropdown-menu dropdown-menu-end">
-                                <li><a class="dropdown-item" href="#" id="browserActionUploadItem">+ Upload</a></li>
-                                <li><a class="dropdown-item" href="#" id="browserActionNewFolderItem">+ Folder</a></li>
-                                <li><a class="dropdown-item" href="#" id="browserActionReceiveItem">Receive</a></li>
-                            </ul>
+                    <details class="fx-donate">
+                        <summary><span data-icon="heart"></span>Support development</summary>
+                        <p>BTC donation address</p>
+                        <code>bc1q5kqen6ygnrqxgtyqyfpgsefnuj20rrfp6tg3dm</code>
+                    </details>
+                </div>
+            </aside>
+            <div id="fxScrim" class="fx-scrim" hidden></div>
+
+            <main class="fx-main">
+                <header class="fx-topbar">
+                    <button id="sidebarToggle" class="fx-icon-btn fx-tb-menu" type="button" aria-label="Open menu" data-icon="menu"></button>
+                    <div class="fx-tb-location">
+                        <button id="browserUpButton" class="fx-icon-btn" type="button" aria-label="Up one level" title="Up one level (Backspace)" data-icon="back" hidden></button>
+                        <nav id="browserBreadcrumb" class="fx-crumbs" aria-label="Breadcrumb"></nav>
+                    </div>
+                    <div class="fx-search fx-tb-search">
+                        <span data-icon="search"></span>
+                        <input id="browserSearchInput" class="fx-search-input" type="search" placeholder="Search" autocomplete="off"
+                            enterkeyhint="search" aria-label="Search in this folder" />
+                        <button id="browserSearchClear" class="fx-search-clear" type="button" aria-label="Clear search" data-icon="close" hidden></button>
+                        <kbd class="fx-search-kbd">/</kbd>
+                    </div>
+                    <div class="fx-tb-tools">
+                        <label class="fx-sort" title="Sort">
+                            <span data-icon="sort"></span>
+                            <select id="browserSortSelect" aria-label="Sort by">
+                                <option value="date_desc">Newest</option>
+                                <option value="date_asc">Oldest</option>
+                                <option value="name_asc">Name A–Z</option>
+                                <option value="name_desc">Name Z–A</option>
+                                <option value="size_desc">Largest</option>
+                                <option value="size_asc">Smallest</option>
+                            </select>
+                        </label>
+                        <div class="fx-segmented" role="group" aria-label="View">
+                            <button id="viewList" class="fx-seg-btn is-active" type="button" aria-label="List view" title="List view" data-icon="list"></button>
+                            <button id="viewGrid" class="fx-seg-btn" type="button" aria-label="Grid view" title="Grid view" data-icon="grid"></button>
+                        </div>
+                        <button id="topbarUploadButton" class="fx-btn fx-btn-primary fx-tb-upload" type="button" data-icon="upload">Upload</button>
+                    </div>
+                </header>
+
+                <div id="browserContent" class="fx-content" aria-busy="false">
+                    <div id="browserList" class="fx-list">
+                        <div class="fx-list-head" role="row">
+                            <span class="fx-cell fx-cell-check"><button id="browserSelectAllCheck" class="fx-check" type="button" role="checkbox" aria-checked="false" aria-label="Select all"></button></span>
+                            <span class="fx-cell fx-cell-name">Name</span>
+                            <span class="fx-cell fx-cell-size">Size</span>
+                            <span class="fx-cell fx-cell-date">Modified</span>
+                            <span class="fx-cell fx-cell-more"></span>
+                        </div>
+                        <div id="browserRows" class="fx-rows" role="grid" aria-label="Files"></div>
+                    </div>
+                    <div id="browserGrid" class="fx-grid" role="grid" aria-label="Files" hidden></div>
+                    <div id="browserEmpty" class="fx-empty" hidden></div>
+                    <div id="browserPager" class="fx-pager">
+                        <span id="browserPageInfo" class="fx-pager-info"></span>
+                        <div class="fx-pager-buttons">
+                            <button id="browserPrevPage" class="fx-icon-btn" type="button" aria-label="Previous page" title="Previous page" data-icon="chevronLeft"></button>
+                            <button id="browserNextPage" class="fx-icon-btn" type="button" aria-label="Next page" title="Next page" data-icon="chevronRight"></button>
                         </div>
                     </div>
                 </div>
-                <div id="browserBreadcrumb" class="fx-breadcrumb" hidden>
-                    <button id="browserRootCrumb" class="btn btn-sm btn-link fx-breadcrumb-root" type="button">All files</button>
-                    <span id="browserPathCrumbs" class="fx-breadcrumb-path"></span>
+            </main>
+
+            <button id="fxFab" class="fx-fab" type="button" aria-label="New" data-icon="plus"></button>
+
+            <div id="fileActionsBar" class="fx-selbar" role="toolbar" aria-label="Selection actions" hidden>
+                <div class="fx-selbar-info">
+                    <button id="deselectAllBtn" class="fx-icon-btn" type="button" aria-label="Clear selection" title="Clear selection (Esc)" data-icon="close"></button>
+                    <span id="selectionInfo" class="fx-selbar-count"></span>
+                    <button id="selectAllBtn" class="fx-link fx-selbar-all" type="button">Select all</button>
                 </div>
+                <div id="fileActionsButtons" class="fx-selbar-actions"></div>
             </div>
-            <div id="browserContent" class="browser-content">
-                <div id="browserList">
-                    <div class="table-responsive">
-                        <table id="browserTable" class="table table-hover align-middle fade-in">
-                            <thead>
-                                <tr>
-                                    <th class="name">Name</th>
-                                    <th class="size">Size</th>
-                                    <th class="ufid">ID</th>
-                                    <th class="date">Date</th>
-                                    <th class="status">Status</th>
-                                </tr>
-                            </thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
+
+            <div id="dropOverlay" class="fx-drop" hidden>
+                <div class="fx-drop-card">
+                    <span data-icon="cloudUp"></span>
+                    <div class="fx-drop-title">Drop to upload</div>
+                    <div id="dropTarget" class="fx-drop-sub"></div>
                 </div>
-                <div id="browserGrid" class="file-grid fade-in" hidden></div>
-                <div class="d-flex justify-content-between align-items-center" style="margin-top: 16px;">
-                    <button id="browserPrevPage" class="btn btn-secondary" title="Previous Page">←</button>
-                    <div id="browserPageInfo" class="text-muted"></div>
-                    <button id="browserNextPage" class="btn btn-secondary" title="Next Page">→</button>
-                </div>
-            </div>
-            <div class="fx-footer">
-                <!-- Selection actions (shown when files or folders are selected) -->
-                <div class="browser-actions" id="fileActionsBar" hidden>
-                    <div class="d-flex flex-wrap gap-2 align-items-center">
-                        <span id="selectionInfo" class="text-muted small"></span>
-                        <button id="deselectAllBtn" class="btn btn-sm btn-link text-muted p-0">Clear selection</button>
-                    </div>
-                    <div class="d-flex flex-wrap gap-1">
-                        <button id="browserActionPreview" class="btn btn-sm btn-secondary">Preview</button>
-                        <button id="browserActionDownload" class="btn btn-sm btn-primary">Download</button>
-                        <button id="browserActionRename" class="btn btn-sm btn-secondary">Rename</button>
-                        <button id="browserActionMove" class="btn btn-sm btn-secondary">Move</button>
-                        <button id="browserActionSend" class="btn btn-sm btn-secondary">Send</button>
-                        <button id="browserActionDelete" class="btn btn-sm btn-danger">Delete</button>
-                    </div>
-                </div>
-                <!-- Mobile dropdown for file actions -->
-                <div class="browser-actions-dropdown" id="fileActionsDropdown" hidden>
-                    <div class="d-flex gap-2 align-items-center justify-content-between">
-                        <button id="selectAllBtnMobile" class="btn btn-sm btn-outline-secondary">Clear selection</button>
-                        <div class="dropdown">
-                            <button id="browserActionsBtn" class="btn btn-sm btn-primary dropdown-toggle" type="button"
-                                data-bs-toggle="dropdown" aria-expanded="false">
-                                Actions
-                            </button>
-                            <ul class="dropdown-menu dropdown-menu-end">
-                                <li><a class="dropdown-item" href="#" id="actionPreviewItem">👁️ Preview</a></li>
-                                <li><a class="dropdown-item" href="#" id="actionDownloadItem">⬇️ Download</a></li>
-                                <li><a class="dropdown-item" href="#" id="actionRenameItem">✏️ Rename</a></li>
-                                <li><a class="dropdown-item" href="#" id="actionMoveItem">📁 Move</a></li>
-                                <li><a class="dropdown-item" href="#" id="actionSendItem">📤 Send</a></li>
-                                <li>
-                                    <hr class="dropdown-divider" />
-                                </li>
-                                <li><a class="dropdown-item text-danger" href="#" id="actionDeleteItem">🗑️ Delete</a>
-                                </li>
-                            </ul>
-                        </div>
-                    </div>
-                </div>
-                <!-- Hidden: Unsend button (only for received files) -->
-                <button id="browserActionUnsend" class="btn btn-danger" hidden>Unsend</button>
             </div>
         </div>
-        <div id="ufidToast" class="ufid-toast" role="status" aria-live="polite" aria-hidden="true">
-            UFID copied to clipboard
+
+        <!-- Transfer progress -->
+        <div id="progressBarContainer" class="fx-progress-layer" hidden>
+            <div class="fx-progress-card" role="status" aria-live="polite">
+                <div class="fx-progress-top">
+                    <span class="fx-progress-badge" data-icon="cloudUp"></span>
+                    <div class="fx-progress-titles">
+                        <div id="progressBarText" class="fx-progress-title"></div>
+                        <div id="progressBytesText" class="fx-progress-sub">0 / 0 bytes</div>
+                    </div>
+                    <div id="progressPercent" class="fx-progress-pct">0%</div>
+                </div>
+                <div id="progressBar" class="fx-progress-track">
+                    <div id="progress" class="fx-progress-fill" role="progressbar" style="width: 0%;" aria-valuenow="0"
+                        aria-valuemin="0" aria-valuemax="100">0%</div>
+                </div>
+                <div id="progressTimeText" class="fx-progress-time">Elapsed: 00:00:00 • Remaining: --:--:--</div>
+            </div>
         </div>
+
+        <div id="ufidToast" class="fx-toast" role="status" aria-live="polite" aria-hidden="true"></div>
+
+        <!-- Media preview -->
         <div id="previewModal" class="preview-modal" hidden>
             <div class="preview-backdrop"></div>
             <div class="preview-content">
-                <button class="preview-close" aria-label="Close">×</button>
-                <div id="previewLoading" class="preview-loading">
-                    <div class="spinner"></div>
-                    <p id="previewLoadingText">Downloading...</p>
-                    <div class="progress">
-                        <div id="previewProgress" class="progress-bar" style="width: 0%"></div>
+                <header class="preview-header">
+                    <div class="preview-info">
+                        <h3 id="previewFileName"></h3>
+                        <p id="previewFileMeta"></p>
                     </div>
-                    <button id="previewCancel" class="btn btn-secondary">Cancel</button>
-                </div>
-                <div id="previewMediaContainer" hidden>
-                    <img id="previewImage" hidden />
-                    <video id="previewVideo" controls hidden></video>
-                    <audio id="previewAudio" controls hidden></audio>
-                </div>
-                <div class="preview-info">
-                    <h3 id="previewFileName"></h3>
-                    <p id="previewFileMeta"></p>
+                    <span id="previewCounter" class="preview-counter"></span>
+                    <button class="preview-close" type="button" aria-label="Close preview" data-icon="close"></button>
+                </header>
+                <div class="preview-stage">
+                    <button id="previewPrev" class="preview-nav preview-nav--prev" type="button" aria-label="Previous" data-icon="chevronLeft" hidden></button>
+                    <div id="previewLoading" class="preview-loading">
+                        <div class="spinner"></div>
+                        <p id="previewLoadingText">Downloading...</p>
+                        <div class="preview-progress">
+                            <div id="previewProgress" class="preview-progress-fill" style="width: 0%"></div>
+                        </div>
+                        <button id="previewCancel" class="fx-btn fx-btn-glass" type="button">Cancel</button>
+                    </div>
+                    <div id="previewMediaContainer" class="preview-media" hidden>
+                        <img id="previewImage" alt="" hidden />
+                        <video id="previewVideo" controls playsinline hidden></video>
+                        <audio id="previewAudio" controls hidden></audio>
+                    </div>
+                    <button id="previewNext" class="preview-nav preview-nav--next" type="button" aria-label="Next" data-icon="chevronRight" hidden></button>
                 </div>
             </div>
         </div>
-        <div id="donation" class="text-muted" style="margin-top: 64px">
-            Support development! BTC donation address:<br /><code
-                style="word-wrap: break-word; user-select: text">bc1q5kqen6ygnrqxgtyqyfpgsefnuj20rrfp6tg3dm</code>
-        </div>
     </div>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-        integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
-        crossorigin="anonymous"></script>
 </body>
 
 </html>

@@ -147,6 +147,71 @@ const fileCards = [
             parentFolderId: projectsFolder.folderId,
         }),
     },
+    {
+        id: 504,
+        date: 1777741209,
+        message: serializeFileCardMessage({
+            name: "Vacation photos 2025 - Lisbon sunset over the river.jpg",
+            ufid: "mock-ufid-extra-0",
+            size: 4823117,
+            uploadComplete: true,
+            chunks: [1504],
+            IV: "mock-iv",
+            parentFolderId: TGLFS_ROOT_PARENT_ID,
+        }),
+    },
+    {
+        id: 505,
+        date: 1777741210,
+        message: serializeFileCardMessage({
+            name: "Quarterly report.pdf",
+            ufid: "mock-ufid-extra-1",
+            size: 913442,
+            uploadComplete: true,
+            chunks: [1505],
+            IV: "mock-iv",
+            parentFolderId: TGLFS_ROOT_PARENT_ID,
+        }),
+    },
+    {
+        id: 506,
+        date: 1777741211,
+        message: serializeFileCardMessage({
+            name: "Home movie.mp4",
+            ufid: "mock-ufid-extra-2",
+            size: 734003200,
+            uploadComplete: true,
+            chunks: [1506],
+            IV: "mock-iv",
+            parentFolderId: TGLFS_ROOT_PARENT_ID,
+        }),
+    },
+    {
+        id: 507,
+        date: 1777741212,
+        message: serializeFileCardMessage({
+            name: "project-backup.tar.gz",
+            ufid: "mock-ufid-extra-3",
+            size: 2147483648,
+            uploadComplete: false,
+            chunks: [1507],
+            IV: "mock-iv",
+            parentFolderId: TGLFS_ROOT_PARENT_ID,
+        }),
+    },
+    {
+        id: 508,
+        date: 1777741213,
+        message: serializeFileCardMessage({
+            name: "Podcast episode 42.mp3",
+            ufid: "mock-ufid-extra-4",
+            size: 58720256,
+            uploadComplete: true,
+            chunks: [1508],
+            IV: "mock-iv",
+            parentFolderId: TGLFS_ROOT_PARENT_ID,
+        }),
+    },
 ]
 
 const folderRecords = [
