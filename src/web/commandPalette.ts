@@ -178,6 +178,8 @@ export function initCommandPalette(hooks: BrowserHooks): CommandPalette {
                 disabled: !!migrateButton?.disabled,
                 run: runAndClose(clickSidebarButton("migrateDirectoryParentsButton")),
             },
+            { id: "action:labels-export", group: "actions", label: "Export stars & tags", keywords: ["backup", "labels", "download"], iconHtml: actionIcon("download"), run: runAndClose(clickSidebarButton("labelsExportButton")) },
+            { id: "action:labels-import", group: "actions", label: "Import stars & tags", keywords: ["restore", "labels", "backup"], iconHtml: actionIcon("upload"), run: runAndClose(clickSidebarButton("labelsImportButton")) },
             { id: "action:legacy", group: "actions", label: "Download by UFID (legacy)", keywords: ["ufid", "old download"], iconHtml: actionIcon("key"), run: runAndClose(clickSidebarButton("downloadFileLegacyButton")) },
             { id: "action:logout", group: "actions", label: "Log out", keywords: ["sign out", "exit"], iconHtml: actionIcon("logout"), run: runAndClose(clickSidebarButton("logoutButton")) },
         )

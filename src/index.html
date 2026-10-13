@@ -142,8 +142,9 @@
                 <nav class="fx-nav">
                     <button id="migrateDirectoryParentsButton" class="fx-nav-item" type="button" data-icon="wrench">Migrate folder index</button>
                     <button id="downloadFileLegacyButton" class="fx-nav-item" type="button" data-icon="key">Download by UFID (legacy)</button>
-                    <button id="labelsExportButton" class="fx-nav-item" type="button" data-icon="download">Export stars &amp; tags</button>
-                    <button id="labelsImportButton" class="fx-nav-item" type="button" data-icon="upload">Import stars &amp; tags</button>
+                    <!-- Reachable from Manage tags and the command palette; hidden to keep the sidebar short. -->
+                    <button id="labelsExportButton" class="fx-nav-item" type="button" hidden data-icon="download">Export stars &amp; tags</button>
+                    <button id="labelsImportButton" class="fx-nav-item" type="button" hidden data-icon="upload">Import stars &amp; tags</button>
                     <button id="browserActionUnsend" class="fx-nav-item" type="button" data-icon="send" hidden>Unsend</button>
                 </nav>
                 <div class="fx-sidebar-foot">
