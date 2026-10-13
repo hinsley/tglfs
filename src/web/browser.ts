@@ -6,6 +6,7 @@ import {
 import {
     countDirectoryEntries,
     downloadFileCard,
+    getFileCardByUfid,
     getFolderManifest,
     getFolderRecord,
     listFileCards,
@@ -27,15 +28,20 @@ import { TGLFS_ROOT_PARENT_ID } from "../../packages/tglfs-cli/src/shared/consta
 import { PreviewModal, type PreviewEntry } from "./preview"
 import { fileKindForName, fileKindIcon, icon, type FileKind, type IconName } from "./icons"
 import {
+    closeActionToast,
     closeMenu,
     escapeHtml,
+    hideToast,
     isCompactViewport,
     isMenuOpen,
     openMenu,
     requestChoice,
     requestConfirm,
     requestText,
+    showActionToast,
     showToast,
+    triggerActionToast,
+    type ActionToastHandle,
     type MenuItem,
 } from "./dialogs"
 import {
@@ -43,6 +49,7 @@ import {
     getExtraBrowserActions,
     type BrowserSelectionItem,
 } from "./browserActions"
+import { classifyUndoCandidate, createMutationQueue } from "./undoSupport"
 
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"])
 const VIDEO_EXTS = new Set(["mp4", "webm", "mov", "avi", "mkv", "m4v"])
@@ -1424,6 +1431,7 @@ async function loadFirstPage(client: any, refreshSequence = browserRefreshSequen
     })
     const page = await loadDirectoryPage(client, parentFolderId)
     if (refreshSequence !== browserRefreshSequence) return null
+    page.items = withoutHiddenEntries(page.items)
     countPromise
         .then((counts) => {
             if (!counts) return
@@ -1444,6 +1452,7 @@ async function loadNextPage(client: any) {
         folderOffsetId: state.lastFolderOffsetId,
         fileOffsetId: state.lastOffsetId,
     })
+    page.items = withoutHiddenEntries(page.items)
     state.lastOffsetId = page.lastOffsetId
     state.lastFolderOffsetId = page.lastFolderOffsetId
     state.hasMore = page.hasMore
@@ -1564,7 +1573,11 @@ async function createFolderInCurrentLocation(client: any) {
         icon: "folderPlus",
     }))
     if (!name) return
+    void flushPendingDelete()
+    await runExclusiveMutation(() => createFolderNamed(client, name))
+}
 
+async function createFolderNamed(client: any, name: string) {
     const now = new Date().toISOString()
     const parent = state.currentFolder
     if (!parent && await topLevelFolderNameExists(client, name)) {
@@ -1680,7 +1693,7 @@ async function updateFolderTreeForRename(
     }
 }
 
-async function renameFolderEntry(client: any, entry: FolderBrowserEntry) {
+async function renameFolderEntry(entry: FolderBrowserEntry) {
     const newName = validateFolderName(await requestBrowserText({
         title: "Rename folder",
         label: "Folder name",
@@ -1689,11 +1702,15 @@ async function renameFolderEntry(client: any, entry: FolderBrowserEntry) {
         icon: "pencil",
     }))
     if (!newName || newName === entry.data.name) return
+    await renameEntryTo(entry, newName)
+}
 
+/** Renames a folder (and rewrites its subtree paths). Returns false when nothing was written. */
+async function renameFolderTo(client: any, entry: FolderBrowserEntry, newName: string): Promise<boolean> {
     const record = await resolveFolderRecordForMutation(client, entry)
     if (!record) {
         showUfidToast("Unable to find folder record")
-        return
+        return false
     }
 
     const now = new Date().toISOString()
@@ -1702,10 +1719,10 @@ async function renameFolderEntry(client: any, entry: FolderBrowserEntry) {
     const parentManifestRecord = actualParentId ? await getFolderManifest(client, actualParentId) : null
     if (parentManifestRecord) {
         const activeNames = [...activeManifestEntryNames(parentManifestRecord.data)].filter((name) => name !== record.data.name.toLowerCase())
-        if (!assertFolderNameAvailable(newName, activeNames)) return
+        if (!assertFolderNameAvailable(newName, activeNames)) return false
     } else if (!actualParentId && await topLevelFolderNameExists(client, newName, record.data.folderId)) {
         showUfidToast(`"${newName}" already exists here`)
-        return
+        return false
     }
 
     const parentPath = parentManifestRecord?.data.path ?? ""
@@ -1740,8 +1757,7 @@ async function renameFolderEntry(client: any, entry: FolderBrowserEntry) {
             }, parentManifestRecord)
         }
     }
-
-    await refreshBrowser?.()
+    return true
 }
 
 async function tombstoneFolderTree(client: any, record: TglfsFolderRecord, now: string): Promise<void> {
@@ -1867,12 +1883,27 @@ async function requestMoveDestination(client: any, selectedEntries: BrowserEntry
     return destination ?? null
 }
 
+type MovePassOptions = {
+    /**
+     * Folder whose manifest currently lists the moved files (tombstoned after the move). Defaults to the
+     * folder being viewed, which is where browser selections come from; undo passes it explicitly.
+     */
+    fileSourceFolderId?: string | null
+}
+
+function resolveFileSourceFolderId(options: MovePassOptions) {
+    const folderId = options.fileSourceFolderId !== undefined ? options.fileSourceFolderId : state.currentFolder?.data.folderId
+    return folderId && folderId !== TGLFS_ROOT_PARENT_ID ? folderId : null
+}
+
 async function moveEntriesToFolderInSinglePass(
     client: any,
     entries: BrowserEntry[],
     destination: TglfsFolderRecord,
     now: string,
+    options: MovePassOptions = {},
 ) {
+    const fileSourceFolderId = resolveFileSourceFolderId(options)
     const { record: destinationManifestRecord, manifest: destinationManifest } =
         await getFolderManifestForMutation(client, destination.data, now)
     const destinationEntries = { ...destinationManifest.entries }
@@ -1906,8 +1937,8 @@ async function moveEntriesToFolderInSinglePass(
                 updatedAt: now,
             }
             movedFileEntries.push(entry)
-            if (state.currentFolder) {
-                addFileTombstone(sourceTombstones, state.currentFolder.data.folderId, entry.data.ufid)
+            if (fileSourceFolderId) {
+                addFileTombstone(sourceTombstones, fileSourceFolderId, entry.data.ufid)
             }
             continue
         }
@@ -1977,7 +2008,8 @@ async function moveEntriesToFolderInSinglePass(
     return { files: movedFileEntries.length, folders: preparedFolderMoves.length }
 }
 
-async function moveEntriesToRootInSinglePass(client: any, entries: BrowserEntry[], now: string) {
+async function moveEntriesToRootInSinglePass(client: any, entries: BrowserEntry[], now: string, options: MovePassOptions = {}) {
+    const fileSourceFolderId = resolveFileSourceFolderId(options)
     const sourceTombstones = new Map<string, MoveTombstoneBatch>()
     const movedFileEntries: FileBrowserEntry[] = []
     const preparedFolderMoves: PreparedFolderMove[] = []
@@ -1995,8 +2027,8 @@ async function moveEntriesToRootInSinglePass(client: any, entries: BrowserEntry[
                 continue
             }
             movedFileEntries.push(entry)
-            if (state.currentFolder) {
-                addFileTombstone(sourceTombstones, state.currentFolder.data.folderId, entry.data.ufid)
+            if (fileSourceFolderId) {
+                addFileTombstone(sourceTombstones, fileSourceFolderId, entry.data.ufid)
             }
             continue
         }
@@ -2049,28 +2081,502 @@ async function moveSelectedEntries(client: any) {
     const movableEntries = selectedEntries.filter((entry) => isFileEntry(entry) || isFolderEntry(entry))
     if (selectedEntries.length === 0 || movableEntries.length !== selectedEntries.length) return
 
+    // A pending delete must land first so folders being deleted never show up as destinations.
+    await flushPendingDelete()
     const destination = await requestMoveDestination(client, selectedEntries)
     if (!destination) return
+    await moveEntriesWithUndo(movableEntries, destination)
+}
 
+/* ---------------------------------------------------------------- Undo */
+/*
+ * Gmail-style undo for delete, move and rename.
+ *
+ * - Deletes are deferred. The items disappear from the view immediately and an "Undo" toast counts down
+ *   UNDO_WINDOW_MS; the real deletion (deleteFileCard / folder tombstones) runs only once that toast goes away
+ *   for any reason other than Undo: timeout, the × button, a newer toast replacing it, or another mutation
+ *   starting (`flushPendingDelete`). Undo before then performs no Telegram writes at all. The pending delete is
+ *   independent of the view, so navigating keeps the countdown running. Closing or reloading the page during
+ *   the window cancels the delete (nothing was written yet); `beforeunload` warns about that.
+ * - Moves and renames run immediately. Their Undo performs the inverse operation through the same mutation
+ *   code paths, after re-reading the affected records. Anything that changed since (moved or renamed again,
+ *   deleted, renamed elsewhere) is left alone, so an undo never overwrites a newer change.
+ * - Only the most recent toast's Undo is reachable (its button, or Ctrl/Cmd+Z while it is visible).
+ * - Browser-initiated writes run through `runExclusiveMutation`, so read-modify-write cycles on folder
+ *   manifests (e.g. a deferred delete committing while a move runs) never interleave.
+ *
+ * Reusable hooks for other browser features: `offerUndo`, `moveEntriesWithUndo`, `renameEntryTo`,
+ * `deleteEntriesWithUndo`, `flushPendingDelete`, `runExclusiveMutation`.
+ */
+
+const UNDO_WINDOW_MS = 6000
+const IS_APPLE_PLATFORM = typeof navigator !== "undefined" && /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent)
+
+const browserMutations = createMutationQueue()
+
+/** Serializes Telegram mutations started from the browser. Never nest calls (that would deadlock). */
+function runExclusiveMutation<T>(task: () => Promise<T>): Promise<T> {
+    return browserMutations.run(task)
+}
+
+type UndoOffer = {
+    message: string
+    undo: () => void | Promise<void>
+    /** Runs when the offer goes away without Undo being used (timeout, dismissed or replaced). */
+    onExpire?: () => void
+    durationMs?: number
+}
+
+/** Shows "<message> · Undo" with a draining countdown. Ctrl/Cmd+Z triggers it while it is visible. */
+function offerUndo(offer: UndoOffer): ActionToastHandle {
+    hideToast()
+    return showActionToast({
+        message: offer.message,
+        actionLabel: "Undo",
+        actionShortcut: "Control+Z Meta+Z",
+        actionHint: IS_APPLE_PLATFORM ? "⌘Z" : "Ctrl+Z",
+        countdown: true,
+        durationMs: offer.durationMs ?? UNDO_WINDOW_MS,
+        onAction: () => {
+            void (async () => {
+                try {
+                    await offer.undo()
+                } catch (error) {
+                    console.error(error)
+                    showUndoResult("Undo failed", "error")
+                }
+            })()
+        },
+        onClose: (reason) => {
+            if (reason !== "action") offer.onExpire?.()
+        },
+    })
+}
+
+function showUndoProgress(message: string) {
+    hideToast()
+    return showActionToast({ message, busy: true, durationMs: null })
+}
+
+function showUndoResult(message: string, tone: "default" | "success" | "error" = "success") {
+    showActionToast({ message, tone, durationMs: tone === "error" ? 6000 : 3200 })
+}
+
+function errorText(error: unknown) {
+    return error instanceof Error && error.message ? error.message : String(error)
+}
+
+function quoteName(name: string) {
+    return `“${name}”`
+}
+
+function describeEntries(entries: BrowserEntry[]) {
+    return entries.length === 1 ? quoteName(getEntryName(entries[0])) : formatMoveCount(countMoveEntries(entries))
+}
+
+function normalizeParentId(parentFolderId: string | undefined | null) {
+    return parentFolderId ? parentFolderId : TGLFS_ROOT_PARENT_ID
+}
+
+function fileCardParentId(data: FileCardData) {
+    return normalizeParentId("parentFolderId" in data ? data.parentFolderId : undefined)
+}
+
+function flashRestoredEntries(ids: Iterable<string>) {
+    for (const id of ids) {
+        document.querySelectorAll<HTMLElement>(`[data-browser-id="${CSS.escape(id)}"]`).forEach((node) => {
+            node.classList.remove("is-restored")
+            void node.offsetWidth
+            node.classList.add("is-restored")
+            node.addEventListener("animationend", () => node.classList.remove("is-restored"), { once: true })
+        })
+    }
+}
+
+/* Deferred delete */
+
+type PendingDelete = {
+    client: any
+    entries: BrowserEntry[]
+    entryIds: Set<string>
+    parentFolderId: string
+    query: string
+    toast: ActionToastHandle | null
+    commit: Promise<void> | null
+}
+
+let pendingDelete: PendingDelete | null = null
+/**
+ * Entries hidden from listings because their delete is pending or has been committed. Ids are message ids /
+ * folder UUIDs, which are never reused, so committed ids can stay; an undo or a failed commit removes them.
+ */
+const hiddenEntryIds = new Set<string>()
+
+function withoutHiddenEntries(items: BrowserEntry[]) {
+    return hiddenEntryIds.size === 0 ? items : items.filter((entry) => !hiddenEntryIds.has(entry.id))
+}
+
+function adjustTotalItems(delta: number) {
+    if (state.totalItems === null) return
+    state.totalItems = Math.max(0, state.totalItems + delta)
+    state.totalPages = Math.max(1, Math.ceil(state.totalItems / state.pageSize))
+}
+
+function removeEntriesFromView(ids: Set<string>) {
+    const current = state.pages[state.currentPage] ?? []
+    const removed = current.filter((entry) => ids.has(entry.id)).length
+    state.pages = state.pages.map((page) => page.filter((entry) => !ids.has(entry.id)))
+    for (const id of ids) state.selected.delete(id)
+    state.lastClickedIndex = null
+    adjustTotalItems(-removed)
+    const page = state.pages[state.currentPage] ?? []
+    if (page.length === 0 && (state.hasMore || state.pages.length > 1)) {
+        void refreshBrowser?.()
+        return
+    }
+    renderBrowser(page)
+}
+
+function restoreEntriesToView(pending: PendingDelete) {
+    if (currentDirectoryParentId() !== pending.parentFolderId) return
+    const page = state.pages[state.currentPage]
+    if (!page || state.query !== pending.query) {
+        void refreshBrowser?.()
+        return
+    }
+    const present = new Set(page.map((entry) => entry.id))
+    const restored = pending.entries.filter((entry) => !present.has(entry.id))
+    page.push(...restored)
+    adjustTotalItems(restored.length)
+    renderBrowser(page)
+    flashRestoredEntries(restored.map((entry) => entry.id))
+}
+
+/** Hides the entries now and deletes them for real once the undo window closes. */
+function deleteEntriesWithUndo(entries: BrowserEntry[]) {
+    const client = activeBrowserClient
+    const deletable = entries.filter((entry) => isFileEntry(entry) || isFolderEntry(entry))
+    if (!client || deletable.length === 0 || deletable.length !== entries.length) return
+    void flushPendingDelete()
+
+    const pending: PendingDelete = {
+        client,
+        entries: deletable,
+        entryIds: new Set(deletable.map((entry) => entry.id)),
+        parentFolderId: currentDirectoryParentId(),
+        query: state.query,
+        toast: null,
+        commit: null,
+    }
+    for (const id of pending.entryIds) hiddenEntryIds.add(id)
+    pendingDelete = pending
+    removeEntriesFromView(pending.entryIds)
+    pending.toast = offerUndo({
+        message: `Deleted ${describeEntries(deletable)}`,
+        undo: () => undoPendingDelete(pending),
+        onExpire: () => void commitPendingDelete(pending),
+    })
+}
+
+function undoPendingDelete(pending: PendingDelete) {
+    if (pending.commit) return
+    if (pendingDelete === pending) pendingDelete = null
+    for (const id of pending.entryIds) hiddenEntryIds.delete(id)
+    restoreEntriesToView(pending)
+    showUndoResult(`Restored ${describeEntries(pending.entries)}`)
+}
+
+function commitPendingDelete(pending: PendingDelete): Promise<void> {
+    if (pending.commit) return pending.commit
+    if (pendingDelete === pending) pendingDelete = null
+    const files = pending.entries.filter(isFileEntry)
+    const folders = pending.entries.filter(isFolderEntry)
+    pending.commit = runExclusiveMutation(async () => {
+        const client = pending.client
+        for (const file of files) {
+            await deleteFileCard(client, file.msgId, file.data)
+        }
+        const now = new Date().toISOString()
+        for (const folder of folders) {
+            const record = await resolveFolderRecordForMutation(client, folder)
+            if (!record) continue
+            await tombstoneFolderInParentManifest(client, record, now)
+            await tombstoneFolderTree(client, record, now)
+        }
+    }).catch(async (error) => {
+        console.error("Deferred delete failed", error)
+        for (const id of pending.entryIds) hiddenEntryIds.delete(id)
+        showUfidToast(`Couldn't delete ${describeEntries(pending.entries)}: ${errorText(error)}`, { tone: "error", durationMs: 7000 })
+        await refreshBrowser?.()
+    })
+    return pending.commit
+}
+
+/** Commits a pending delete right away (its undo is no longer offered). Resolves once it is written. */
+function flushPendingDelete(): Promise<void> {
+    const pending = pendingDelete
+    if (!pending) return Promise.resolve()
+    pending.toast?.close("dismissed")
+    return commitPendingDelete(pending)
+}
+
+function hasUnsavedBrowserWork() {
+    return pendingDelete !== null || browserMutations.inFlight() > 0
+}
+
+/** Commits a pending delete and waits for queued browser writes (used before signing out). */
+export async function settleBrowserMutations() {
+    await flushPendingDelete()
+    await runExclusiveMutation(async () => undefined)
+    closeActionToast("dismissed")
+}
+
+/* Move with undo */
+
+type MoveUndoRecord = {
+    files: Array<{ msgId: number; ufid: string; name: string }>
+    folders: Array<{ folderId: string; name: string }>
+    fromFolderId: string
+    fromLabel: string
+    toFolderId: string
+}
+
+function moveDestinationName(destination: MoveDestination) {
+    return destination.kind === "root" ? "All files" : destination.record.data.name
+}
+
+/**
+ * Moves entries of the current view to `destination` through the existing single-pass move code and offers
+ * Undo. Reusable by drag-to-move. Returns null when nothing ran (or it failed).
+ */
+async function moveEntriesWithUndo(entries: BrowserEntry[], destination: MoveDestination): Promise<MoveResult | null> {
+    const client = activeBrowserClient
+    const movableEntries = entries.filter((entry) => isFileEntry(entry) || isFolderEntry(entry))
+    if (!client || movableEntries.length === 0) return null
+    void flushPendingDelete()
+
+    const destinationName = moveDestinationName(destination)
+    const destinationFolderId = destination.kind === "root" ? TGLFS_ROOT_PARENT_ID : destination.record.data.folderId
+    const fromFolderId = currentDirectoryParentId()
+    const fromLabel = state.currentFolder?.data.name ?? "All files"
     const now = new Date().toISOString()
-    const destinationLabel = destination.label
-    showUfidToast(`Moving ${formatMoveCount(countMoveEntries(movableEntries))} to ${destinationLabel}...`, { durationMs: null })
+    showUfidToast(`Moving ${formatMoveCount(countMoveEntries(movableEntries))} to ${destinationName}...`, { durationMs: null })
     await waitForNextFrame()
 
     let moved: MoveResult
     try {
-        moved = destination.kind === "root"
-            ? await moveEntriesToRootInSinglePass(client, movableEntries, now)
-            : await moveEntriesToFolderInSinglePass(client, movableEntries, destination.record, now)
+        moved = await runExclusiveMutation(() => destination.kind === "root"
+            ? moveEntriesToRootInSinglePass(client, movableEntries, now)
+            : moveEntriesToFolderInSinglePass(client, movableEntries, destination.record, now))
     } catch (error) {
-        showUfidToast(`Move to ${destinationLabel} failed`)
-        throw error
+        console.error(error)
+        showUfidToast(`Move to ${destinationName} failed`, { tone: "error", durationMs: 5000 })
+        await refreshBrowser?.()
+        return null
     }
 
     clearSelection()
     await refreshBrowser?.()
-    if (totalMoved(moved) > 0) {
-        showUfidToast(`Moved ${formatMoveCount(moved)} to ${destinationLabel}`)
+    if (totalMoved(moved) === 0) return moved
+    const record: MoveUndoRecord = {
+        // updateFileCardParent replaced `data` on exactly the file entries that moved.
+        files: movableEntries.filter(isFileEntry)
+            .filter((entry) => fileCardParentId(entry.data) === destinationFolderId)
+            .map((entry) => ({ msgId: entry.msgId, ufid: entry.data.ufid, name: entry.data.name })),
+        folders: movableEntries.filter(isFolderEntry).map((entry) => ({ folderId: entry.data.folderId, name: entry.data.name })),
+        fromFolderId,
+        fromLabel,
+        toFolderId: destinationFolderId,
+    }
+    offerUndo({
+        message: `Moved ${formatMoveCount(moved)} to ${destinationName}`,
+        undo: () => undoMove(record),
+    })
+    return moved
+}
+
+async function findFileCardRecord(
+    client: any,
+    ref: { msgId: number; ufid: string; name: string },
+    parentFolderId?: string,
+) {
+    const byUfid = await getFileCardByUfid(client, ref.ufid).catch(() => null)
+    if (byUfid?.msgId === ref.msgId) return byUfid
+    if (!parentFolderId) return null
+    const records = await listFileCards(client, { parentFolderId, query: ref.name, limit: 200 })
+    return records.find((record) => record.msgId === ref.msgId) ?? null
+}
+
+async function undoMove(record: MoveUndoRecord) {
+    const client = activeBrowserClient
+    if (!client) return
+    showUndoProgress(`Moving back to ${record.fromLabel}…`)
+    let outcome: { moved: MoveResult; changed: number }
+    try {
+        outcome = await runExclusiveMutation(async () => {
+            const entries: BrowserEntry[] = []
+            let changed = 0
+            const expectation = (name: string) => ({
+                expectedParentId: record.toFolderId,
+                expectedName: name,
+                originParentId: record.fromFolderId,
+            })
+            for (const file of record.files) {
+                const fresh = await findFileCardRecord(client, file, record.toFolderId)
+                const verdict = classifyUndoCandidate(
+                    { parentId: fresh ? fileCardParentId(fresh.data) : null, name: fresh?.data.name ?? null },
+                    expectation(file.name),
+                )
+                if (fresh && verdict === "revert") entries.push(fileEntryFromRecord(fresh))
+                if (verdict === "changed") changed++
+            }
+            for (const folder of record.folders) {
+                const fresh = await getFolderRecord(client, folder.folderId)
+                const verdict = classifyUndoCandidate(
+                    { parentId: fresh ? normalizeParentId(fresh.data.parentFolderId) : null, name: fresh?.data.name ?? null },
+                    expectation(folder.name),
+                )
+                // Folders that never moved (name conflict) come back "unchanged" and need nothing.
+                if (fresh && verdict === "revert") entries.push(folderEntryFromRecord(fresh))
+                if (verdict === "changed") changed++
+            }
+            if (entries.length === 0) return { moved: { files: 0, folders: 0 }, changed }
+            const now = new Date().toISOString()
+            const options = { fileSourceFolderId: record.toFolderId }
+            if (record.fromFolderId === TGLFS_ROOT_PARENT_ID) {
+                return { moved: await moveEntriesToRootInSinglePass(client, entries, now, options), changed }
+            }
+            const origin = await getFolderRecord(client, record.fromFolderId)
+            if (!origin || origin.data.deleted) throw new Error(`${quoteName(record.fromLabel)} no longer exists`)
+            return { moved: await moveEntriesToFolderInSinglePass(client, entries, origin, now, options), changed }
+        })
+    } catch (error) {
+        console.error(error)
+        showUndoResult(`Couldn't move back: ${errorText(error)}`, "error")
+        await refreshBrowser?.()
+        return
+    }
+    clearSelection()
+    await refreshBrowser?.()
+    const count = totalMoved(outcome.moved)
+    if (count === 0) {
+        showUndoResult("Nothing moved back — the items changed since", "default")
+    } else if (outcome.changed > 0) {
+        showUndoResult(`Moved ${formatMoveCount(outcome.moved)} back to ${record.fromLabel} · ${outcome.changed} changed since and stayed`, "default")
+    } else {
+        showUndoResult(`Moved ${formatMoveCount(outcome.moved)} back to ${record.fromLabel}`)
+    }
+}
+
+/* Rename with undo */
+
+type RenameUndoRecord =
+    | { kind: "file"; msgId: number; ufid: string; parentFolderId: string; oldName: string; newName: string }
+    | { kind: "folder"; folderId: string; oldName: string; newName: string }
+
+/**
+ * Renames a file or folder through the existing rename code paths and offers Undo. Reusable by inline rename.
+ * Returns true when the rename was written.
+ */
+async function renameEntryTo(entry: BrowserEntry, requestedName: string, options: { undoable?: boolean } = {}): Promise<boolean> {
+    const client = activeBrowserClient
+    if (!client) return false
+    const undoable = options.undoable ?? true
+    if (isFolderEntry(entry)) {
+        const newName = validateFolderName(requestedName)
+        const oldName = entry.data.name
+        if (!newName || newName === oldName) return false
+        void flushPendingDelete()
+        let renamed = false
+        try {
+            renamed = await runExclusiveMutation(() => renameFolderTo(client, entry, newName))
+        } catch (error) {
+            console.error(error)
+            showUfidToast(`Rename failed: ${errorText(error)}`, { tone: "error", durationMs: 5000 })
+        }
+        await refreshBrowser?.()
+        if (renamed && undoable) {
+            const record: RenameUndoRecord = { kind: "folder", folderId: entry.data.folderId, oldName, newName }
+            offerUndo({ message: `Renamed to ${quoteName(newName)}`, undo: () => undoRename(record) })
+        }
+        return renamed
+    }
+    if (!isFileEntry(entry)) return false
+    const newName = requestedName.trim()
+    const oldName = entry.data.name
+    if (!newName || newName === oldName) return false
+    void flushPendingDelete()
+    try {
+        await runExclusiveMutation(() => renameFileCard(client, entry.msgId, "me", entry.data, newName))
+    } catch (error) {
+        console.error(error)
+        showUfidToast(`Rename failed: ${errorText(error)}`, { tone: "error", durationMs: 5000 })
+        return false
+    }
+    entry.data.name = newName
+    renderBrowser(state.pages[state.currentPage] ?? [])
+    if (undoable) {
+        const record: RenameUndoRecord = {
+            kind: "file",
+            msgId: entry.msgId,
+            ufid: entry.data.ufid,
+            parentFolderId: fileCardParentId(entry.data),
+            oldName,
+            newName,
+        }
+        offerUndo({ message: `Renamed to ${quoteName(newName)}`, undo: () => undoRename(record) })
+    } else {
+        showUfidToast("Renamed", { tone: "success" })
+    }
+    return true
+}
+
+async function undoRename(record: RenameUndoRecord) {
+    const client = activeBrowserClient
+    if (!client) return
+    showUndoProgress(`Renaming back to ${quoteName(record.oldName)}…`)
+    let result: "done" | "changed" | "refused"
+    try {
+        result = await runExclusiveMutation(async () => {
+            if (record.kind === "file") {
+                const fresh = await findFileCardRecord(
+                    client,
+                    { msgId: record.msgId, ufid: record.ufid, name: record.newName },
+                    record.parentFolderId,
+                )
+                if (!fresh || fresh.data.name !== record.newName) return "changed"
+                await renameFileCard(client, fresh.msgId, "me", fresh.data, record.oldName)
+                for (const page of state.pages) {
+                    for (const entry of page) {
+                        if (isFileEntry(entry) && entry.msgId === record.msgId) entry.data.name = record.oldName
+                    }
+                }
+                return "done"
+            }
+            const fresh = await getFolderRecord(client, record.folderId)
+            if (!fresh || fresh.data.deleted || fresh.data.name !== record.newName) return "changed"
+            return await renameFolderTo(client, folderEntryFromRecord(fresh), record.oldName) ? "done" : "refused"
+        })
+    } catch (error) {
+        console.error(error)
+        showUndoResult(`Couldn't rename back: ${errorText(error)}`, "error")
+        await refreshBrowser?.()
+        return
+    }
+    if (record.kind === "file") {
+        renderBrowser(state.pages[state.currentPage] ?? [])
+        flashRestoredEntries([`file:${record.msgId}`])
+    } else {
+        await refreshBrowser?.()
+        flashRestoredEntries([`folder:${record.folderId}`])
+    }
+    if (result === "done") {
+        showUndoResult(`Renamed back to ${quoteName(record.oldName)}`)
+    } else if (result === "changed") {
+        showUndoResult(`Nothing to undo — ${quoteName(record.newName)} changed since`, "default")
+    } else {
+        // renameFolderTo already showed why (e.g. the old name is taken now).
+        showUndoResult(`Couldn't rename back to ${quoteName(record.oldName)}`, "error")
     }
 }
 
@@ -2105,10 +2611,9 @@ async function downloadEntry(entry: FileBrowserEntry) {
 }
 
 async function renameEntry(entry: BrowserEntry) {
-    const client = activeBrowserClient
-    if (!client) return
+    if (!activeBrowserClient) return
     if (isFolderEntry(entry)) {
-        await renameFolderEntry(client, entry)
+        await renameFolderEntry(entry)
         return
     }
     if (!isFileEntry(entry)) return
@@ -2121,10 +2626,7 @@ async function renameEntry(entry: BrowserEntry) {
         selectStem: true,
     })
     if (!newName || newName.trim() === "" || newName.trim() === entry.data.name) return
-    await renameFileCard(client, entry.msgId, "me", entry.data, newName.trim())
-    entry.data.name = newName.trim()
-    renderBrowser(state.pages[state.currentPage] ?? [])
-    showUfidToast("Renamed", { tone: "success" })
+    await renameEntryTo(entry, newName)
 }
 
 async function sendEntries(entries: FileBrowserEntry[]) {
@@ -2156,6 +2658,10 @@ async function copyEntryId(entry: BrowserEntry) {
     }
 }
 
+/**
+ * Delete flow: files go straight to a deferred delete with Undo. Folders whose deletion would cascade
+ * (non-empty, or too many to check) ask once first, then still get the Undo window afterwards.
+ */
 async function deleteSelectedEntries() {
     const client = activeBrowserClient
     if (!client) return
@@ -2164,54 +2670,35 @@ async function deleteSelectedEntries() {
     const folders = selectedEntries.filter(isFolderEntry)
     if (selectedEntries.length === 0 || files.length + folders.length !== selectedEntries.length) return
 
-    if (selectedEntries.length === 1) {
-        const selected = selectedEntries[0]
-        const kind = isFolderEntry(selected) ? "folder" : "file"
-        const ok = await requestBrowserConfirm({
-            title: `Delete ${kind}?`,
-            message: isFolderEntry(selected)
-                ? `"${getEntryName(selected)}" and everything inside it will be deleted.`
-                : `"${getEntryName(selected)}" will be permanently deleted from Telegram.`,
-            confirmLabel: "Delete",
-            danger: true,
-            icon: "trash",
-        })
-        if (!ok) return
-    } else {
-        const names = selectedEntries.slice(0, 5).map(getEntryName).join(", ")
-        const more = selectedEntries.length > 5 ? ` and ${selectedEntries.length - 5} more` : ""
-        const ok = await requestBrowserConfirm({
-            title: `Delete ${selectedEntries.length} items?`,
-            message: `${names}${more}`,
-            confirmLabel: "Delete",
-            danger: true,
-            icon: "trash",
-        })
-        if (!ok) return
-    }
+    if (folders.length > 0 && !await confirmCascadingFolderDelete(client, selectedEntries, folders)) return
+    deleteEntriesWithUndo(selectedEntries)
+}
 
-    showUfidToast(`Deleting ${pluralize(selectedEntries.length, "item")}...`, { durationMs: null })
-    for (const file of files) {
-        await deleteFileCard(client, file.msgId, file.data)
-    }
-    const now = new Date().toISOString()
-    for (const folder of folders) {
-        const record = await resolveFolderRecordForMutation(client, folder)
-        if (!record) continue
-        await tombstoneFolderInParentManifest(client, record, now)
-        await tombstoneFolderTree(client, record, now)
-    }
+const MAX_FOLDERS_TO_PROBE = 8
 
-    if (files.length > 0 && folders.length === 0) {
-        const ids = new Set(files.map((entry) => entry.msgId))
-        const page = state.pages[state.currentPage]
-        if (page) {
-            state.pages[state.currentPage] = page.filter((entry) => !isFileEntry(entry) || !ids.has(entry.msgId))
-        }
+async function confirmCascadingFolderDelete(client: any, entries: BrowserEntry[], folders: FolderBrowserEntry[]) {
+    let nonEmpty = folders
+    if (folders.length <= MAX_FOLDERS_TO_PROBE) {
+        const totals = await Promise.all(folders.map((folder) =>
+            countDirectoryEntries(client, { parentFolderId: folder.data.folderId })
+                .then((counts) => counts.total)
+                .catch(() => 1),
+        ))
+        nonEmpty = folders.filter((_, index) => totals[index] > 0)
     }
-    clearSelection()
-    await refreshBrowser?.()
-    showUfidToast(`Deleted ${pluralize(selectedEntries.length, "item")}`)
+    if (nonEmpty.length === 0) return true
+
+    const single = entries.length === 1
+    const message = single
+        ? `${quoteName(getEntryName(entries[0]))} and everything inside it will be deleted. You can undo for a few seconds afterwards.`
+        : `${nonEmpty.length === 1 ? `The folder ${quoteName(nonEmpty[0].data.name)} is` : `${nonEmpty.length} of the folders are`} not empty — everything inside will be deleted too. You can undo for a few seconds afterwards.`
+    return await requestBrowserConfirm({
+        title: single ? "Delete folder and its contents?" : `Delete ${entries.length} items?`,
+        message,
+        confirmLabel: "Delete",
+        danger: true,
+        icon: "trash",
+    })
 }
 
 function uploadFiles(files?: File[]) {
@@ -2328,6 +2815,11 @@ async function handleKeydown(event: KeyboardEvent) {
         return
     }
 
+    if (mod && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "z") {
+        // Undo is only available while its toast is visible; otherwise leave the shortcut alone.
+        if (triggerActionToast()) event.preventDefault()
+        return
+    }
     if (event.key === "Escape") {
         if (isSidebarOpen()) {
             closeSidebar()
@@ -2666,6 +3158,13 @@ export async function initFileBrowser(client: any, config: Config.Config) {
 
     window.addEventListener("keydown", (event) => {
         void handleKeydown(event)
+    })
+    // A delete still inside its undo window has not been written; leaving the page cancels it. Warn about
+    // that (and about interrupting a write in flight) instead of trying to flush async work on unload.
+    window.addEventListener("beforeunload", (event) => {
+        if (!hasUnsavedBrowserWork()) return
+        event.preventDefault()
+        event.returnValue = ""
     })
 
     // Deep link: #/f/<folderId> opens that folder directly.

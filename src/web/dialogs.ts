@@ -53,6 +53,255 @@ export function showToast(message: string, options: ToastOptions = {}) {
     }, durationMs)
 }
 
+export function hideToast() {
+    const toast = document.getElementById("ufidToast")
+    if (!toast) return
+    if (toastTimer !== undefined) {
+        window.clearTimeout(toastTimer)
+        toastTimer = undefined
+    }
+    toast.classList.remove("is-visible")
+    toast.setAttribute("aria-hidden", "true")
+}
+
+/* --------------------------------------------------------- Action toast */
+/*
+ * A second, interactive toast ("snackbar") with an optional action button such as "Undo", an optional
+ * countdown line that drains over the toast's lifetime, a dismiss button and a busy state. It lives in its
+ * own element so that ordinary status toasts never clobber a pending undo; while it is visible, plain toasts
+ * stack above it. Only one action toast exists at a time: showing a new one closes the previous one with
+ * reason "replaced". The timer pauses while the pointer hovers it or keyboard focus is inside it.
+ */
+
+export type ActionToastCloseReason = "timeout" | "action" | "dismissed" | "replaced"
+
+export type ActionToastOptions = {
+    message: string
+    tone?: "default" | "success" | "error"
+    /** Label of the action button, e.g. "Undo". Omit for no button. */
+    actionLabel?: string
+    /** Value for aria-keyshortcuts on the action button, e.g. "Control+Z Meta+Z". */
+    actionShortcut?: string
+    /** Human-readable shortcut appended to the button tooltip, e.g. "Ctrl+Z". */
+    actionHint?: string
+    onAction?: () => void
+    /** Lifetime in ms; null keeps it until closed or replaced. Defaults to 6000. */
+    durationMs?: number | null
+    /** Show a thin progress line draining over `durationMs`. */
+    countdown?: boolean
+    /** Show a spinner instead of an action (e.g. while an undo is running). */
+    busy?: boolean
+    /** Show a dismiss (×) button. Defaults to true unless busy. */
+    dismissible?: boolean
+    /** Called exactly once when this toast's content goes away, with the reason. */
+    onClose?: (reason: ActionToastCloseReason) => void
+}
+
+export type ActionToastHandle = {
+    /** Replace the content in place (same handle). The previous content's onClose is NOT called. */
+    update: (options: ActionToastOptions) => void
+    close: (reason?: ActionToastCloseReason) => void
+    isActive: () => boolean
+}
+
+type ActiveActionToast = {
+    id: number
+    options: ActionToastOptions
+    timer: number | undefined
+    deadline: number
+    remaining: number
+    paused: boolean
+}
+
+let actionToastSeq = 0
+let activeActionToast: ActiveActionToast | null = null
+let actionToastHideTimer: number | undefined
+
+function ensureActionToastElement() {
+    let element = document.getElementById("fxActionToast")
+    if (element) return element
+    element = document.createElement("div")
+    element.id = "fxActionToast"
+    element.className = "fx-atoast"
+    element.setAttribute("role", "status")
+    element.setAttribute("aria-live", "polite")
+    element.setAttribute("aria-atomic", "true")
+    element.setAttribute("aria-hidden", "true")
+    element.toggleAttribute("inert", true)
+    element.innerHTML = `
+        <span class="fx-atoast-lead" aria-hidden="true"></span>
+        <span class="fx-atoast-msg"></span>
+        <button type="button" class="fx-atoast-action" data-atoast-action></button>
+        <button type="button" class="fx-atoast-close" data-atoast-close aria-label="Dismiss" title="Dismiss">${icon("close")}</button>
+        <span class="fx-atoast-timer" aria-hidden="true"><span></span></span>`
+    document.body.appendChild(element)
+
+    element.querySelector("[data-atoast-action]")?.addEventListener("click", () => triggerActionToast())
+    element.querySelector("[data-atoast-close]")?.addEventListener("click", () => closeActionToast("dismissed"))
+    const pause = () => setActionToastPaused(true)
+    const resume = () => {
+        if (element!.matches(":hover") || element!.contains(document.activeElement)) return
+        setActionToastPaused(false)
+    }
+    element.addEventListener("pointerenter", (event) => {
+        if (event.pointerType === "mouse") pause()
+    })
+    element.addEventListener("pointerleave", () => resume())
+    element.addEventListener("focusin", pause)
+    element.addEventListener("focusout", () => window.setTimeout(resume, 0))
+    return element
+}
+
+function syncActionToastOffset(element: HTMLElement | null) {
+    // Lets the plain status toast stack above a visible action toast.
+    const root = document.documentElement
+    if (!element || !activeActionToast) {
+        root.style.removeProperty("--action-toast-offset")
+        return
+    }
+    root.style.setProperty("--action-toast-offset", `${Math.ceil(element.getBoundingClientRect().height) + 8}px`)
+}
+
+function clearActionToastTimer(toast: ActiveActionToast) {
+    if (toast.timer !== undefined) window.clearTimeout(toast.timer)
+    toast.timer = undefined
+}
+
+function startActionToastTimer(toast: ActiveActionToast, ms: number) {
+    clearActionToastTimer(toast)
+    toast.remaining = ms
+    toast.deadline = Date.now() + ms
+    const id = toast.id
+    toast.timer = window.setTimeout(() => {
+        if (activeActionToast?.id === id) closeActionToast("timeout")
+    }, ms)
+}
+
+function setActionToastPaused(paused: boolean) {
+    const toast = activeActionToast
+    const element = document.getElementById("fxActionToast")
+    if (!toast || !element || toast.paused === paused) return
+    const duration = toast.options.durationMs === undefined ? 6000 : toast.options.durationMs
+    if (duration === null) return
+    toast.paused = paused
+    element.classList.toggle("is-paused", paused)
+    if (paused) {
+        toast.remaining = Math.max(0, toast.deadline - Date.now())
+        clearActionToastTimer(toast)
+    } else {
+        startActionToastTimer(toast, Math.max(800, toast.remaining))
+    }
+}
+
+function renderActionToast(toast: ActiveActionToast) {
+    const element = ensureActionToastElement()
+    const options = toast.options
+    const busy = !!options.busy
+    element.dataset.tone = options.tone ?? "default"
+    element.classList.toggle("is-busy", busy)
+    element.classList.remove("is-paused")
+    const lead = element.querySelector<HTMLElement>(".fx-atoast-lead")!
+    lead.innerHTML = busy
+        ? `<span class="fx-spinner fx-spinner--sm"></span>`
+        : options.tone === "error" ? icon("alert") : options.tone === "success" ? icon("check") : ""
+    lead.hidden = lead.innerHTML === ""
+    element.querySelector<HTMLElement>(".fx-atoast-msg")!.textContent = options.message
+    const action = element.querySelector<HTMLButtonElement>("[data-atoast-action]")!
+    const hasAction = !busy && !!options.actionLabel && !!options.onAction
+    action.hidden = !hasAction
+    action.textContent = options.actionLabel ?? ""
+    action.title = options.actionHint ? `${options.actionLabel} (${options.actionHint})` : options.actionLabel ?? ""
+    if (options.actionShortcut) {
+        action.setAttribute("aria-keyshortcuts", options.actionShortcut)
+    } else {
+        action.removeAttribute("aria-keyshortcuts")
+    }
+    const close = element.querySelector<HTMLButtonElement>("[data-atoast-close]")!
+    close.hidden = !(options.dismissible ?? !busy)
+
+    const duration = options.durationMs === undefined ? 6000 : options.durationMs
+    const timerLine = element.querySelector<HTMLElement>(".fx-atoast-timer")!
+    const showCountdown = !!options.countdown && duration !== null
+    timerLine.hidden = !showCountdown
+    const bar = timerLine.firstElementChild as HTMLElement
+    bar.style.animation = "none"
+    if (showCountdown) {
+        void bar.offsetWidth
+        bar.style.animation = `fx-atoast-drain ${duration}ms linear forwards`
+    }
+
+    if (actionToastHideTimer !== undefined) {
+        window.clearTimeout(actionToastHideTimer)
+        actionToastHideTimer = undefined
+    }
+    element.removeAttribute("inert")
+    element.setAttribute("aria-hidden", "false")
+    element.classList.add("is-visible")
+    document.body.classList.add("fx-has-action-toast")
+    clearActionToastTimer(toast)
+    toast.paused = false
+    if (duration !== null) startActionToastTimer(toast, duration)
+    syncActionToastOffset(element)
+}
+
+function hideActionToastElement() {
+    const element = document.getElementById("fxActionToast")
+    document.body.classList.remove("fx-has-action-toast")
+    syncActionToastOffset(null)
+    if (!element) return
+    const hadFocus = element.contains(document.activeElement)
+    element.classList.remove("is-visible")
+    element.setAttribute("aria-hidden", "true")
+    element.toggleAttribute("inert", true)
+    if (hadFocus) (document.activeElement as HTMLElement | null)?.blur?.()
+    actionToastHideTimer = window.setTimeout(() => {
+        actionToastHideTimer = undefined
+        if (!activeActionToast) element.querySelector<HTMLElement>(".fx-atoast-msg")!.textContent = ""
+    }, 240)
+}
+
+export function showActionToast(options: ActionToastOptions): ActionToastHandle {
+    if (activeActionToast) closeActionToast("replaced", { keepVisible: true })
+    const toast: ActiveActionToast = { id: ++actionToastSeq, options, timer: undefined, deadline: 0, remaining: 0, paused: false }
+    activeActionToast = toast
+    renderActionToast(toast)
+    const id = toast.id
+    return {
+        update: (next) => {
+            if (activeActionToast?.id !== id) return
+            toast.options = next
+            renderActionToast(toast)
+        },
+        close: (reason = "dismissed") => {
+            if (activeActionToast?.id === id) closeActionToast(reason)
+        },
+        isActive: () => activeActionToast?.id === id,
+    }
+}
+
+export function closeActionToast(reason: ActionToastCloseReason = "dismissed", internal: { keepVisible?: boolean } = {}) {
+    const toast = activeActionToast
+    if (!toast) return
+    activeActionToast = null
+    clearActionToastTimer(toast)
+    if (!internal.keepVisible) hideActionToastElement()
+    try {
+        toast.options.onClose?.(reason)
+    } catch (error) {
+        console.error(error)
+    }
+}
+
+/** Runs the visible action toast's action (e.g. Undo). Returns false when no action is available. */
+export function triggerActionToast(): boolean {
+    const toast = activeActionToast
+    if (!toast || toast.options.busy || !toast.options.actionLabel || !toast.options.onAction) return false
+    const onAction = toast.options.onAction
+    closeActionToast("action")
+    onAction()
+    return true
+}
+
 /* --------------------------------------------------------------- Dialogs */
 
 export type DialogOptions = {

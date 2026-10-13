@@ -1728,7 +1728,7 @@ kbd {
 .fx-toast {
     position: fixed;
     left: 50%;
-    bottom: calc(84px + var(--safe-b));
+    bottom: calc(84px + var(--safe-b) + var(--action-toast-offset, 0px));
     z-index: 3000;
     max-width: min(92vw, 520px);
     padding: 10px 16px;
@@ -1757,6 +1757,191 @@ kbd {
 .fx-toast[data-tone="success"] {
     background: var(--success);
     color: #fff;
+}
+
+/* ----------------------------------------------------- Action toast */
+
+.fx-atoast {
+    position: fixed;
+    left: 50%;
+    bottom: calc(84px + var(--safe-b));
+    z-index: 3001;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: min(92vw, 300px);
+    max-width: min(92vw, 560px);
+    min-height: 46px;
+    padding: 5px 6px 5px 16px;
+    overflow: hidden;
+    border-radius: 12px;
+    background: var(--selbar-bg);
+    color: var(--selbar-text);
+    font-size: 13.5px;
+    font-weight: 500;
+    box-shadow: var(--shadow-lg);
+    opacity: 0;
+    visibility: hidden;
+    transform: translate(-50%, 10px) scale(0.98);
+    pointer-events: none;
+    transition: opacity 180ms ease, transform 220ms var(--ease), visibility 0s linear 220ms;
+}
+
+.fx-atoast.is-visible {
+    opacity: 1;
+    visibility: visible;
+    transform: translate(-50%, 0) scale(1);
+    pointer-events: auto;
+    transition: opacity 180ms ease, transform 220ms var(--ease), visibility 0s;
+}
+
+:root[data-theme="dark"] .fx-atoast {
+    box-shadow: var(--shadow-lg), inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+
+.fx-atoast[data-tone="error"] {
+    background: var(--danger);
+    color: #fff;
+}
+
+.fx-atoast-lead {
+    display: inline-flex;
+    flex: none;
+    margin-right: 6px;
+}
+
+.fx-atoast-lead .fx-svg {
+    width: 17px;
+    height: 17px;
+}
+
+.fx-atoast[data-tone="success"] .fx-atoast-lead {
+    color: var(--success);
+}
+
+.fx-atoast .fx-spinner {
+    border-color: rgba(255, 255, 255, 0.22);
+    border-top-color: var(--selbar-text);
+}
+
+.fx-atoast-msg {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 6px 8px 6px 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.fx-atoast-action {
+    flex: none;
+    height: 34px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: color-mix(in srgb, var(--accent) 55%, #ffffff);
+    font: inherit;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+}
+
+.fx-atoast[data-tone="error"] .fx-atoast-action {
+    color: #fff;
+    text-decoration: underline;
+}
+
+.fx-atoast-action:hover,
+.fx-atoast-close:hover {
+    background: var(--selbar-hover);
+}
+
+.fx-atoast-action:focus-visible,
+.fx-atoast-close:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 70%, #ffffff);
+    outline-offset: -2px;
+}
+
+.fx-atoast-close {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    opacity: 0.7;
+    cursor: pointer;
+}
+
+.fx-atoast-close:hover {
+    opacity: 1;
+}
+
+.fx-atoast-close .fx-svg {
+    width: 16px;
+    height: 16px;
+}
+
+.fx-atoast-action[hidden],
+.fx-atoast-close[hidden],
+.fx-atoast-lead[hidden],
+.fx-atoast-timer[hidden] {
+    display: none;
+}
+
+.fx-atoast-timer {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.fx-atoast-timer>span {
+    display: block;
+    height: 100%;
+    background: color-mix(in srgb, var(--accent) 65%, #ffffff);
+    transform-origin: left center;
+}
+
+.fx-atoast.is-paused .fx-atoast-timer>span {
+    animation-play-state: paused !important;
+}
+
+@keyframes fx-atoast-drain {
+    from {
+        transform: scaleX(1);
+    }
+
+    to {
+        transform: scaleX(0);
+    }
+}
+
+/* With the sidebar docked, center toasts over the content column like the selection bar. */
+@media (min-width: 901px) {
+    body:has(#fileBrowser:not([hidden])) .fx-toast,
+    body:has(#fileBrowser:not([hidden])) .fx-atoast {
+        left: calc(var(--sidebar-w) + (100vw - var(--sidebar-w)) / 2);
+    }
+}
+
+/* Rows restored by an undo flash briefly so the eye finds them. */
+.fx-row.is-restored,
+.fx-tile.is-restored {
+    animation: fx-restored 1400ms ease-out;
+}
+
+@keyframes fx-restored {
+    from {
+        background-color: var(--accent-soft-2);
+    }
 }
 
 /* ---------------------------------------------------------- Dialogs */
@@ -3155,11 +3340,40 @@ kbd {
     }
 
     .fx-toast {
-        bottom: calc(96px + var(--safe-b));
+        bottom: calc(96px + var(--safe-b) + var(--action-toast-offset, 0px));
     }
 
     .fx-selecting .fx-toast {
-        bottom: calc(132px + var(--safe-b));
+        bottom: calc(132px + var(--safe-b) + var(--action-toast-offset, 0px));
+    }
+
+    .fx-atoast {
+        left: 12px;
+        right: 12px;
+        bottom: calc(86px + var(--safe-b));
+        max-width: none;
+        min-height: 52px;
+        transform: translateY(12px) scale(0.98);
+        padding-left: 16px;
+    }
+
+    .fx-atoast.is-visible {
+        transform: none;
+    }
+
+    .fx-selecting .fx-atoast {
+        bottom: calc(124px + var(--safe-b));
+    }
+
+    .fx-atoast-action {
+        height: 40px;
+        padding: 0 14px;
+        font-size: 14.5px;
+    }
+
+    .fx-atoast-close {
+        width: 40px;
+        height: 40px;
     }
 
     /* Transfer tray: a pill beside the FAB that expands into a bottom sheet. */

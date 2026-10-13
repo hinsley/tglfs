@@ -621,6 +621,15 @@ function clearStoredSession() {
 }
 
 async function logout() {
+    if (browserModulePromise) {
+        // Signing out is an explicit "I'm done": write a delete still inside its undo window and let
+        // in-flight writes finish while the session is still valid.
+        try {
+            await (await browserModulePromise).settleBrowserMutations()
+        } catch (error) {
+            console.warn("Failed to finish pending file browser changes", error)
+        }
+    }
     try {
         await activeClient?.logOut?.()
     } catch (error) {
