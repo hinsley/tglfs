@@ -25,6 +25,8 @@ type TrayElements = {
     ringIcon: HTMLElement
     title: HTMLElement
     sub: HTMLElement
+    extras: HTMLElement
+    notices: HTMLElement
     toggle: HTMLButtonElement
     close: HTMLButtonElement
     meterFill: HTMLElement
@@ -191,10 +193,12 @@ function build(): TrayElements {
                         <span class="fx-tray-sub"></span>
                     </span>
                 </button>
+                <span class="fx-tray-extras" data-tray-extras></span>
                 <button type="button" class="fx-icon-btn fx-tray-toggle" aria-controls="transferTrayBody"></button>
                 <button type="button" class="fx-icon-btn fx-tray-close" aria-label="Close transfers" title="Close">${icon("close")}</button>
             </header>
             <div class="fx-tray-meter" aria-hidden="true"><div class="fx-tray-meter-fill"></div></div>
+            <div class="fx-tray-notices" data-tray-notices></div>
             <div class="fx-tray-body" id="transferTrayBody">
                 <div class="fx-tray-body-inner">
                     <ul class="fx-tray-list" aria-label="Transfer list"></ul>
@@ -218,6 +222,8 @@ function build(): TrayElements {
         ringIcon: q<HTMLElement>(".fx-tray-ring-icon"),
         title: q<HTMLElement>(".fx-tray-title"),
         sub: q<HTMLElement>(".fx-tray-sub"),
+        extras: q<HTMLElement>("[data-tray-extras]"),
+        notices: q<HTMLElement>("[data-tray-notices]"),
         toggle: q<HTMLButtonElement>(".fx-tray-toggle"),
         close: q<HTMLButtonElement>(".fx-tray-close"),
         meterFill: q<HTMLElement>(".fx-tray-meter-fill"),
@@ -435,6 +441,23 @@ function syncDocumentTitle(summary: TransferSummary) {
 function announce(text: string) {
     if (!elements) return
     elements.live.textContent = text
+}
+
+/* ----------------------------------------------------------------- Hooks */
+
+/**
+ * Slots other modules (e.g. `transferAttention.ts`) may render into: `extras` sits in the header next to the
+ * expand toggle (small status icons); `notices` sits between the header and the list and stays visible while
+ * the tray is collapsed (short inline prompts/hints). Null until the tray is mounted.
+ */
+export function getTransferTraySlots(): { extras: HTMLElement; notices: HTMLElement } | null {
+    return elements ? { extras: elements.extras, notices: elements.notices } : null
+}
+
+/** Expands the tray (e.g. after a "transfers finished" notification is clicked). No-op when it is empty. */
+export function expandTransferTray() {
+    if (!elements || getTransfers().length === 0) return
+    setExpanded(true)
 }
 
 /* ----------------------------------------------------------------- Mount */

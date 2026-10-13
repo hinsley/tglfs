@@ -899,6 +899,41 @@ kbd {
     opacity: 0.6;
 }
 
+/* Two-line sidebar toggle: label plus its On/Off/Blocked state (transfer notifications). */
+.fx-nav-switch {
+    height: auto;
+    min-height: 42px;
+    padding-top: 5px;
+    padding-bottom: 5px;
+}
+
+.fx-nav-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    line-height: 1.25;
+}
+
+.fx-nav-label,
+.fx-nav-state {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.fx-nav-state {
+    color: var(--text-3);
+    font-size: 11.5px;
+    font-weight: 500;
+}
+
+.fx-nav-state[data-tone="on"] {
+    color: var(--accent-text);
+}
+
+.fx-nav-state[data-tone="blocked"] {
+    color: var(--danger);
+}
+
 .fx-nav-section {
     margin: 16px 10px 6px;
     font-size: 11px;
@@ -2912,6 +2947,92 @@ kbd {
 .fx-tray-close .fx-svg {
     width: 18px;
     height: 18px;
+}
+
+/* Status icons contributed by transferAttention.ts (e.g. "screen stays on"). */
+.fx-tray-extras {
+    display: inline-flex;
+    align-items: center;
+    flex: none;
+}
+
+.fx-tray-extras:empty {
+    display: none;
+}
+
+.fx-tray-wake {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    color: var(--text-3);
+    animation: fx-fade 240ms ease both;
+}
+
+.fx-tray-wake .fx-svg {
+    width: 15px;
+    height: 15px;
+}
+
+/* Inline prompts/hints; stay visible while the tray is collapsed. */
+.fx-tray-notices {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 0 10px 10px;
+}
+
+.fx-tray-notices:empty {
+    display: none;
+}
+
+.fx-tray-notice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 10px;
+    padding: 9px 10px 9px 12px;
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    color: var(--text-2);
+    font-size: 12.5px;
+    line-height: 1.4;
+    animation: fx-tray-row-in 240ms var(--ease) both;
+}
+
+.fx-tray-notice-icon {
+    display: inline-flex;
+    flex: none;
+    color: var(--accent-text);
+}
+
+.fx-tray-notice-icon .fx-svg {
+    width: 16px;
+    height: 16px;
+}
+
+.fx-tray-notice-text {
+    flex: 1 1 170px;
+    min-width: 0;
+}
+
+.fx-tray-notice-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+}
+
+.fx-tray-notice .fx-btn {
+    height: 28px;
+    padding: 0 10px;
+    font-size: 12.5px;
+}
+
+.fx-tray-notice .fx-link {
+    padding: 4px 2px;
+    font-size: 12.5px;
 }
 
 /* Thin aggregate meter, visible while collapsed. */

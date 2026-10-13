@@ -4,6 +4,7 @@ import { isCompactViewport, requestConfirm, showToast } from "./dialogs"
 import { begin as beginTransfer, type TransferHandle } from "./transfers"
 import { mountTransferTray } from "./transferTray"
 import { createQrLoginPanel } from "./qrLoginPanel"
+import { mountTransferAttention } from "./transferAttention"
 
 type TelegramModule = typeof import("../telegram")
 type BrowserModule = typeof import("./browser")
@@ -1364,6 +1365,7 @@ function wireLoginHandlers() {
 hydrateIcons()
 wireThemeToggle()
 mountTransferTray()
+mountTransferAttention()
 wireLoginHandlers()
 
 window.addEventListener("load", async () => {

@@ -186,6 +186,41 @@ self.addEventListener("fetch", (event) => {
     }
 })
 
+// Transfer notifications (shown by src/web/transferAttention.ts): focus the TGLFS tab and ask it to expand the tray.
+const TRANSFER_NOTIFICATION_SOURCE = "tglfs-transfers"
+const SHOW_TRANSFERS_MESSAGE = "TGLFS_SHOW_TRANSFERS"
+
+async function focusTransfersClient(notificationData) {
+    const clientsList = await self.clients.matchAll({ type: "window", includeUncontrolled: true })
+    const scope = self.registration ? self.registration.scope : ""
+    const sameApp = clientsList.filter((client) => !scope || client.url.startsWith(scope))
+    // Prefer the tab that showed the notification; matchAll lists the most recently focused tab first.
+    const target =
+        sameApp.find((client) => notificationData && client.url === notificationData.url) || sameApp[0] || null
+    if (!target) {
+        // The transfer queue lives in the page, so a fresh window can't show it; just reopen the app.
+        if (self.clients.openWindow) await self.clients.openWindow("/")
+        return
+    }
+    if ("focus" in target) {
+        try {
+            await target.focus()
+        } catch (error) {
+            // Focus can be refused; still deliver the message so the tray opens when the user switches back.
+        }
+    }
+    target.postMessage({ type: SHOW_TRANSFERS_MESSAGE })
+}
+
+self.addEventListener("notificationclick", (event) => {
+    const data = event.notification && event.notification.data
+    if (!data || data.source !== TRANSFER_NOTIFICATION_SOURCE) {
+        return
+    }
+    event.notification.close()
+    event.waitUntil(focusTransfersClient(data))
+})
+
 self.addEventListener("message", (event) => {
     const data = event.data
     if (!data || !data.type) {
