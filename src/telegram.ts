@@ -14,6 +14,7 @@ import {
     buildFileCardSearchQuery,
     buildFileCardUfidLookupQuery,
     createFileCardData,
+    FILE_CARD_PREFIX,
     extractFileCardRecords,
     formatFileCardDate,
     formatFileCardSize,
@@ -62,6 +63,8 @@ import * as Encryption from "./web/encryption"
 import * as Transfers from "./web/transfers"
 import * as FileProcessing from "./web/fileProcessing"
 import * as Archive from "../packages/tglfs-cli/src/shared/archive"
+import * as UploadResume from "../packages/tglfs-cli/src/shared/upload-resume"
+import * as UploadPipeline from "../packages/tglfs-cli/src/shared/upload-pipeline"
 import { FileCardData } from "./types/models"
 
 let Api!: typeof import("telegram")["Api"]
@@ -1003,6 +1006,11 @@ export type UploadJob = {
     archiveName?: string
     /** Set when the user chose to optimize a single video for streaming. */
     remux?: { module: VideoRemuxModule; kind: import("./web/videoRemux").RemuxableVideoKind } | null
+    /**
+     * Resume this specific incomplete file card (the browser's "Resume upload…" action, already confirmed). Without
+     * it, an upload whose UFID matches an incomplete card asks whether to resume that card instead.
+     */
+    resume?: { msgId: number; name?: string }
 }
 
 export type UploadJobResult = {
@@ -1014,7 +1022,11 @@ export type UploadJobResult = {
 /**
  * Uploads `files` (one file, or several packed into a tar archive) inside a transfer-queue slot. Checks the
  * transfer's AbortSignal between upload parts; a cancelled upload stops exactly like a failed one, leaving the
- * incomplete file card as-is (no records are deleted or rewritten).
+ * incomplete file card as-is (no records are deleted or rewritten) — and resumable later.
+ *
+ * Resuming: when the content's UFID matches an incomplete card (or `job.resume` names one), the upload continues
+ * into that card from its last completed chunk instead of failing as a duplicate. See `prepareResume` and
+ * `packages/tglfs-cli/src/shared/upload-resume.ts` for what is verified before anything new is written.
  *
  * `options.span` maps this upload into a sub-range of the transfer's overall progress (used when the upload is
  * the last step of a longer task, e.g. "Make MP4 previewable").
@@ -1079,17 +1091,8 @@ export async function runFileUploadJob(
         ufidStream = teed[0]
         inputStream = teed[1]
     }
+    if (job.resume?.name) displayName = job.resume.name
     transfer.update({ name: displayName, size: totalBytes })
-
-    const salt = window.crypto.getRandomValues(new Uint8Array(16))
-    const aesKey = await Encryption.deriveAESKeyFromPassword(job.password, salt)
-    const initialCounter = window.crypto.getRandomValues(new Uint8Array(16))
-    // Produce initialization vector for AES-CTR encryption (salt & initial counter).
-    const IVBytes = new Uint8Array(salt.length + initialCounter.length)
-    IVBytes.set(salt, 0)
-    IVBytes.set(initialCounter, salt.length)
-    const IV = bytesToBase64(IVBytes)
-    let encryptionCounter = new Uint8Array(initialCounter)
 
     const uploadStart = prepareStart + (1 - prepareStart) * 0.05
     transfer.setPhase("Preparing", { span: sub(prepareStart, uploadStart), total: totalBytes })
@@ -1107,362 +1110,481 @@ export async function runFileUploadJob(
     transfer.throwIfCancelled()
 
     transfer.setPhase(null, { span: sub(uploadStart, 1), total: totalBytes })
-    console.log(`Upload begins for ${displayName}`)
     let bytesProcessed = 0
 
-    const existingMsgs = await client.getMessages("me", {
-        search: buildFileCardUfidLookupQuery(UFID),
-    })
-
-    if (existingMsgs.length > 0) {
-        transfer.update({ ufid: UFID })
-        throw new Error("A file with identical contents is already stored (duplicate UFID).")
+    // Is this content already stored, or is there an interrupted upload of it to resume?
+    const existing = await findExistingUploads(client, UFID)
+    transfer.throwIfCancelled()
+    let resumeTarget: ExistingUpload | null = null
+    if (job.resume) {
+        resumeTarget = await fetchResumeTarget(client, job.resume.msgId)
+        if (resumeTarget.data.ufid !== UFID) {
+            transfer.update({ ufid: UFID })
+            const message = UploadResume.describeResumeRefusal("ufid-mismatch")
+            showToast(message, { durationMs: 6000 })
+            throw new Error(message)
+        }
+        if (existing.complete) {
+            transfer.update({ ufid: UFID })
+            throw new Error("This file is already stored in full (duplicate UFID). The incomplete copy can be deleted.")
+        }
+    } else {
+        if (existing.complete || existing.unreadable) {
+            transfer.update({ ufid: UFID })
+            throw new Error("A file with identical contents is already stored (duplicate UFID).")
+        }
+        resumeTarget = pickResumeCandidate(existing.incomplete)
+        if (resumeTarget) {
+            const stored = Math.min(resumeTarget.data.chunks.length * config.chunkSize, resumeTarget.data.size)
+            const cardParent = parentFolderIdOfCard(resumeTarget.data)
+            const elsewhere = cardParent !== undefined && cardParent !== parentFolderId
+            const resume = await requestConfirm({
+                title: "Resume interrupted upload?",
+                message:
+                    `${formatFileCardSize(stored)} of ${formatFileCardSize(resumeTarget.data.size)} already in Telegram.` +
+                    (resumeTarget.data.name !== displayName ? ` It continues as “${resumeTarget.data.name}”.` : "") +
+                    (elsewhere ? " It finishes in the folder where it was started." : ""),
+                confirmLabel: "Resume",
+                cancelLabel: "Cancel",
+                icon: "cloudUp",
+            })
+            if (!resume) {
+                transfer.markCancelled()
+                throw Transfers.abortError("Upload skipped: an interrupted upload of this file exists.")
+            }
+        }
     }
     transfer.throwIfCancelled()
 
-    // Progress reflects bytes actually sent to Telegram, not bytes read from disk: plaintext is read far ahead of the
-    // upload (compression + the 32 MiB encryption buffer), so scale the plaintext read so far by the share of the
-    // compressed stream that has been uploaded. AES-CTR keeps ciphertext the same length as the compressed bytes.
+    // Progress reflects bytes actually stored in Telegram, not bytes read from disk: plaintext is read far ahead of
+    // the upload (compression + the encryption buffer), so scale the plaintext read so far by the share of the
+    // compressed stream that is stored. AES-CTR keeps ciphertext the same length as the compressed bytes.
     let compressedBytesRead = 0
+    let storedBytesBefore = 0 // Ciphertext already in Telegram when this run started (resume only).
     let encryptedBytesSent = 0
+    let uploading = true
     const reportUploadProgress = () => {
-        const sentShare = compressedBytesRead > 0 ? Math.min(1, encryptedBytesSent / compressedBytesRead) : 0
-        transfer.update({ bytes: Math.round(bytesProcessed * sentShare) })
-    }
-    const saveBigFilePart = async (params: { fileId: bigint; filePart: number; fileTotalParts: number; bytes: Uint8Array }) => {
-        // Cancellation checkpoint: stop between parts, before anything new is written to Telegram.
-        transfer.throwIfCancelled()
-        const result = await client.invoke(new Api.upload.SaveBigFilePart(params as any))
-        encryptedBytesSent += params.bytes.length
-        reportUploadProgress()
-        return result
+        if (!uploading) return
+        const storedShare =
+            compressedBytesRead > 0 ? Math.min(1, (storedBytesBefore + encryptedBytesSent) / compressedBytesRead) : 0
+        transfer.update({ bytes: Math.round(bytesProcessed * storedShare) })
     }
 
-    let fileCardData: FileCardData = createFileCardData({
-        name: displayName,
-        ufid: UFID,
-        size: totalBytes,
-        uploadComplete: false,
-        chunks: [],
-        IV: IV,
-        parentFolderId,
-    })
-    const fileCardMessage = await client.sendMessage("me", { message: serializeFileCardMessage(fileCardData) })
+    let cardWriter: UploadCardWriter
+    let aesKey: CryptoKey
+    let initialCounter: Uint8Array
+    let pipelineResume: UploadPipeline.UploadPipelineResume | undefined
+    let resultParentFolderId = parentFolderId
+
+    if (resumeTarget) {
+        const prepared = await prepareResume(client, config, resumeTarget, {
+            ufid: UFID,
+            size: totalBytes,
+            password: job.password,
+            transfer,
+        })
+        aesKey = prepared.key
+        initialCounter = prepared.card.initialCounter
+        cardWriter = createResumedCardWriter(client, resumeTarget.msgId, prepared.card, resumeTarget.peerId)
+        resultParentFolderId = parentFolderIdOfCard(prepared.card.data) ?? TGLFS_ROOT_PARENT_ID
+        displayName = prepared.card.data.name
+        storedBytesBefore = prepared.plan.resumeOffset
+        const resumeOffset = prepared.plan.resumeOffset
+        // Start the bar at what's already stored; re-reading the stored part is shown in the detail line.
+        uploading = false
+        transfer.update({
+            name: displayName,
+            ufid: UFID,
+            phase: "Resuming…",
+            bytes: Math.min(resumeOffset, totalBytes),
+            detail: resumeOffset > 0 ? "Checking what's already in Telegram…" : null,
+        })
+        let lastDetailPercent = -1
+        pipelineResume = {
+            offset: resumeOffset,
+            startChunkIndex: prepared.plan.nextChunkIndex,
+            verifyWindows: prepared.plan.verifyWindows,
+            fetchReference: (window) =>
+                window.chunkIndex === 0 && window.offsetInChunk === 0 && prepared.head
+                    ? Promise.resolve(prepared.head.subarray(0, window.length))
+                    : downloadChunkRange(client, prepared.chunkMessages[window.chunkIndex], window.offsetInChunk, window.length),
+            onFastForward(position, offset) {
+                const percent = Math.floor((position / offset) * 100)
+                if (percent !== lastDetailPercent) {
+                    lastDetailPercent = percent
+                    transfer.update({ detail: `Checking what's already in Telegram · ${percent}%` })
+                }
+            },
+            onResumePoint() {
+                uploading = true
+                const stored = compressedBytesRead > 0 ? Math.round(bytesProcessed * Math.min(1, resumeOffset / compressedBytesRead)) : 0
+                transfer.update({ phase: null, detail: null, bytes: stored })
+                console.log(`Resuming upload of ${displayName} at chunk ${prepared.plan.nextChunkIndex + 1}.`)
+            },
+        }
+    } else {
+        const salt = window.crypto.getRandomValues(new Uint8Array(16))
+        aesKey = await Encryption.deriveAESKeyFromPassword(job.password, salt)
+        initialCounter = window.crypto.getRandomValues(new Uint8Array(16))
+        // Produce initialization vector for AES-CTR encryption (salt & initial counter).
+        const IVBytes = new Uint8Array(salt.length + initialCounter.length)
+        IVBytes.set(salt, 0)
+        IVBytes.set(initialCounter, salt.length)
+        cardWriter = await createNewCardWriter(client, {
+            name: displayName,
+            ufid: UFID,
+            size: totalBytes,
+            IV: bytesToBase64(IVBytes),
+            parentFolderId,
+        })
+    }
+    console.log(`Upload begins for ${displayName}`)
+
     const byteCounterStream = new TransformStream({
         transform(chunk, controller) {
             bytesProcessed += chunk.length;
             controller.enqueue(chunk);
         },
     })
-
-    const fileStream = inputStream.pipeThrough(byteCounterStream)
-    const compressedStream = fileStream.pipeThrough(new CompressionStream("gzip"))
+    const compressedStream = inputStream.pipeThrough(byteCounterStream).pipeThrough(new CompressionStream("gzip"))
     const reader = compressedStream.getReader()
 
-    let aesBlockBytesWritten = 0
-    const encryptionBuffer = new Uint8Array(Encryption.ENCRYPTION_CHUNK_SIZE)
-    let partBytesWritten = 0
-    const partBuffer = new Uint8Array(UPLOAD_PART_SIZE)
-    let partIndex = 0
-    let chunkIndex = 0
-    let chunkBytesWritten = 0
-    let chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER))
-
-    let done, value
-    while ((({ done, value } = await reader.read()), !done)) {
-        compressedBytesRead += value.length
-        let valueBytesProcessed = 0
-        // Write the value to encryptionBuffer.
-        while (valueBytesProcessed < value.length) {
-            const remainingEncryptionBufferSpace = encryptionBuffer.length - aesBlockBytesWritten // Remaining space in encryptionBuffer.
-            const remainingValueBytesToProcess = value.length - valueBytesProcessed
-            const bytesToCopy = Math.min(remainingValueBytesToProcess, remainingEncryptionBufferSpace)
-            encryptionBuffer.set(
-                value.subarray(valueBytesProcessed, valueBytesProcessed + bytesToCopy),
-                aesBlockBytesWritten,
+    const sink: UploadPipeline.UploadChunkSink = {
+        async savePart(part) {
+            // Cancellation checkpoint: stop between parts, before anything new is written to Telegram.
+            transfer.throwIfCancelled()
+            const result = await client.invoke(
+                new Api.upload.SaveBigFilePart({
+                    fileId: part.fileId,
+                    filePart: part.filePart,
+                    fileTotalParts: part.fileTotalParts,
+                    bytes: Buffer.from(part.bytes),
+                } as any),
             )
-            aesBlockBytesWritten += bytesToCopy
-            valueBytesProcessed += bytesToCopy
-            if (aesBlockBytesWritten === encryptionBuffer.length) {
-                // encryptionBuffer is full. Encrypt it.
-                const encryptedData = new Uint8Array(
-                    await window.crypto.subtle.encrypt(
-                        {
-                            name: "AES-CTR",
-                            counter: encryptionCounter,
-                            length: 64, // Bit length of the counter block.
-                        },
-                        aesKey,
-                        encryptionBuffer,
-                    ),
-                )
-                // Reset the encryption buffer and advance AES-CTR counter by blocks processed.
-                aesBlockBytesWritten = 0
-                const blocks = Math.ceil(encryptionBuffer.length / 16)
-                encryptionCounter = Encryption.incrementCounter64By(encryptionCounter, blocks)
-                // Write the encrypted data to partBuffer in a loop.
-                let encryptedDataBytesProcessed = 0
-                while (encryptedDataBytesProcessed < encryptedData.length) {
-                    const remainingPartBufferSpace = partBuffer.length - partBytesWritten
-                    const remainingEncryptedDataBytesToProcess = encryptedData.length - encryptedDataBytesProcessed
-                    const bytesToCopy = Math.min(remainingEncryptedDataBytesToProcess, remainingPartBufferSpace)
-                    partBuffer.set(
-                        encryptedData.subarray(encryptedDataBytesProcessed, encryptedDataBytesProcessed + bytesToCopy),
-                        partBytesWritten,
-                    )
-                    partBytesWritten += bytesToCopy
-                    encryptedDataBytesProcessed += bytesToCopy
-                    if (partBytesWritten === UPLOAD_PART_SIZE) {
-                        // partBuffer is full. Send as much as will fit in this chunk.
-                        const remainingChunkSpace = config.chunkSize - chunkBytesWritten
-                        if (remainingChunkSpace <= UPLOAD_PART_SIZE) {
-                            // Part overflows chunk size. Finalize the chunk
-                            // and populate next one with leftover data in partBuffer.
-                            const partBufferSubarray = partBuffer.subarray(0, remainingChunkSpace)
-                            // Send partBufferSubarray as a file part to Telegram.
-                            const result = await saveBigFilePart({
-                                fileId: chunkFileId,
-                                filePart: partIndex,
-                                fileTotalParts: partIndex + 1,
-                                bytes: Buffer.from(partBufferSubarray),
-                            })
-                            if (!result) {
-                                throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-                            }
-                            console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-
-                            // Finalize the chunk.
-                            const chunkFileUploaded = new Api.InputFileBig({
-                                id: chunkFileId,
-                                parts: partIndex + 1,
-                                name: `${UFID}.chunk${chunkIndex + 1}`,
-                            })
-                            // Send the chunk message.
-                            const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded })
-
-                            // Update file card.
-                            fileCardData.chunks.push(chunkMessage.id)
-                            await client.invoke(
-                                new Api.messages.EditMessage({
-                                    peer: fileCardMessage.peerId,
-                                    id: fileCardMessage.id,
-                                    message: serializeFileCardMessage(fileCardData),
-                                }),
-                            )
-
-                            // Reset chunk index and fileId for the next chunk.
-                            chunkIndex++
-                            chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER))
-
-                            // Left shift bytes in partBuffer by remainingChunkSpace.
-                            partBuffer.copyWithin(0, remainingChunkSpace)
-                            partBytesWritten -= remainingChunkSpace
-                            partIndex = 0
-
-                            // Update chunkBytesWritten with the size of the roll-over data.
-                            chunkBytesWritten = UPLOAD_PART_SIZE - remainingChunkSpace
-                        } else {
-                            // Send the partBuffer data as a file part.
-                            const result = await saveBigFilePart({
-                                fileId: chunkFileId,
-                                filePart: partIndex,
-                                fileTotalParts: -1,
-                                bytes: Buffer.from(partBuffer),
-                            })
-                            if (!result) {
-                                throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-                            }
-                            console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-                            partBytesWritten = 0
-                            partIndex++
-
-                            // Update chunkBytesWritten.
-                            chunkBytesWritten += UPLOAD_PART_SIZE
-                        }
-                    }
-                }
-            }
-        }
-        // Update the progress UI.
-        reportUploadProgress()
-    }
-    // Flush encryptionBuffer.
-    if (aesBlockBytesWritten > 0) {
-        const encryptedData = new Uint8Array(
-            await window.crypto.subtle.encrypt(
-                {
-                    name: "AES-CTR",
-                    counter: encryptionCounter,
-                    length: 64, // Bit length of the counter block.
-                },
-                aesKey,
-                encryptionBuffer.subarray(0, aesBlockBytesWritten),
-            ),
-        )
-        const tailBlocks = Math.ceil(aesBlockBytesWritten / 16)
-        encryptionCounter = Encryption.incrementCounter64By(encryptionCounter, tailBlocks)
-        let encryptedDataBytesProcessed = 0
-        while (encryptedDataBytesProcessed < encryptedData.length) {
-            const remainingPartBufferSpace = partBuffer.length - partBytesWritten
-            const remainingEncryptedDataBytesToProcess = encryptedData.length - encryptedDataBytesProcessed
-            const bytesToCopy = Math.min(remainingEncryptedDataBytesToProcess, remainingPartBufferSpace)
-            partBuffer.set(
-                encryptedData.subarray(encryptedDataBytesProcessed, encryptedDataBytesProcessed + bytesToCopy),
-                partBytesWritten,
-            )
-            partBytesWritten += bytesToCopy
-            encryptedDataBytesProcessed += bytesToCopy
-
-            if (partBytesWritten === UPLOAD_PART_SIZE) {
-                // Part buffer is full. Send as much as will fit in this chunk.
-                const remainingChunkSpace = config.chunkSize - chunkBytesWritten
-                if (remainingChunkSpace <= UPLOAD_PART_SIZE) {
-                    // Part overflows chunk size. Finalize the chunk
-                    // and populate next one with leftover data in partBuffer.
-                    const partBufferSubarray = partBuffer.subarray(0, remainingChunkSpace)
-                    const result = await saveBigFilePart({
-                        fileId: chunkFileId,
-                        filePart: partIndex,
-                        fileTotalParts: partIndex + 1,
-                        bytes: Buffer.from(partBufferSubarray),
-                    })
-                    if (!result) {
-                        throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-                    }
-                    console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-
-                    const chunkFileUploaded = new Api.InputFileBig({
-                        id: chunkFileId,
-                        parts: partIndex + 1,
-                        name: `${UFID}.chunk${chunkIndex + 1}`,
-                    })
-                    // Send the chunk message.
-                    const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded })
-
-                    // Update file card.
-                    fileCardData.chunks.push(chunkMessage.id)
-                    await client.invoke(
-                        new Api.messages.EditMessage({
-                            peer: fileCardMessage.peerId,
-                            id: fileCardMessage.id,
-                            message: serializeFileCardMessage(fileCardData),
-                        }),
-                    )
-
-                    // Reset chunk index and fileId for the next chunk.
-                    chunkIndex++
-                    chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER))
-
-                    // Left shift bytes in partBuffer by remainingChunkSpace.
-                    partBuffer.copyWithin(0, remainingChunkSpace)
-                    partBytesWritten -= remainingChunkSpace
-                    partIndex = 0
-
-                    // Update chunkBytesWritten with the size of the roll-over data.
-                    chunkBytesWritten = UPLOAD_PART_SIZE - remainingChunkSpace
-                } else {
-                    const result = await saveBigFilePart({
-                        fileId: chunkFileId,
-                        filePart: partIndex,
-                        fileTotalParts: -1,
-                        bytes: Buffer.from(partBuffer),
-                    })
-                    if (!result) {
-                        throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-                    }
-                    console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-                    partBytesWritten = 0
-                    partIndex++
-
-                    // Update chunkBytesWritten.
-                    chunkBytesWritten += UPLOAD_PART_SIZE
-                }
-            }
-        }
-    }
-    // Flush partBuffer.
-    if (partBytesWritten > 0) {
-        const remainingChunkSpace = config.chunkSize - chunkBytesWritten
-        if (remainingChunkSpace <= partBytesWritten) {
-            // Part overflows chunk size. Finalize the chunk
-            // and populate next one with leftover data in partBuffer.
-            const partBufferSubarray = partBuffer.subarray(0, remainingChunkSpace)
-            const result = await saveBigFilePart({
-                fileId: chunkFileId,
-                filePart: partIndex,
-                fileTotalParts: partIndex + 1,
-                bytes: Buffer.from(partBufferSubarray),
-            })
             if (!result) {
-                throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
+                throw new Error(`Failed to upload part ${part.filePart + 1}.`)
             }
-            console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-
+            encryptedBytesSent += part.bytes.length
+            reportUploadProgress()
+        },
+        async finalizeChunk(chunk) {
             const chunkFileUploaded = new Api.InputFileBig({
-                id: chunkFileId,
-                parts: partIndex + 1,
-                name: `${UFID}.chunk${chunkIndex + 1}`,
+                id: chunk.fileId as any,
+                parts: chunk.parts,
+                name: `${UFID}.chunk${chunk.chunkIndex + 1}`,
             })
-            // Send the chunk message.
+            // Send the chunk message, then record it in the file card.
             const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded })
-
-            // Update file card.
-            fileCardData.chunks.push(chunkMessage.id)
-            await client.invoke(
-                new Api.messages.EditMessage({
-                    peer: fileCardMessage.peerId,
-                    id: fileCardMessage.id,
-                    message: serializeFileCardMessage(fileCardData),
-                }),
-            )
-
-            // Reset chunk index and fileId for the next chunk.
-            chunkIndex++
-            chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER))
-
-            // Left shift bytes in partBuffer by remainingChunkSpace.
-            partBuffer.copyWithin(0, remainingChunkSpace)
-            partBytesWritten -= remainingChunkSpace
-            partIndex = 0
-
-            // Note: We don't need chunkBytesWritten anymore,
-            // so we don't update it here as we did before.
-        }
-        // Upload the roll-over data in partBuffer as the last chunk.
-        const partBufferSubarray = partBuffer.subarray(0, partBytesWritten)
-        const result = await saveBigFilePart({
-            fileId: chunkFileId,
-            filePart: partIndex,
-            fileTotalParts: partIndex + 1,
-            bytes: Buffer.from(partBufferSubarray),
-        })
-        if (!result) {
-            throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-        }
-        console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
+            console.log(`Uploaded chunk ${chunk.chunkIndex + 1}.`)
+            await cardWriter.appendChunk(chunkMessage.id, chunk.last)
+        },
     }
-    const chunkFileUploaded = new Api.InputFileBig({
-        id: chunkFileId,
-        parts: partIndex + 1,
-        name: `${UFID}.chunk${chunkIndex + 1}`,
-    })
-    // Send the chunk message.
-    const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded })
 
-    // Update file card with last chunk included and uploadComplete being true.
-    fileCardData.chunks.push(chunkMessage.id)
-    fileCardData.uploadComplete = true
-    await client.invoke(
-        new Api.messages.EditMessage({
-            peer: fileCardMessage.peerId,
-            id: fileCardMessage.id,
-            message: serializeFileCardMessage(fileCardData),
-        }),
-    )
+    let pipelineResult: UploadPipeline.UploadPipelineResult
+    try {
+        pipelineResult = await UploadPipeline.runUploadPipeline({
+            compressed: reader,
+            key: aesKey,
+            initialCounter,
+            chunkSize: config.chunkSize,
+            partSize: UPLOAD_PART_SIZE,
+            encryptionBufferSize: Encryption.ENCRYPTION_CHUNK_SIZE,
+            sink,
+            resume: pipelineResume,
+            checkpoint: () => transfer.throwIfCancelled(),
+            onCompressedBytes(byteCount) {
+                compressedBytesRead += byteCount
+                reportUploadProgress()
+            },
+        })
+    } catch (error) {
+        void reader.cancel().catch(() => {})
+        throw error
+    }
+    if (!pipelineResult.finalChunkSent) {
+        // The data ended exactly at a chunk boundary: every chunk is stored, only the completion flag is missing.
+        await cardWriter.markComplete()
+    }
+    const fileCardData = cardWriter.data()
     transfer.update({ bytes: totalBytes, ufid: fileCardData.ufid })
     console.log(`Upload complete: ${displayName} (${humanReadableSize(fileCardData.size)})`)
-    restoreUploadUiAndMaybeRefreshBrowser(() => {}, true, parentFolderId)
-    return { msgId: fileCardMessage.id, data: fileCardData, parentFolderId }
+    restoreUploadUiAndMaybeRefreshBrowser(() => {}, true, resultParentFolderId)
+    return { msgId: cardWriter.msgId, data: fileCardData, parentFolderId: resultParentFolderId }
+}
+
+/* ------------------------------------------------------------------------------------------- Upload resume */
+
+type ExistingUpload = {
+    msgId: number
+    peerId?: unknown
+    date: number
+    data: FileCardData
+    message: string
+}
+
+type UploadCardWriter = {
+    readonly msgId: number
+    appendChunk(chunkMessageId: number, complete: boolean): Promise<void>
+    markComplete(): Promise<void>
+    data(): FileCardData
+}
+
+function parentFolderIdOfCard(data: FileCardData): string | undefined {
+    return "parentFolderId" in data && typeof data.parentFolderId === "string" ? data.parentFolderId : undefined
+}
+
+/**
+ * Looks up stored cards with this UFID. Telegram search is fuzzy, so only exact UFID matches count; a hit that
+ * mentions the UFID but can't be read (e.g. a newer card version) blocks the upload, as before (fail closed).
+ */
+async function findExistingUploads(client: TelegramClient, ufid: string) {
+    const messages = await client.getMessages("me", { search: buildFileCardUfidLookupQuery(ufid) })
+    const incomplete: ExistingUpload[] = []
+    let complete = false
+    let unreadable = false
+    for (const message of messages as unknown as Array<{ id: number; date: number; message?: string; peerId?: unknown }>) {
+        if (!message || typeof message.message !== "string") continue
+        const data = parseFileCardMessage(message.message)
+        if (!data) {
+            // A file card we can't read (e.g. a newer version) that mentions this UFID: don't guess, block.
+            if (message.message.startsWith(FILE_CARD_PREFIX) && message.message.includes(ufid)) unreadable = true
+            continue
+        }
+        if (data.ufid !== ufid) continue
+        if (data.uploadComplete) {
+            complete = true
+        } else {
+            incomplete.push({ msgId: message.id, peerId: message.peerId, date: message.date, data, message: message.message })
+        }
+    }
+    return { complete, unreadable, incomplete }
+}
+
+/** The interrupted upload that got furthest (newest on ties). Other incomplete copies are left alone. */
+function pickResumeCandidate(candidates: ExistingUpload[]): ExistingUpload | null {
+    let best: ExistingUpload | null = null
+    for (const candidate of candidates) {
+        if (
+            !best ||
+            candidate.data.chunks.length > best.data.chunks.length ||
+            (candidate.data.chunks.length === best.data.chunks.length && candidate.msgId > best.msgId)
+        ) {
+            best = candidate
+        }
+    }
+    return best
+}
+
+async function fetchCardMessage(client: TelegramClient, msgId: number) {
+    const [message] = (await client.getMessages("me", { ids: [msgId] })) as unknown as Array<
+        { id: number; date: number; message?: string; peerId?: unknown } | undefined
+    >
+    return message && message.id === msgId && typeof message.message === "string" ? message : null
+}
+
+async function fetchResumeTarget(client: TelegramClient, msgId: number): Promise<ExistingUpload> {
+    const message = await fetchCardMessage(client, msgId)
+    if (!message) {
+        throw new Error("The interrupted upload's file card no longer exists.")
+    }
+    const data = parseFileCardMessage(message.message!)
+    const parsed = UploadResume.parseResumableFileCard(message.message)
+    if (!data || !parsed.ok) {
+        throw new Error(parsed.ok ? UploadResume.describeResumeRefusal("malformed-card") : parsed.message)
+    }
+    return { msgId, peerId: message.peerId, date: message.date, data, message: message.message! }
+}
+
+/** Downloads `length` bytes at `offset` of a chunk document (offset/length must satisfy `upload.getFile` rules). */
+async function downloadChunkRange(
+    client: TelegramClient,
+    chunkMessage: any,
+    offset: number,
+    length: number,
+): Promise<Uint8Array> {
+    const result = await client.invoke(
+        new Api.upload.GetFile({
+            location: getFileInfo(chunkMessage.media).location,
+            offset: offset as any,
+            limit: length,
+            precise: false,
+            cdnSupported: false,
+        }),
+    )
+    const bytes = (result as any)?.bytes as Uint8Array | undefined
+    if (!bytes || bytes.length !== length) {
+        throw new Error("Couldn't read back the already-uploaded data from Telegram, so the upload can't be resumed right now.")
+    }
+    return new Uint8Array(bytes)
+}
+
+/**
+ * Validates an interrupted upload against the file being uploaded now and the password, before anything new is
+ * written: card shape/version, UFID and size, every completed chunk message (exists, expected size), and the
+ * password (the first stored block must decrypt to a gzip header). Byte-for-byte checks of the stored data happen
+ * while the pipeline re-reads the file (see `runUploadPipeline`).
+ */
+async function prepareResume(
+    client: TelegramClient,
+    config: Config.Config,
+    target: ExistingUpload,
+    options: { ufid: string; size: number; password: string; transfer: Transfers.TransferHandle },
+) {
+    const parsed = UploadResume.parseResumableFileCard(target.message)
+    if (!parsed.ok) {
+        throw new Error(parsed.message)
+    }
+    const card = parsed.card
+    // Start the bar at what the card says is already stored (verified below and while re-reading the file).
+    options.transfer.update({
+        phase: "Resuming…",
+        bytes: Math.min(card.data.chunks.length * config.chunkSize, options.size),
+        detail: "Checking the interrupted upload…",
+    })
+
+    const chunkIds = card.data.chunks
+    const fetched = chunkIds.length > 0
+        ? ((await client.getMessages("me", { ids: chunkIds })) as unknown as Array<any>)
+        : []
+    const byId = new Map<number, any>()
+    for (const message of fetched) {
+        if (message && typeof message.id === "number") byId.set(message.id, message)
+    }
+    const chunkMessages = chunkIds.map((id) => byId.get(id) ?? null)
+    const chunkDocumentSizes = chunkMessages.map((message) =>
+        message?.media?.document ? UploadResume.coerceDocumentSize(message.media.document.size) : null,
+    )
+    const planned = UploadResume.planUploadResume(card, {
+        ufid: options.ufid,
+        size: options.size,
+        chunkSize: config.chunkSize,
+        partSize: UPLOAD_PART_SIZE,
+        chunkDocumentSizes,
+    })
+    if (!planned.ok) {
+        throw new Error(planned.message)
+    }
+    options.transfer.throwIfCancelled()
+
+    let head: Uint8Array | null = null
+    if (chunkIds.length > 0) {
+        head = await downloadChunkRange(client, chunkMessages[0], 0, Math.min(UploadResume.RESUME_HEAD_WINDOW_BYTES, config.chunkSize))
+    }
+    let password = options.password
+    while (true) {
+        const key = await Encryption.deriveAESKeyFromPassword(password, card.salt)
+        if (!head) {
+            // Nothing is stored yet, so there is nothing a password could mismatch.
+            return { card, plan: planned.plan, key, head, chunkMessages }
+        }
+        const firstBlock = await UploadPipeline.encryptCtrAt(key, card.initialCounter, 0, head.subarray(0, 16))
+        if (UploadResume.looksLikeGzipHeader(firstBlock)) {
+            return { card, plan: planned.plan, key, head, chunkMessages }
+        }
+        options.transfer.throwIfCancelled()
+        const retry = await requestText({
+            title: "That password doesn't match",
+            message: `That password doesn't match the interrupted upload of “${card.data.name}”. Enter the password you used when the upload started.`,
+            label: "Encryption password",
+            inputType: "password",
+            allowEmpty: true,
+            confirmLabel: "Resume",
+            icon: "key",
+        })
+        if (retry === null) {
+            options.transfer.markCancelled()
+            throw Transfers.abortError("Resume cancelled: the password didn't match.")
+        }
+        password = retry
+    }
+}
+
+async function createNewCardWriter(
+    client: TelegramClient,
+    fields: { name: string; ufid: string; size: number; IV: string; parentFolderId: string },
+): Promise<UploadCardWriter> {
+    const fileCardData: FileCardData = createFileCardData({
+        name: fields.name,
+        ufid: fields.ufid,
+        size: fields.size,
+        uploadComplete: false,
+        chunks: [],
+        IV: fields.IV,
+        parentFolderId: fields.parentFolderId,
+    })
+    const fileCardMessage = await client.sendMessage("me", { message: serializeFileCardMessage(fileCardData) })
+    const edit = () =>
+        client.invoke(
+            new Api.messages.EditMessage({
+                peer: fileCardMessage.peerId,
+                id: fileCardMessage.id,
+                message: serializeFileCardMessage(fileCardData),
+            }),
+        )
+    return {
+        msgId: fileCardMessage.id,
+        async appendChunk(chunkMessageId, complete) {
+            fileCardData.chunks.push(chunkMessageId)
+            fileCardData.uploadComplete = complete
+            await edit()
+        },
+        async markComplete() {
+            if (fileCardData.uploadComplete) return
+            fileCardData.uploadComplete = true
+            await edit()
+        },
+        data: () => fileCardData,
+    }
+}
+
+/**
+ * Edits an existing incomplete card in place: only `chunks` and `uploadComplete` change; its protocol version and
+ * any unknown fields are kept. Before every edit the card is re-read; if anything else changed it in the meantime
+ * (another device resuming, a delete), the upload stops without touching it.
+ */
+function createResumedCardWriter(
+    client: TelegramClient,
+    msgId: number,
+    card: UploadResume.ResumableFileCard,
+    peerId: unknown,
+): UploadCardWriter {
+    const chunks = card.data.chunks.slice()
+    let complete = false
+    const write = async (nextChunks: number[], nextComplete: boolean) => {
+        const fresh = await fetchCardMessage(client, msgId)
+        const parsed = fresh ? UploadResume.parseResumableFileCard(fresh.message) : null
+        if (
+            !parsed?.ok ||
+            parsed.card.data.ufid !== card.data.ufid ||
+            parsed.card.data.chunks.length !== chunks.length ||
+            parsed.card.data.chunks.some((id, index) => id !== chunks[index])
+        ) {
+            throw new Error(
+                "The interrupted upload's file card changed while resuming (another device may be uploading it), so the upload stopped without changing it.",
+            )
+        }
+        await client.invoke(
+            new Api.messages.EditMessage({
+                peer: (peerId ?? "me") as any,
+                id: msgId,
+                message: UploadResume.serializeResumedFileCard(card, { chunks: nextChunks, uploadComplete: nextComplete }),
+            }),
+        )
+        chunks.splice(0, chunks.length, ...nextChunks)
+        complete = nextComplete
+    }
+    return {
+        msgId,
+        appendChunk: (chunkMessageId, nextComplete) => write([...chunks, chunkMessageId], nextComplete),
+        async markComplete() {
+            if (complete) return
+            await write(chunks.slice(), true)
+        },
+        data: () => {
+            const parsed = parseFileCardMessage(UploadResume.serializeResumedFileCard(card, { chunks, uploadComplete: complete }))
+            return parsed!
+        },
+    }
 }
 
 /**
@@ -1476,7 +1598,6 @@ export async function fileUpload(
     options: { parentFolderId?: string } = {},
 ) {
     await gramJsReady
-    // TODO: Implement upload resumption.
     if (config.chunkSize < UPLOAD_PART_SIZE) {
         throw new Error(
             `config.chunkSize (${config.chunkSize}) must be larger than UPLOAD_PART_SIZE (${UPLOAD_PART_SIZE}).`,
@@ -1553,6 +1674,87 @@ export async function fileUpload(
         },
         (transfer) => runFileUploadJob(client, config, job, transfer),
     ).catch((error) => console.warn("Upload failed:", error))
+}
+
+export type ResumeUploadOutcome = "queued" | "cancelled" | "pick-again"
+
+/**
+ * "Resume upload…" on an incomplete file: checks the picked file(s) against the card, confirms, asks for the
+ * password and queues the resumed upload. Returns "pick-again" when the user wants to choose a different file.
+ * The UFID (content hash) is verified inside the queued job, before anything is written.
+ */
+export async function resumeFileUpload(
+    client: TelegramClient,
+    config: Config.Config,
+    target: { msgId: number; data: FileCardData },
+    files: File[],
+): Promise<ResumeUploadOutcome> {
+    await gramJsReady
+    if (files.length === 0) return "cancelled"
+    const card = target.data
+    if (card.uploadComplete) {
+        showToast(UploadResume.describeResumeRefusal("already-complete"))
+        return "cancelled"
+    }
+    const single = files.length === 1
+    const pickedSize = single ? files[0].size : Archive.computeTarSize(files)
+    const pickedLabel = single ? `“${files[0].name}”` : `These ${files.length} files`
+    if (pickedSize !== card.size) {
+        const again = await requestConfirm({
+            title: "That's a different file",
+            message:
+                `${pickedLabel} ${single ? "is" : "add up to"} ${formatFileCardSize(pickedSize)}, but the interrupted upload of ` +
+                `“${card.name}” is ${formatFileCardSize(card.size)}. Choose the exact file you were uploading` +
+                (single ? "." : ", selected the same way as before."),
+            confirmLabel: "Choose another file",
+            cancelLabel: "Close",
+            icon: "file",
+        })
+        return again ? "pick-again" : "cancelled"
+    }
+
+    const stored = Math.min(card.chunks.length * config.chunkSize, card.size)
+    const confirmed = await requestConfirm({
+        title: "Resume interrupted upload?",
+        message:
+            `${formatFileCardSize(stored)} of ${formatFileCardSize(card.size)} already in Telegram. ` +
+            `TGLFS re-reads the file to check it matches, then uploads the rest into “${card.name}”.`,
+        confirmLabel: "Resume",
+        cancelLabel: "Cancel",
+        icon: "cloudUp",
+    })
+    if (!confirmed) return "cancelled"
+
+    const password = await requestText({
+        title: "Resume upload",
+        message: `Use the same password as when the upload of “${card.name}” started.`,
+        label: "Encryption password",
+        inputType: "password",
+        allowEmpty: true,
+        confirmLabel: "Resume",
+        icon: "cloudUp",
+    })
+    if (password === null) return "cancelled"
+
+    const parentFolderId = parentFolderIdOfCard(card) ?? TGLFS_ROOT_PARENT_ID
+    const job: UploadJob = {
+        files,
+        password,
+        parentFolderId,
+        archiveName: single ? undefined : card.name,
+        remux: null,
+        resume: { msgId: target.msgId, name: card.name },
+    }
+    void Transfers.enqueue(
+        {
+            direction: "upload",
+            name: card.name,
+            size: card.size,
+            meta: { parentFolderId, resume: true },
+        },
+        (transfer) => runFileUploadJob(client, config, job, transfer),
+    ).catch((error) => console.warn("Resumed upload failed:", error))
+    return "queued"
 }
 
 export async function listFileCards(

@@ -1119,6 +1119,9 @@ function getAllSelectionActions(entries: BrowserEntry[]): SelectionAction[] {
     const allFilesOrFolders = entries.length > 0 && files.length + folders.length === entries.length
     const actions: SelectionAction[] = []
 
+    if (single && isFileEntry(single) && !single.data.uploadComplete && client) {
+        actions.push({ key: "resume", id: "browserActionResume", menuId: "actionResumeItem", label: "Resume upload…", shortLabel: "Resume", icon: "cloudUp", run: () => resumeEntryUpload(single) })
+    }
     if (single && isFolderEntry(single)) {
         actions.push({ key: "open", id: "browserActionPreview", menuId: "actionPreviewItem", label: "Open", icon: "open", hint: "↵", run: () => runSingleOpenAction(single) })
         actions.push({ key: "history", id: "browserActionHistory", menuId: "actionHistoryItem", label: "History", icon: "history", hint: "H", menuOnly: true, run: () => openFolderHistory(single) })
@@ -3166,6 +3169,42 @@ function uploadFiles(files?: File[]) {
     }
     const uploadInput = document.getElementById("uploadFileInput") as HTMLInputElement | null
     uploadInput?.click()
+}
+
+/** Opens the system file picker; resolves with the chosen files, or null when the picker is dismissed. */
+function pickFiles(options: { multiple?: boolean } = {}): Promise<File[] | null> {
+    return new Promise((resolve) => {
+        const input = document.createElement("input")
+        input.type = "file"
+        input.multiple = !!options.multiple
+        input.hidden = true
+        let settled = false
+        const finish = (files: File[] | null) => {
+            if (settled) return
+            settled = true
+            input.remove()
+            resolve(files)
+        }
+        input.addEventListener("change", () => finish(input.files && input.files.length > 0 ? Array.from(input.files) : null))
+        input.addEventListener("cancel", () => finish(null))
+        document.body.appendChild(input)
+        input.click()
+    })
+}
+
+/** "Resume upload…": pick the original file again and continue the interrupted upload into this card. */
+async function resumeEntryUpload(entry: FileBrowserEntry) {
+    const client = activeBrowserClient
+    const config = activeBrowserConfig
+    if (!client || !config) return
+    // Open the picker first, while the click's user activation is still fresh.
+    let files = await pickFiles({ multiple: true })
+    const Telegram = await import("../telegram")
+    while (files) {
+        const outcome = await Telegram.resumeFileUpload(client, config, { msgId: entry.msgId, data: entry.data }, files)
+        if (outcome !== "pick-again") return
+        files = await pickFiles({ multiple: true })
+    }
 }
 
 async function createFolderHere() {

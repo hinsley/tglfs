@@ -19,8 +19,12 @@ type MockRecord = {
     date: number
     editDate?: number
     message: string
-    media?: string
+    media?: unknown
 }
+
+/** `InputFileLocation` subclass id: GramJS `getFileInfo` passes such objects through as the download location. */
+const INPUT_FILE_LOCATION_SUBCLASS_ID = 354669666
+const UPLOAD_PART_SIZE = 512 * 1024
 
 function now(offsetSeconds = 0) {
     return new Date(Date.UTC(2026, 4, 2, 17, 0, offsetSeconds)).toISOString()
@@ -464,7 +468,7 @@ function usePaginationFixture() {
     return url.searchParams.get("run")?.includes("pagination") ?? false
 }
 
-/** `?mock=folder-browser&slow=1` adds artificial latency to upload parts so transfer UI states can be inspected. */
+/** `?mock=folder-browser&slow=1` adds artificial latency to upload parts and chunk downloads so transfer UI states can be inspected. */
 function mockTransferDelayMs() {
     if (typeof window === "undefined") return 0
     const url = new URL(window.location.href)
@@ -556,7 +560,41 @@ export function createMockFolderBrowserSession() {
         if (message.startsWith(FILE_CARD_PREFIX)) return mutableFileCards
         return mutableFileCards
     }
+    // Chunk documents uploaded through upload.SaveBigFilePart + InputFileBig, stored byte-for-byte so uploads,
+    // resumed uploads and previews of uploaded files round-trip like they do against Telegram.
+    const uploadParts = new Map<string, Map<number, Uint8Array>>()
+    const chunkRecords: MockRecord[] = []
+    const chunkBytes = new Map<number, Uint8Array>()
+    const findMessage = (id: number) =>
+        allRecords().find((record) => record.id === id) ?? chunkRecords.find((record) => record.id === id)
+    const assembleBigFile = (file: { id: unknown; parts: number }) => {
+        const key = String(file.id)
+        const parts = uploadParts.get(key)
+        const pieces: Uint8Array[] = []
+        for (let index = 0; index < file.parts; index++) {
+            const part = parts?.get(index)
+            if (!part) throw new Error(`400: FILE_PART_${index}_MISSING (caused by messages.SendMedia)`)
+            if (index < file.parts - 1 && part.length !== UPLOAD_PART_SIZE) {
+                throw new Error("400: FILE_PART_SIZE_INVALID (caused by messages.SendMedia)")
+            }
+            pieces.push(part)
+        }
+        uploadParts.delete(key)
+        const size = pieces.reduce((total, piece) => total + piece.length, 0)
+        const bytes = new Uint8Array(size)
+        let offset = 0
+        for (const piece of pieces) {
+            bytes.set(piece, offset)
+            offset += piece.length
+        }
+        return bytes
+    }
     const removeIds = (ids: number[]) => {
+        for (const id of ids) {
+            const index = chunkRecords.findIndex((record) => record.id === id)
+            if (index !== -1) chunkRecords.splice(index, 1)
+            chunkBytes.delete(id)
+        }
         for (const records of [mutableFileCards, mutableFolderRecords, mutableFolderManifestRecords]) {
             for (const id of ids) {
                 const index = records.findIndex((record) => record.id === id)
@@ -568,8 +606,8 @@ export function createMockFolderBrowserSession() {
     const client = {
         async getMessages(_peer: string, options: { ids?: number[]; search?: string; limit?: number; maxId?: number; offsetId?: number }) {
             if (Array.isArray(options.ids)) {
-                const ids = new Set(options.ids)
-                return allRecords().filter((record) => ids.has(record.id))
+                // Like GramJS: one entry per requested id, in order, `undefined` for missing messages.
+                return options.ids.map((id) => findMessage(id))
             }
             const search = options.search ?? ""
             const limit = options.limit ?? 50
@@ -630,6 +668,24 @@ export function createMockFolderBrowserSession() {
         },
         async sendFile(_peer: string, options: { caption?: string; message?: string; file: any }) {
             await sleep(transferDelayMs)
+            if (typeof options.file?.parts === "number" && options.file?.id !== undefined) {
+                // InputFileBig: a TGLFS chunk document assembled from the uploaded parts.
+                const bytes = assembleBigFile(options.file)
+                const id = nextMessageId++
+                const record: MockRecord = {
+                    id,
+                    date: Math.floor(Date.now() / 1000),
+                    message: "",
+                    media: {
+                        SUBCLASS_OF_ID: INPUT_FILE_LOCATION_SUBCLASS_ID,
+                        __mockChunkId: id,
+                        document: { size: bytes.length, attributes: [{ fileName: options.file.name }] },
+                    },
+                }
+                chunkRecords.push(record)
+                chunkBytes.set(id, bytes)
+                return { ...record, peerId: "me" }
+            }
             const message = options.caption ?? options.message ?? ""
             if (message.length > TELEGRAM_TEXT_MESSAGE_LIMIT) {
                 throw new Error("400: MESSAGE_TOO_LONG (caused by messages.SendMedia)")
@@ -652,13 +708,25 @@ export function createMockFolderBrowserSession() {
         },
         async downloadMedia(message: MockRecord) {
             const record = allRecords().find((candidate) => candidate.id === message.id)
-            return record?.media ?? ""
+            return typeof record?.media === "string" ? record.media : ""
         },
         async invoke(request: any) {
             if (typeof request?.filePart === "number") {
                 // upload.SaveBigFilePart
                 await sleep(transferDelayMs)
+                const key = String(request.fileId)
+                const parts = uploadParts.get(key) ?? new Map<number, Uint8Array>()
+                parts.set(request.filePart, new Uint8Array(request.bytes))
+                uploadParts.set(key, parts)
                 return true
+            }
+            if (request?.location && typeof request.location.__mockChunkId === "number") {
+                // upload.GetFile on a chunk document.
+                await sleep(transferDelayMs)
+                const bytes = chunkBytes.get(request.location.__mockChunkId)
+                if (!bytes) throw new Error("400: FILE_REFERENCE_EXPIRED (caused by upload.GetFile)")
+                const offset = Number(request.offset)
+                return { bytes: bytes.slice(offset, offset + request.limit) }
             }
             const ids = Array.isArray(request?.id) ? request.id : []
             if (ids.length > 0 && typeof request?.message !== "string") {
