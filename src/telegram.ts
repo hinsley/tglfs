@@ -2346,9 +2346,43 @@ export async function downloadFileCard(
 
 export type AuthHandlers = {
     getPhoneCode?: () => Promise<string>
-    getPassword?: () => Promise<string>
+    /** Receives Telegram's 2FA password hint when one is set. */
+    getPassword?: (hint?: string) => Promise<string>
     onError?: (error: unknown) => void
+    /** Aborting cancels the sign-in and disconnects the half-open client. */
+    signal?: AbortSignal
 }
+
+export type QrLoginCode = {
+    /** Raw `auth.loginToken` bytes; encode as `tg://login?token=<base64url>` for the QR code. */
+    token: Uint8Array
+    /** Local wall-clock time (ms) after which the code should be treated as expired. */
+    expiresAt: number
+}
+
+export type QrLoginHandlers = {
+    /** Called with every fresh login token; GramJS rotates tokens about every 30 seconds. */
+    onQrCode: (code: QrLoginCode) => void
+    /** Called once Telegram reports that the code was scanned and accepted on another device. */
+    onScanned?: () => void
+    getPassword: (hint?: string) => Promise<string>
+    onError?: (error: unknown) => void
+    signal?: AbortSignal
+}
+
+export type TelegramAccount = {
+    id: string
+    phone?: string
+    username?: string
+    firstName?: string
+    lastName?: string
+}
+
+export const TELEGRAM_LOGIN_CANCELLED = "LOGIN_CANCELLED"
+export const TELEGRAM_SESSION_NOT_AUTHORIZED = "SESSION_NOT_AUTHORIZED"
+
+/** Telegram rotates QR login tokens on this cadence (mirrors GramJS's QR loop). */
+const TELEGRAM_QR_TOKEN_REFRESH_MS = 30_000
 
 type MutableTelegramStoreSession = {
     load: () => Promise<void>
@@ -2435,72 +2469,89 @@ async function connectTelegramClientWithTimeout(client: TelegramClient, host: st
     }
 }
 
+/**
+ * Signs a connected client in. `markInteractive` must be called as soon as the
+ * user has been asked for input, after which connection errors no longer fall
+ * back to the next web DC (the auth state lives on the current connection).
+ */
+type TelegramClientAuthenticator = (client: TelegramClient, markInteractive: () => void) => Promise<void>
+
+function createLoginCancelledError() {
+    return new Error(TELEGRAM_LOGIN_CANCELLED)
+}
+
+/** Rejects as soon as `signal` aborts, so a hung GramJS auth step cannot pin the login flow. */
+function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) {
+        return promise
+    }
+    if (signal.aborted) {
+        promise.catch(() => undefined)
+        return Promise.reject(createLoginCancelledError())
+    }
+    return new Promise<T>((resolve, reject) => {
+        const onAbort = () => reject(createLoginCancelledError())
+        signal.addEventListener("abort", onAbort, { once: true })
+        promise.then(
+            (value) => {
+                signal.removeEventListener("abort", onAbort)
+                resolve(value)
+            },
+            (error) => {
+                signal.removeEventListener("abort", onAbort)
+                reject(error)
+            },
+        )
+    })
+}
+
 async function startTelegramClientWithWebDcFallback(
     config: Config.Config,
     storeSession: MutableTelegramStoreSession,
-    authHandlers: AuthHandlers,
+    authenticate: TelegramClientAuthenticator,
+    signal?: AbortSignal,
 ): Promise<TelegramClient> {
     await storeSession.load()
     const originalSession = snapshotTelegramSession(storeSession)
     const initialAddress = originalSession.serverAddress ?? TELEGRAM_WEB_DC_ENDPOINTS[3].host
     const hosts = getTelegramWebDcFallbackHosts(initialAddress)
     let lastError: unknown
-    let authPromptStarted = false
-
-    const startOptions = {
-        phoneNumber: config.phone,
-        password: async () => {
-            authPromptStarted = true
-            if (authHandlers.getPassword) {
-                const pwd = await authHandlers.getPassword()
-                if (!pwd) {
-                    throw new Error("No password provided.")
-                }
-                return pwd
-            }
-            const pwd = prompt("Enter your password: ")
-            if (!pwd) {
-                throw new Error("No password provided.")
-            }
-            return pwd
-        },
-        phoneCode: async () => {
-            authPromptStarted = true
-            if (authHandlers.getPhoneCode) {
-                const code = await authHandlers.getPhoneCode()
-                if (!code) {
-                    throw new Error("No code provided.")
-                }
-                return code
-            }
-            const code = prompt("Enter the code you received: ")
-            if (!code) {
-                throw new Error("No code provided.")
-            }
-            return code
-        },
-        onError: (error: any) => {
-            authHandlers.onError?.(error)
-            console.error(error)
-        },
+    let interactive = false
+    const markInteractive = () => {
+        interactive = true
     }
 
     for (const host of hosts) {
+        if (signal?.aborted) {
+            restoreTelegramSession(storeSession, originalSession)
+            throw createLoginCancelledError()
+        }
         const activeHost = configureTelegramSessionForWebDc(storeSession, host, originalSession)
         const client = createBrowserTelegramClient(config, storeSession)
+        const disconnectOnAbort = () => {
+            void client.disconnect().catch(() => undefined)
+        }
+        signal?.addEventListener("abort", disconnectOnAbort, { once: true })
         try {
             console.info(`Trying Telegram web DC ${activeHost}`)
-            await connectTelegramClientWithTimeout(client, activeHost)
-            await client.start(startOptions)
+            await raceAbort(connectTelegramClientWithTimeout(client, activeHost), signal)
+            await raceAbort(authenticate(client, markInteractive), signal)
             return client
         } catch (error) {
             lastError = error
-            await client.disconnect().catch(() => undefined)
-            if (authPromptStarted || !isTelegramWebDcConnectionError(error)) {
+            const fatal = signal?.aborted || interactive || !isTelegramWebDcConnectionError(error)
+            if (fatal) {
+                // Restore synchronously, before awaiting the disconnect, so a quickly started
+                // next attempt never has its freshly stored session overwritten by this one.
                 restoreTelegramSession(storeSession, originalSession)
-                throw error
+            }
+            await client.disconnect().catch(() => undefined)
+            if (fatal) {
+                throw signal?.aborted ? createLoginCancelledError() : error
             }
             console.warn(`Telegram web DC ${activeHost} failed, trying next fallback`, error)
+        } finally {
+            signal?.removeEventListener("abort", disconnectOnAbort)
         }
     }
 
@@ -2508,12 +2559,179 @@ async function startTelegramClientWithWebDcFallback(
     throw lastError instanceof Error ? lastError : new Error("Failed to connect to Telegram web DCs")
 }
 
-export async function init(config: Config.Config, authHandlers: AuthHandlers = {}): Promise<TelegramClient> {
+/** Shared connection setup for every sign-in path: stored session + web DC fallback. */
+async function connectWithStoredSession(
+    config: Config.Config,
+    authenticate: TelegramClientAuthenticator,
+    signal?: AbortSignal,
+): Promise<TelegramClient> {
     await gramJsReady
     console.log("Starting up...")
-    // Load previous session from a session string.
+    // Load the previous session (persisted in localStorage under ./tglfs.session:*).
     const storeSession = new StoreSession("./tglfs.session")
-    const client = await startTelegramClientWithWebDcFallback(config, storeSession, authHandlers)
+    // GramJS types StoreSession's DC fields as accessors; the fallback only needs this structural subset.
+    const client = await startTelegramClientWithWebDcFallback(
+        config,
+        storeSession as unknown as MutableTelegramStoreSession,
+        authenticate,
+        signal,
+    )
     console.log("You are now logged in!")
     return client
+}
+
+/**
+ * GramJS keeps retrying an auth step for as long as `onError` returns falsy.
+ * Returning true once the attempt is aborted makes it stop with AUTH_USER_CANCEL
+ * instead of re-asking a prompt that will never be answered.
+ */
+function createAuthErrorHandler(onError: ((error: unknown) => void) | undefined, signal?: AbortSignal) {
+    return async (error: Error) => {
+        if (signal?.aborted) {
+            return true
+        }
+        onError?.(error)
+        console.error(error)
+        return false
+    }
+}
+
+function createPasswordPrompt(
+    getPassword: ((hint?: string) => Promise<string>) | undefined,
+    markInteractive: () => void,
+    signal?: AbortSignal,
+) {
+    return async (hint?: string) => {
+        markInteractive()
+        if (signal?.aborted) {
+            throw createLoginCancelledError()
+        }
+        const pwd = getPassword ? await getPassword(hint) : prompt("Enter your password: ")
+        if (!pwd) {
+            throw new Error("No password provided.")
+        }
+        return pwd
+    }
+}
+
+/** Phone-number login (code + optional 2FA). An already-authorized stored session is reused as-is. */
+export async function init(config: Config.Config, authHandlers: AuthHandlers = {}): Promise<TelegramClient> {
+    const { signal } = authHandlers
+    return connectWithStoredSession(
+        config,
+        async (client, markInteractive) => {
+            await client.start({
+                phoneNumber: config.phone,
+                password: createPasswordPrompt(authHandlers.getPassword, markInteractive, signal),
+                phoneCode: async () => {
+                    markInteractive()
+                    if (signal?.aborted) {
+                        throw createLoginCancelledError()
+                    }
+                    const code = authHandlers.getPhoneCode
+                        ? await authHandlers.getPhoneCode()
+                        : prompt("Enter the code you received: ")
+                    if (!code) {
+                        throw new Error("No code provided.")
+                    }
+                    return code
+                },
+                onError: createAuthErrorHandler(authHandlers.onError, signal),
+            })
+        },
+        signal,
+    )
+}
+
+function computeQrExpiresAt(expires: number) {
+    // `expires` is a server unix timestamp; tolerate local clock skew by falling
+    // back to GramJS's refresh cadence, and never promise more than that.
+    let ttl = expires * 1000 - Date.now()
+    if (!(ttl > 5_000 && ttl <= 120_000)) {
+        ttl = TELEGRAM_QR_TOKEN_REFRESH_MS
+    }
+    return Date.now() + Math.min(ttl, TELEGRAM_QR_TOKEN_REFRESH_MS)
+}
+
+/**
+ * QR-code login: Telegram issues short-lived login tokens that an already
+ * logged-in Telegram app scans (Settings > Devices > Link Desktop Device).
+ * GramJS rotates the tokens, migrates DC after the scan and runs the 2FA step.
+ */
+export async function initWithQrCode(config: Config.Config, handlers: QrLoginHandlers): Promise<TelegramClient> {
+    const { signal } = handlers
+    return connectWithStoredSession(
+        config,
+        async (client, markInteractive) => {
+            if (await client.checkAuthorization()) {
+                return
+            }
+            let settled = false
+            client.addEventHandler((update: unknown) => {
+                if (!settled && update instanceof Api.UpdateLoginToken) {
+                    handlers.onScanned?.()
+                }
+            })
+            try {
+                await client.signInUserWithQrCode(
+                    { apiId: config.apiId, apiHash: config.apiHash },
+                    {
+                        qrCode: async ({ token, expires }) => {
+                            if (signal?.aborted) {
+                                throw createLoginCancelledError()
+                            }
+                            markInteractive()
+                            handlers.onQrCode({
+                                token: new Uint8Array(token),
+                                expiresAt: computeQrExpiresAt(expires),
+                            })
+                        },
+                        password: createPasswordPrompt(handlers.getPassword, markInteractive, signal),
+                        onError: createAuthErrorHandler(handlers.onError, signal),
+                    },
+                )
+            } finally {
+                settled = true
+            }
+        },
+        signal,
+    )
+}
+
+/**
+ * Reconnects with the stored session without starting an interactive sign-in.
+ * Rejects with SESSION_NOT_AUTHORIZED when Telegram no longer accepts the session.
+ */
+export async function resumeStoredSession(config: Config.Config, signal?: AbortSignal): Promise<TelegramClient> {
+    return connectWithStoredSession(
+        config,
+        async (client) => {
+            try {
+                await client.invoke(new Api.updates.GetState())
+            } catch (error) {
+                // Only a definitive "not authorized" answer counts; network trouble is rethrown
+                // so a flaky connection never looks like a revoked session.
+                const rpc = error as { code?: number; errorMessage?: string; message?: string }
+                const text = `${rpc?.errorMessage ?? ""} ${rpc?.message ?? ""}`
+                if (rpc?.code === 401 || /AUTH_KEY_UNREGISTERED|AUTH_KEY_INVALID|SESSION_REVOKED|SESSION_EXPIRED|USER_DEACTIVATED/i.test(text)) {
+                    throw new Error(TELEGRAM_SESSION_NOT_AUTHORIZED)
+                }
+                throw error
+            }
+        },
+        signal,
+    )
+}
+
+/** Reads the signed-in account so a QR login can be persisted like a phone login. */
+export async function getSignedInAccount(client: TelegramClient): Promise<TelegramAccount> {
+    const me = (await client.getMe()) as TelegramApi.User
+    const phone = typeof me.phone === "string" ? me.phone.replace(/\s+/g, "") : ""
+    return {
+        id: String(me.id),
+        phone: phone ? (phone.startsWith("+") ? phone : `+${phone}`) : undefined,
+        username: me.username || undefined,
+        firstName: me.firstName || undefined,
+        lastName: me.lastName || undefined,
+    }
 }

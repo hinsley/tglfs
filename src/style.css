@@ -413,7 +413,8 @@ kbd {
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
+    /* Auto margins (below) center the card but keep its top reachable when it outgrows the viewport. */
+    justify-content: flex-start;
     gap: 18px;
     padding: calc(24px + var(--safe-t)) 16px calc(24px + var(--safe-b));
     background:
@@ -422,6 +423,7 @@ kbd {
 }
 
 .auth-card {
+    margin-top: auto;
     width: 100%;
     max-width: 400px;
     background: var(--surface);
@@ -530,7 +532,269 @@ kbd {
     color: var(--text-3);
 }
 
+/* Sign-in method switch (phone number / QR code) */
+.auth-methods {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3px;
+    padding: 3px;
+    border-radius: 12px;
+    background: var(--surface-2);
+}
+
+.auth-method {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    height: 36px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 9px;
+    background: transparent;
+    color: var(--text-2);
+    font-size: 13.5px;
+    font-weight: 600;
+    transition: background 0.15s var(--ease), color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+
+.auth-method .fx-svg {
+    width: 16px;
+    height: 16px;
+}
+
+.auth-method:hover:not(:disabled):not(.is-active) {
+    color: var(--text);
+}
+
+.auth-method.is-active {
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: var(--shadow-sm), 0 0 0 1px var(--border);
+}
+
+:root[data-theme="dark"] .auth-method.is-active {
+    background: var(--surface-3);
+    box-shadow: var(--shadow-sm);
+}
+
+.auth-method:disabled {
+    opacity: 0.55;
+}
+
+.auth-method:focus-visible {
+    outline: 2px solid var(--accent-ring);
+    outline-offset: 1px;
+}
+
+/* QR code sign-in */
+.auth-qr {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+}
+
+.auth-qr-frame {
+    position: relative;
+    width: min(224px, 100%);
+    aspect-ratio: 1;
+    border-radius: 18px;
+    overflow: hidden;
+    /* Always dark-on-light so phone cameras read it reliably, even in dark mode. */
+    background: #ffffff;
+    box-shadow: 0 0 0 1px var(--border), var(--shadow-md);
+}
+
+.auth-qr-code {
+    position: absolute;
+    inset: 0;
+    transition: filter 0.25s var(--ease), opacity 0.25s var(--ease);
+}
+
+.auth-qr-code:empty {
+    inset: 14px;
+    border-radius: 10px;
+    background: repeating-conic-gradient(#eef1f5 0 25%, #ffffff 0 50%) 0 0 / 14px 14px;
+    -webkit-mask: radial-gradient(circle at center, transparent 0 22%, #000 60%);
+    mask: radial-gradient(circle at center, transparent 0 22%, #000 60%);
+    animation: auth-qr-pulse 1.6s ease-in-out infinite;
+}
+
+.auth-qr-svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.auth-qr-overlay {
+    position: absolute;
+    inset: 0;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: #111827;
+    font-size: 13px;
+    font-weight: 600;
+    pointer-events: none;
+}
+
+.auth-qr-overlay-icon {
+    display: inline-flex;
+}
+
+.auth-qr-overlay-icon .fx-spinner {
+    border-color: rgba(26, 138, 212, 0.18);
+    border-top-color: #1a8ad4;
+}
+
+.auth-qr-retry {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    box-shadow: var(--shadow-md);
+}
+
+.auth-qr[data-state="loading"] .auth-qr-overlay,
+.auth-qr[data-state="expired"] .auth-qr-overlay,
+.auth-qr[data-state="scanned"] .auth-qr-overlay {
+    display: flex;
+}
+
+.auth-qr[data-state="expired"] .auth-qr-code {
+    filter: blur(3px);
+    opacity: 0.35;
+}
+
+.auth-qr[data-state="scanned"] .auth-qr-code {
+    filter: blur(2px);
+    opacity: 0.16;
+}
+
+.auth-qr[data-state="error"] .auth-qr-code,
+.auth-qr[data-state="paused"] .auth-qr-code {
+    filter: blur(5px);
+    opacity: 0.22;
+    animation: none;
+}
+
+.auth-qr[data-state="scanned"] .auth-qr-overlay-icon {
+    width: 48px;
+    height: 48px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--success);
+    color: #fff;
+    box-shadow: 0 6px 16px -4px rgba(35, 147, 90, 0.5);
+    animation: auth-qr-pop 0.35s var(--ease);
+}
+
+.auth-qr[data-state="scanned"] .auth-qr-overlay-icon .fx-svg {
+    width: 26px;
+    height: 26px;
+    stroke-width: 2.5;
+}
+
+.auth-qr-meta {
+    width: min(224px, 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 7px;
+}
+
+.auth-qr-timer {
+    width: 100%;
+    height: 3px;
+    border-radius: 999px;
+    background: var(--surface-3);
+    overflow: hidden;
+    visibility: hidden;
+}
+
+.auth-qr[data-state="ready"] .auth-qr-timer {
+    visibility: visible;
+}
+
+.auth-qr-timer-fill {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    border-radius: inherit;
+    transform-origin: left center;
+    transition: transform 0.25s linear, background 0.3s var(--ease);
+}
+
+.auth-qr[data-urgent="true"] .auth-qr-timer-fill {
+    background: var(--warning);
+}
+
+.auth-qr-caption {
+    font-size: 12.5px;
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+}
+
+.auth-qr-steps {
+    align-self: stretch;
+    list-style: none;
+    margin: 2px 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    counter-reset: auth-qr-step;
+}
+
+.auth-qr-steps li {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    font-size: 13px;
+    line-height: 20px;
+    color: var(--text-2);
+    counter-increment: auth-qr-step;
+}
+
+.auth-qr-steps li::before {
+    content: counter(auth-qr-step);
+    flex: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent-text);
+    font-size: 11.5px;
+    font-weight: 700;
+    line-height: 20px;
+    text-align: center;
+}
+
+.auth-qr-steps strong {
+    color: var(--text);
+    font-weight: 600;
+}
+
+@keyframes auth-qr-pulse {
+    50% {
+        opacity: 0.55;
+    }
+}
+
+@keyframes auth-qr-pop {
+    from {
+        transform: scale(0.6);
+        opacity: 0;
+    }
+}
+
 .auth-footer {
+    margin-bottom: auto;
     max-width: 360px;
     text-align: center;
     font-size: 12.5px;

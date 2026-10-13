@@ -1,12 +1,15 @@
 import "./polyfills"
 import { hydrateIcons, icon } from "./icons"
-import { requestConfirm, showToast } from "./dialogs"
+import { isCompactViewport, requestConfirm, showToast } from "./dialogs"
 import { begin as beginTransfer, type TransferHandle } from "./transfers"
 import { mountTransferTray } from "./transferTray"
+import { createQrLoginPanel } from "./qrLoginPanel"
 
 type TelegramModule = typeof import("../telegram")
 type BrowserModule = typeof import("./browser")
 type DirectoryParentMigrationProgress = import("../telegram").DirectoryParentMigrationProgress
+type QrLoginHandlers = import("../telegram").QrLoginHandlers
+type TelegramAccount = import("../telegram").TelegramAccount
 
 let telegramModulePromise: Promise<TelegramModule> | null = null
 let browserModulePromise: Promise<BrowserModule> | null = null
@@ -29,10 +32,19 @@ type SharedFileRecord = {
 }
 
 let loginAttempt = 0
+let loginAbortController: AbortController | null = null
 let controlsBound = false
 let fileBrowserInitialized = false
 
-type LoginStep = "phone" | "code" | "password"
+type LoginStep = "phone" | "code" | "password" | "qr"
+type LoginMethod = "phone" | "qr"
+
+/** Remembers which sign-in method the user picked last (UI preference only). */
+const LOGIN_METHOD_STORAGE_KEY = "tglfs.loginMethod"
+/** Session cookie used for auto-login when the account's phone number is not visible. */
+const ACCOUNT_COOKIE = "tglfsAccount"
+/** Stop rotating QR codes after this long without a scan; the user can resume with one click. */
+const QR_LOGIN_IDLE_LIMIT_MS = 10 * 60 * 1000
 
 type Deferred<T> = {
     promise: Promise<T>
@@ -76,17 +88,26 @@ async function maybeUploadSharedFiles() {
     await Telegram.fileUpload(activeClient, activeConfig, files)
 }
 
-function isLocalMockFolderBrowserUrl() {
+function getLocalMockMode(): string | null {
     const url = new URL(window.location.href)
     const localHost = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname)
-    return localHost && url.searchParams.get("mock") === "folder-browser"
+    return localHost ? url.searchParams.get("mock") : null
+}
+
+function isLocalMockFolderBrowserUrl() {
+    return getLocalMockMode() === "folder-browser"
+}
+
+/** Dev-only preview of the QR sign-in states with fake tokens (`?mock=qr-login&qr-state=...`). */
+function isLocalMockQrLoginUrl() {
+    return getLocalMockMode() === "qr-login"
 }
 
 async function startMockFolderBrowser() {
     const { createMockFolderBrowserSession } = await import("./mockFolderBrowser")
     const { client, config } = createMockFolderBrowserSession()
-    await finalizeLogin(client, config, "mock-folder-browser")
-    document.cookie = "phone=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT"
+    await finalizeLogin(client, config, { phone: "mock-folder-browser" })
+    expireCookie("phone")
 }
 
 async function openFileBrowser() {
@@ -286,8 +307,17 @@ function parseAuthError(error: unknown): AuthErrorInfo {
     const raw = getErrorText(error)
     const normalized = raw.toUpperCase()
 
-    if (normalized.includes(LOGIN_CANCELLED)) {
+    if (normalized.includes(LOGIN_CANCELLED) || normalized.includes("AUTH_USER_CANCEL")) {
         return { message: "", step: "phone", suppress: true }
+    }
+    if (normalized.includes("SESSION_NOT_AUTHORIZED")) {
+        return { message: "Your saved session has ended. Sign in again to continue.", step: "phone" }
+    }
+    if (normalized.includes("AUTH_TOKEN_EXPIRED")) {
+        return { message: "That QR code expired before it was confirmed. Scan the new code.", step: "qr" }
+    }
+    if (normalized.includes("AUTH_TOKEN_ALREADY_ACCEPTED") || normalized.includes("AUTH_TOKEN_INVALID")) {
+        return { message: "That QR code can no longer be used. Try again with a new code.", step: "qr" }
     }
     if (normalized.includes("PHONE_NUMBER_INVALID")) {
         return { message: "That phone number does not look right.", step: "phone" }
@@ -330,9 +360,22 @@ type LoginElements = {
     loginPasswordInput: HTMLInputElement
     loginPasswordSubmit: HTMLButtonElement
     loginResetLogin: HTMLButtonElement
+    loginPasswordHint: HTMLSpanElement
+    loginMethodSwitch: HTMLDivElement
+    loginMethodPhone: HTMLButtonElement
+    loginMethodQr: HTMLButtonElement
+    loginQrPanel: HTMLDivElement
 }
 
 function getLoginElements(): LoginElements {
+    const loginPasswordHint = document.getElementById("loginPasswordHint") as HTMLSpanElement | null
+    const loginMethodSwitch = document.getElementById("loginMethodSwitch") as HTMLDivElement | null
+    const loginMethodPhone = document.getElementById("loginMethodPhone") as HTMLButtonElement | null
+    const loginMethodQr = document.getElementById("loginMethodQr") as HTMLButtonElement | null
+    const loginQrPanel = document.getElementById("loginQrPanel") as HTMLDivElement | null
+    if (!loginPasswordHint || !loginMethodSwitch || !loginMethodPhone || !loginMethodQr || !loginQrPanel) {
+        throw new Error("Required login elements are missing.")
+    }
     const loginDiv = document.getElementById("login") as HTMLDivElement | null
     const loginStatus = document.getElementById("loginStatus") as HTMLDivElement | null
     const loginStatusText = document.getElementById("loginStatusText") as HTMLSpanElement | null
@@ -394,6 +437,11 @@ function getLoginElements(): LoginElements {
         loginPasswordInput,
         loginPasswordSubmit,
         loginResetLogin,
+        loginPasswordHint,
+        loginMethodSwitch,
+        loginMethodPhone,
+        loginMethodQr,
+        loginQrPanel,
     }
 }
 
@@ -406,6 +454,9 @@ type LoginUi = {
     clearError: () => void
     setStep: (step: LoginStep) => void
     getStep: () => LoginStep
+    setMethod: (method: LoginMethod) => void
+    getMethod: () => LoginMethod
+    setPasswordHint: (hint?: string) => void
     setBusy: (busy: boolean) => void
     isBusy: () => boolean
     setPhoneValue: (value: string) => void
@@ -421,21 +472,43 @@ function createLoginUi(): LoginUi {
     const elements = getLoginElements()
     const state = {
         step: "phone" as LoginStep,
+        method: "phone" as LoginMethod,
         busy: false,
         codeDeferred: null as Deferred<string> | null,
         passwordDeferred: null as Deferred<string> | null,
     }
 
-    const stepLabels: Record<LoginStep, string> = {
-        phone: "Step 1 of 3",
-        code: "Step 2 of 3",
-        password: "Step 3 of 3",
+    const stepLabels: Record<LoginMethod, Partial<Record<LoginStep, string>>> = {
+        phone: {
+            phone: "Step 1 of 3",
+            code: "Step 2 of 3",
+            password: "Step 3 of 3",
+        },
+        qr: {
+            qr: "Step 1 of 2",
+            password: "Step 2 of 2",
+        },
+    }
+
+    function syncMethodSwitch() {
+        const entryStep = state.step === "phone" || state.step === "qr"
+        elements.loginMethodSwitch.hidden = !entryStep
+        for (const button of [elements.loginMethodPhone, elements.loginMethodQr]) {
+            const active = button.dataset.method === state.method
+            button.classList.toggle("is-active", active)
+            button.setAttribute("aria-selected", String(active))
+            button.tabIndex = active ? 0 : -1
+            button.disabled = state.busy
+        }
+        elements.loginDiv.dataset.method = state.method
+        elements.loginResetLogin.textContent = state.method === "qr" ? "Start over" : "Use a different number"
     }
 
     function syncInputState() {
         const phoneActive = state.step === "phone"
         const codeActive = state.step === "code"
         const passwordActive = state.step === "password"
+        syncMethodSwitch()
 
         elements.phoneInput.disabled = state.busy || !phoneActive
         elements.loginButton.disabled = state.busy || !phoneActive
@@ -455,10 +528,16 @@ function createLoginUi(): LoginUi {
 
     function setStep(step: LoginStep) {
         state.step = step
+        if (step === "phone" || step === "code") {
+            state.method = "phone"
+        } else if (step === "qr") {
+            state.method = "qr"
+        }
         elements.loginPhoneForm.hidden = step !== "phone"
         elements.loginCodeForm.hidden = step !== "code"
         elements.loginPasswordForm.hidden = step !== "password"
-        elements.loginStepIndicator.textContent = stepLabels[step]
+        elements.loginQrPanel.hidden = step !== "qr"
+        elements.loginStepIndicator.textContent = stepLabels[state.method][step] ?? ""
         syncInputState()
         clearError()
 
@@ -506,6 +585,17 @@ function createLoginUi(): LoginUi {
     function setBusy(busy: boolean) {
         state.busy = busy
         syncInputState()
+    }
+
+    function setMethod(method: LoginMethod) {
+        state.method = method
+        syncInputState()
+    }
+
+    function setPasswordHint(hint?: string) {
+        const trimmed = hint?.trim() ?? ""
+        elements.loginPasswordHint.textContent = trimmed ? ` Hint: ${trimmed}` : ""
+        elements.loginPasswordHint.hidden = !trimmed
     }
 
     function setPhoneValue(value: string) {
@@ -566,6 +656,9 @@ function createLoginUi(): LoginUi {
         clearError,
         setStep,
         getStep: () => state.step,
+        setMethod,
+        getMethod: () => state.method,
+        setPasswordHint,
         setBusy,
         isBusy: () => state.busy,
         setPhoneValue,
@@ -592,15 +685,129 @@ function submitForm(form: HTMLFormElement) {
     }
 }
 
-function cancelLoginFlow() {
+const qrPanel = createQrLoginPanel(loginUi.elements.loginQrPanel)
+
+/** Starts a new sign-in attempt, cancelling (and disconnecting) any previous one. */
+function beginLoginAttempt() {
+    abortLoginAttempt()
+    loginAbortController = new AbortController()
+    return { attemptId: loginAttempt, signal: loginAbortController.signal }
+}
+
+function abortLoginAttempt() {
     loginAttempt += 1
+    loginAbortController?.abort()
+    loginAbortController = null
     loginUi.cancelPending(LOGIN_CANCELLED)
+    qrPanel.stop()
+}
+
+function readSavedLoginMethod(): LoginMethod | null {
+    try {
+        const saved = localStorage.getItem(LOGIN_METHOD_STORAGE_KEY)
+        return saved === "qr" || saved === "phone" ? saved : null
+    } catch {
+        return null
+    }
+}
+
+function getPreferredLoginMethod(): LoginMethod {
+    // You can't scan your own phone's screen, so phones default to the phone-number flow.
+    return readSavedLoginMethod() ?? (isCompactViewport() ? "phone" : "qr")
+}
+
+/** Shows the first step of the selected sign-in method (and starts a QR attempt for "qr"). */
+function showLoginEntry(method: LoginMethod = loginUi.getMethod()) {
+    if (method === "qr") {
+        void startQrLogin()
+    } else {
+        loginUi.setStep("phone")
+    }
+}
+
+function switchLoginMethod(method: LoginMethod) {
+    if (loginUi.isBusy() || (loginUi.getMethod() === method && (loginUi.getStep() === "phone" || loginUi.getStep() === "qr"))) {
+        return
+    }
+    try {
+        localStorage.setItem(LOGIN_METHOD_STORAGE_KEY, method)
+    } catch {}
+    abortLoginAttempt()
+    loginUi.clearStatus()
+    loginUi.clearError()
+    showLoginEntry(method)
+}
+
+function cancelLoginFlow() {
+    abortLoginAttempt()
     loginUi.setBusy(false)
     loginUi.clearStatus()
     loginUi.clearError()
     loginUi.elements.loginCodeInput.value = ""
     loginUi.elements.loginPasswordInput.value = ""
-    loginUi.setStep("phone")
+    loginUi.setPasswordHint()
+    showLoginEntry()
+}
+
+function expireCookie(name: string) {
+    document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`
+}
+
+function getCookie(name: string): string | null {
+    const value = `; ${document.cookie}`
+    const parts = value.split(`; ${name}=`)
+    if (parts.length === 2) {
+        const cookieValue = parts.pop()?.split(";").shift() || null
+        return cookieValue ? decodeURIComponent(cookieValue) : null
+    }
+    return null
+}
+
+function createLoginConfig(phone: string) {
+    const apiIdFromEnv = 20227969
+    const apiHashFromEnv = "3fc5e726fcc1160a81704958b2243109"
+
+    return {
+        apiId: Number(apiIdFromEnv),
+        apiHash: String(apiHashFromEnv),
+        chunkSize: 1024 ** 3 * 2,
+        phone,
+    }
+}
+
+/** How a signed-in session is remembered for auto-login on the next visit. */
+type LoginIdentity = {
+    /** Phone number; stored in the `phone` cookie exactly like a phone-number login. */
+    phone?: string
+    /** Telegram user id, used only when the account's phone number is not available. */
+    userId?: string
+    /** Text shown in the sidebar account card; defaults to the phone number. */
+    label?: string
+}
+
+function describeAccount(account: TelegramAccount): string {
+    if (account.phone) return account.phone
+    if (account.username) return `@${account.username}`
+    const name = [account.firstName, account.lastName].filter(Boolean).join(" ")
+    return name || `Telegram user ${account.id}`
+}
+
+function identityFromAccount(account: TelegramAccount): LoginIdentity {
+    return account.phone
+        ? { phone: account.phone, label: account.phone }
+        : { userId: account.id, label: describeAccount(account) }
+}
+
+function persistLoginIdentity(identity: LoginIdentity) {
+    if (identity.phone) {
+        document.cookie = `phone=${encodeURIComponent(identity.phone)}; path=/`
+        expireCookie(ACCOUNT_COOKIE)
+    } else if (identity.userId) {
+        // The stored Telegram session itself is not keyed by phone, so a user id is
+        // enough to know there is a session worth resuming without any prompt.
+        document.cookie = `${ACCOUNT_COOKIE}=${encodeURIComponent(identity.userId)}; path=/`
+        expireCookie("phone")
+    }
 }
 
 function clearStoredSession() {
@@ -646,7 +853,8 @@ async function logout() {
     activeConfig = null
     pendingShareFiles = null
 
-    document.cookie = "phone=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT"
+    expireCookie("phone")
+    expireCookie(ACCOUNT_COOKIE)
     clearStoredSession()
 
     const fileBrowserDiv = document.getElementById("fileBrowser")
@@ -655,6 +863,7 @@ async function logout() {
     }
     document.body.classList.remove("file-browser-active", "fx-selecting")
 
+    loginUi.setMethod(getPreferredLoginMethod())
     cancelLoginFlow()
     loginUi.setVisible(true)
     loginUi.setPhoneValue("")
@@ -662,11 +871,13 @@ async function logout() {
 }
 
 
-async function finalizeLogin(client: any, config: any, phoneValue: string) {
+async function finalizeLogin(client: any, config: any, identity: LoginIdentity) {
     activeClient = client
     activeConfig = config
+    loginAbortController = null
+    qrPanel.stop()
 
-    document.cookie = `phone=${encodeURIComponent(phoneValue)}; path=/`
+    persistLoginIdentity(identity)
 
     ;(window as any).client = client
     ;(window as any).config = config
@@ -677,7 +888,7 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
     }
     const accountPhone = document.getElementById("accountPhone")
     if (accountPhone) {
-        accountPhone.textContent = phoneValue
+        accountPhone.textContent = identity.label ?? identity.phone ?? ""
     }
 
     const splashDivAtInit = document.getElementById("splash")
@@ -770,6 +981,37 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
     await maybeUploadSharedFiles()
 }
 
+/** Moves to the 2FA step (shared by the phone and QR flows) and waits for the password. */
+async function promptForPassword(attemptId: number, hint?: string): Promise<string> {
+    if (attemptId !== loginAttempt) {
+        throw new Error(LOGIN_CANCELLED)
+    }
+    // GramJS re-asks after a wrong password; stay on the step so its error stays visible.
+    if (loginUi.getStep() !== "password") {
+        loginUi.setStep("password")
+    }
+    loginUi.setPasswordHint(hint)
+    loginUi.elements.loginPasswordInput.value = ""
+    loginUi.setStatus("Enter your Telegram password to continue.", false)
+    loginUi.setBusy(false)
+    loginUi.elements.loginPasswordInput.focus()
+    return await loginUi.waitForPassword()
+}
+
+function showLoginError(error: unknown, fallbackStep: LoginStep) {
+    const info = parseAuthError(error)
+    loginUi.clearStatus()
+    const step = info.step === "phone" || info.step === "qr" ? fallbackStep : info.step
+    if (step && loginUi.getStep() !== step) {
+        loginUi.setStep(step)
+    }
+    if (!info.suppress) {
+        loginUi.showError(info.message)
+    }
+    loginUi.setBusy(false)
+    return info
+}
+
 async function startLogin(phoneNumber: string, options: { auto?: boolean } = {}) {
     const phoneValue = phoneNumber.trim()
     if (phoneValue === "") {
@@ -777,7 +1019,7 @@ async function startLogin(phoneNumber: string, options: { auto?: boolean } = {})
         return
     }
 
-    const attemptId = ++loginAttempt
+    const { attemptId, signal } = beginLoginAttempt()
 
     loginUi.setVisible(true)
     loginUi.setStep("phone")
@@ -791,46 +1033,33 @@ async function startLogin(phoneNumber: string, options: { auto?: boolean } = {})
         true,
     )
 
-    const apiIdFromEnv = 20227969
-    const apiHashFromEnv = "3fc5e726fcc1160a81704958b2243109"
-
-    const config = {
-        apiId: Number(apiIdFromEnv),
-        apiHash: String(apiHashFromEnv),
-        chunkSize: 1024 ** 3 * 2,
-        phone: phoneValue,
-    }
+    const config = createLoginConfig(phoneValue)
 
     try {
         const Telegram = await getTelegramModule()
         const client = await Telegram.init(config, {
+            signal,
             getPhoneCode: async () => {
                 if (attemptId !== loginAttempt) {
                     throw new Error(LOGIN_CANCELLED)
                 }
-                loginUi.setStep("code")
+                if (loginUi.getStep() !== "code") {
+                    loginUi.setStep("code")
+                }
                 loginUi.elements.loginCodeInput.value = ""
                 loginUi.setStatus("Check Telegram for your login code.", false)
                 loginUi.setBusy(false)
+                loginUi.elements.loginCodeInput.focus()
                 return await loginUi.waitForCode()
             },
-            getPassword: async () => {
-                if (attemptId !== loginAttempt) {
-                    throw new Error(LOGIN_CANCELLED)
-                }
-                loginUi.setStep("password")
-                loginUi.elements.loginPasswordInput.value = ""
-                loginUi.setStatus("Enter your Telegram password to continue.", false)
-                loginUi.setBusy(false)
-                return await loginUi.waitForPassword()
-            },
+            getPassword: (hint) => promptForPassword(attemptId, hint),
             onError: (error: unknown) => {
                 if (attemptId !== loginAttempt) {
                     return
                 }
                 const info = parseAuthError(error)
                 loginUi.clearStatus()
-                if (info.step) {
+                if (info.step && loginUi.getStep() !== info.step) {
                     loginUi.setStep(info.step)
                 }
                 if (!info.suppress) {
@@ -846,20 +1075,160 @@ async function startLogin(phoneNumber: string, options: { auto?: boolean } = {})
 
         loginUi.setStatus("Signed in. Preparing your workspace...", true)
         loginUi.setBusy(true)
-        await finalizeLogin(client, config, phoneValue)
+        await finalizeLogin(client, config, { phone: phoneValue })
+    } catch (error) {
+        if (attemptId !== loginAttempt) {
+            return
+        }
+        showLoginError(error, "phone")
+    }
+}
+
+type QrLoginDriver = (config: ReturnType<typeof createLoginConfig>, handlers: QrLoginHandlers) => Promise<any>
+
+async function getQrLoginDriver(): Promise<QrLoginDriver> {
+    if (isLocalMockQrLoginUrl()) {
+        const { createMockQrLoginDriver } = await import("./mockQrLogin")
+        return createMockQrLoginDriver(new URL(window.location.href).searchParams.get("qr-state"))
+    }
+    const Telegram = await getTelegramModule()
+    return Telegram.initWithQrCode
+}
+
+/**
+ * QR-code sign-in: shows rotating login tokens for another Telegram app to scan,
+ * then continues with the shared 2FA step and persists the session like a phone login.
+ */
+async function startQrLogin() {
+    const { attemptId, signal } = beginLoginAttempt()
+    const isStale = () => attemptId !== loginAttempt
+
+    loginUi.setVisible(true)
+    loginUi.setBusy(false)
+    loginUi.setStep("qr")
+    loginUi.clearError()
+    loginUi.setPasswordHint()
+    qrPanel.showLoading()
+
+    const idleTimer = window.setTimeout(() => {
+        if (isStale() || loginUi.getStep() !== "qr") return
+        const state = qrPanel.getState()
+        if (state === "ready" || state === "expired" || state === "loading") {
+            abortLoginAttempt()
+            loginUi.clearStatus()
+            qrPanel.showPaused()
+        }
+    }, QR_LOGIN_IDLE_LIMIT_MS)
+
+    const config = createLoginConfig("")
+    try {
+        const [driver, { buildTelegramLoginUrl }] = await Promise.all([getQrLoginDriver(), import("./qrCode")])
+        if (isStale()) {
+            return
+        }
+        const client = await driver(config, {
+            signal,
+            onQrCode: ({ token, expiresAt }) => {
+                if (isStale() || loginUi.getStep() !== "qr") {
+                    return
+                }
+                void qrPanel.showCode(buildTelegramLoginUrl(token), expiresAt)
+            },
+            onScanned: () => {
+                if (isStale()) {
+                    return
+                }
+                window.clearTimeout(idleTimer)
+                qrPanel.showScanned()
+                loginUi.clearError()
+                loginUi.setBusy(true)
+            },
+            getPassword: (hint) => promptForPassword(attemptId, hint),
+            onError: (error: unknown) => {
+                if (isStale()) {
+                    return
+                }
+                // GramJS only reports recoverable errors here (e.g. a wrong 2FA password) and retries.
+                showLoginError(error, loginUi.getStep() === "password" ? "password" : "qr")
+            },
+        })
+
+        if (isStale()) {
+            void client?.disconnect?.().catch?.(() => undefined)
+            return
+        }
+
+        window.clearTimeout(idleTimer)
+        loginUi.setStatus("Signed in. Preparing your workspace...", true)
+        loginUi.setBusy(true)
+        const Telegram = await getTelegramModule()
+        const account = await Telegram.getSignedInAccount(client)
+        if (isStale()) {
+            return
+        }
+        config.phone = account.phone ?? ""
+        await finalizeLogin(client, config, identityFromAccount(account))
+    } catch (error) {
+        window.clearTimeout(idleTimer)
+        if (isStale()) {
+            return
+        }
+        // Any failure that ends the attempt returns to the QR panel with a retry button.
+        const info = parseAuthError(error)
+        loginUi.clearStatus()
+        loginUi.setBusy(false)
+        loginUi.elements.loginPasswordInput.value = ""
+        if (loginUi.getStep() !== "qr") {
+            loginUi.setStep("qr")
+        }
+        if (!info.suppress) {
+            loginUi.showError(info.message)
+        }
+        qrPanel.showError()
+    }
+}
+
+/**
+ * Auto-login for sessions remembered by user id (QR logins on accounts whose phone
+ * number is not visible). Never starts an interactive sign-in on its own.
+ */
+async function resumeSavedSession() {
+    const { attemptId, signal } = beginLoginAttempt()
+    loginUi.setVisible(true)
+    loginUi.setStep(loginUi.getMethod() === "qr" ? "qr" : "phone")
+    if (loginUi.getStep() === "qr") {
+        qrPanel.showLoading("Restoring your session…")
+    }
+    loginUi.clearError()
+    loginUi.setBusy(true)
+    loginUi.setStatus("Signing you in with your saved session...", true)
+
+    const config = createLoginConfig("")
+    try {
+        const Telegram = await getTelegramModule()
+        const client = await Telegram.resumeStoredSession(config, signal)
+        const account = await Telegram.getSignedInAccount(client)
+        if (attemptId !== loginAttempt) {
+            void client.disconnect().catch(() => undefined)
+            return
+        }
+        config.phone = account.phone ?? ""
+        loginUi.setStatus("Signed in. Preparing your workspace...", true)
+        await finalizeLogin(client, config, identityFromAccount(account))
     } catch (error) {
         if (attemptId !== loginAttempt) {
             return
         }
         const info = parseAuthError(error)
-        loginUi.clearStatus()
-        if (info.step) {
-            loginUi.setStep(info.step)
+        if (getErrorText(error).includes("SESSION_NOT_AUTHORIZED")) {
+            expireCookie(ACCOUNT_COOKIE)
         }
+        loginUi.clearStatus()
+        loginUi.setBusy(false)
+        showLoginEntry()
         if (!info.suppress) {
             loginUi.showError(info.message)
         }
-        loginUi.setBusy(false)
     }
 }
 
@@ -936,6 +1305,27 @@ function wireLoginHandlers() {
         }
     })
 
+    for (const button of [elements.loginMethodPhone, elements.loginMethodQr]) {
+        button.addEventListener("click", () => {
+            switchLoginMethod(button.dataset.method === "qr" ? "qr" : "phone")
+        })
+    }
+
+    elements.loginMethodSwitch.addEventListener("keydown", (event) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+            return
+        }
+        event.preventDefault()
+        const next = loginUi.getMethod() === "qr" ? "phone" : "qr"
+        switchLoginMethod(next)
+        ;(next === "qr" ? elements.loginMethodQr : elements.loginMethodPhone).focus()
+    })
+
+    qrPanel.onRetry(() => {
+        loginUi.clearStatus()
+        void startQrLogin()
+    })
+
     elements.loginChangePhone.addEventListener("click", () => {
         cancelLoginFlow()
     })
@@ -986,6 +1376,16 @@ window.addEventListener("load", async () => {
         return
     }
 
+    loginUi.setMethod(getPreferredLoginMethod())
+
+    if (isLocalMockQrLoginUrl()) {
+        document.getElementById("splash")?.remove()
+        loginUi.setVisible(true)
+        const method = new URL(window.location.href).searchParams.get("method")
+        showLoginEntry(method === "phone" ? "phone" : "qr")
+        return
+    }
+
     if ("serviceWorker" in navigator) {
         try {
             const registration = await navigator.serviceWorker.register(
@@ -1020,25 +1420,18 @@ window.addEventListener("load", async () => {
         await requestShareTargetFiles()
     }
 
-    function getCookie(name: string): string | null {
-        const value = `; ${document.cookie}`
-        const parts = value.split(`; ${name}=`)
-        if (parts.length === 2) {
-            const cookieValue = parts.pop()?.split(";").shift() || null
-            return cookieValue ? decodeURIComponent(cookieValue) : null
-        }
-        return null
-    }
-
     const phone = getCookie("phone")
+    const savedAccountId = getCookie(ACCOUNT_COOKIE)
 
     loginUi.setVisible(true)
 
     if (phone) {
         loginUi.setPhoneValue(phone)
         void startLogin(phone, { auto: true })
+    } else if (savedAccountId) {
+        void resumeSavedSession()
     } else {
-        loginUi.setStep("phone")
+        showLoginEntry()
     }
 
     const splashDiv = document.getElementById("splash")

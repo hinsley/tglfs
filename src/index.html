@@ -47,13 +47,38 @@
                     <h1 class="auth-title">Sign in</h1>
                     <p class="auth-subtitle">Use your Telegram account to access your encrypted files.</p>
                 </div>
+                <div id="loginMethodSwitch" class="auth-methods" role="tablist" aria-label="Sign-in method">
+                    <button id="loginMethodPhone" class="auth-method" type="button" role="tab" data-method="phone"
+                        aria-controls="loginPhoneForm" aria-selected="true" data-icon="smartphone">Phone number</button>
+                    <button id="loginMethodQr" class="auth-method" type="button" role="tab" data-method="qr"
+                        aria-controls="loginQrPanel" aria-selected="false" data-icon="qrCode">QR code</button>
+                </div>
                 <div id="loginStepIndicator" class="auth-step">Step 1 of 3</div>
                 <div id="loginStatus" class="auth-status" role="status" aria-live="polite" hidden>
                     <span class="fx-spinner fx-spinner--sm" aria-hidden="true"></span>
                     <span id="loginStatusText"></span>
                 </div>
                 <div id="loginError" class="auth-error" role="alert" aria-live="assertive" hidden></div>
-                <form id="loginPhoneForm" class="auth-form" autocomplete="on">
+                <div id="loginQrPanel" class="auth-qr" role="tabpanel" aria-labelledby="loginMethodQr" data-state="loading" hidden>
+                    <div class="auth-qr-frame">
+                        <div id="loginQrCode" class="auth-qr-code" role="img" aria-label="QR code for signing in with Telegram"></div>
+                        <div class="auth-qr-overlay" aria-hidden="true">
+                            <span class="auth-qr-overlay-icon"></span>
+                            <span id="loginQrOverlayText" class="auth-qr-overlay-text"></span>
+                        </div>
+                        <button id="loginQrRetry" class="fx-btn fx-btn-primary auth-qr-retry" type="button" data-icon="refresh" hidden>Try again</button>
+                    </div>
+                    <div class="auth-qr-meta" aria-live="polite">
+                        <div class="auth-qr-timer" aria-hidden="true"><span id="loginQrTimerFill" class="auth-qr-timer-fill"></span></div>
+                        <span id="loginQrCaption" class="auth-qr-caption">Generating a secure code…</span>
+                    </div>
+                    <ol class="auth-qr-steps">
+                        <li><span>Open <strong>Telegram</strong> on your phone</span></li>
+                        <li><span>Go to <strong>Settings → Devices → Link Desktop Device</strong></span></li>
+                        <li><span>Scan this code, then confirm on your phone</span></li>
+                    </ol>
+                </div>
+                <form id="loginPhoneForm" class="auth-form" role="tabpanel" aria-labelledby="loginMethodPhone" autocomplete="on">
                     <label class="fx-field">
                         <span class="fx-field-label">Phone number</span>
                         <input type="tel" id="phone" class="fx-input fx-input--lg" name="phone" placeholder="+1 555 555 5555"
@@ -87,7 +112,7 @@
                     <div class="auth-links">
                         <button id="loginResetLogin" type="button" class="fx-link">Use a different number</button>
                     </div>
-                    <p class="auth-hint">This is your Telegram two-step verification password.</p>
+                    <p class="auth-hint">This is your Telegram two-step verification password.<span id="loginPasswordHint" hidden></span></p>
                 </form>
             </div>
             <p class="auth-footer">Files are encrypted in your browser and stored in your Telegram Saved Messages.</p>
