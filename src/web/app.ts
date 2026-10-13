@@ -5,6 +5,8 @@ import { begin as beginTransfer, type TransferHandle } from "./transfers"
 import { mountTransferTray } from "./transferTray"
 import { createQrLoginPanel } from "./qrLoginPanel"
 import { mountTransferAttention } from "./transferAttention"
+import { clearRecentItems } from "./recentItems"
+import { clearStorageSummaryCache } from "./storageStats"
 
 type TelegramModule = typeof import("../telegram")
 type BrowserModule = typeof import("./browser")
@@ -826,6 +828,9 @@ function clearStoredSession() {
     } catch (error) {
         console.warn("Failed to clear stored session", error)
     }
+    // Account-specific conveniences: palette "Recent" items and the cached storage summary.
+    clearRecentItems()
+    clearStorageSummaryCache()
 }
 
 async function logout() {

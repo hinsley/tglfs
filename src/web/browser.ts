@@ -67,6 +67,21 @@ import {
     type HistoryMessageInput,
 } from "./folderHistory"
 import { HistoryPanel, formatHistoryDay, formatHistoryTime, renderHistoryBanner } from "./folderHistoryView"
+import type { BrowserHooks } from "./browserHooks"
+import { initCommandPalette, type CommandPalette } from "./commandPalette"
+import { initPasteUpload } from "./pasteUpload"
+import { rememberRecentItem } from "./recentItems"
+import {
+    createLocationResolver,
+    formatLocation,
+    locationHtml,
+    readSearchScope,
+    renderSearchScopeBar,
+    writeSearchScope,
+    type SearchScope,
+} from "./searchScope"
+import { openShortcutsSheet } from "./shortcutsSheet"
+import { mountStorageSummary, STORAGE_CHANGED_EVENT } from "./storageSummary"
 
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"])
 const VIDEO_EXTS = new Set(["mp4", "webm", "mov", "avi", "mkv", "m4v"])
@@ -201,6 +216,66 @@ let suppressNextClick = false
 let keyboardNavigation = false
 let currentBarActions = new Map<string, SelectionAction>()
 const folderCache = new Map<string, FolderBrowserEntry>()
+let commandPalette: CommandPalette | null = null
+let storageSummary: ReturnType<typeof mountStorageSummary> | null = null
+const locationResolver = createLocationResolver({
+    known: (folderId) => folderCache.get(folderId)?.data,
+    fetch: async (folderId) => activeBrowserClient
+        ? (await getFolderRecord(activeBrowserClient, folderId))?.data ?? null
+        : null,
+})
+
+/* Search scope: "This folder" (default inside folders) or "Everywhere" (default at All files). */
+
+function currentSearchScope(): SearchScope {
+    return readSearchScope(!state.currentFolder)
+}
+
+/** True while the top-bar search lists matches from every folder instead of the current one. */
+function isGlobalSearch() {
+    return state.query !== "" && currentSearchScope() === "everywhere"
+}
+
+/** Parent filter for listings: none (all folders) during a global search. */
+function listingParentFolderId() {
+    return isGlobalSearch() ? undefined : currentDirectoryParentId()
+}
+
+function entryParentFolderId(entry: BrowserEntry) {
+    if (isFileEntry(entry)) return fileCardParentId(entry.data)
+    if (isFolderEntry(entry)) return normalizeParentId(entry.data.parentFolderId)
+    return null
+}
+
+/** Location of a global-search result, resolved from cached folders or (asynchronously) Telegram. */
+function entryLocationHtml(entry: BrowserEntry) {
+    const parentId = entryParentFolderId(entry)
+    if (parentId === null) return ""
+    const names = locationResolver.cached(parentId)
+    if (names === undefined) return `<span data-location-folder="${escapeHtml(parentId)}">${locationHtml(null, true)}</span>`
+    return locationHtml(names === null ? null : formatLocation(names))
+}
+
+function hydrateEntryLocations() {
+    document.querySelectorAll<HTMLElement>("[data-location-folder]").forEach((element) => {
+        const folderId = element.dataset.locationFolder ?? ""
+        delete element.dataset.locationFolder
+        void locationResolver.trail(folderId).then((names) => {
+            if (element.isConnected) element.innerHTML = locationHtml(names === null ? null : formatLocation(names))
+        })
+    })
+}
+
+function updateSearchScopeBar() {
+    const bar = document.getElementById("searchScopeBar")
+    if (!bar) return
+    renderSearchScopeBar(bar, {
+        query: state.query,
+        atRoot: !state.currentFolder,
+        folderName: state.currentFolder?.data.name ?? null,
+        scope: currentSearchScope(),
+    })
+}
 
 /* ------------------------------------------------------------- Helpers */
 
@@ -296,6 +371,7 @@ function renderBrowserLoading(message = "Loading files...") {
     renderListingSkeleton()
 
     updateFolderLocation()
+    updateSearchScopeBar()
     const pageInfo = document.getElementById("browserPageInfo")
     if (pageInfo) pageInfo.textContent = message
     const prevButton = document.getElementById("browserPrevPage") as HTMLButtonElement | null
@@ -512,6 +588,7 @@ async function navigateToFolder(
     }
 
     rememberFolder(target)
+    rememberRecentItem({ kind: "folder", folderId: target.data.folderId, name: target.data.name, at: Date.now() })
     const knownTrail = options.trail
     state.currentFolderTrail = knownTrail ?? (previousFolder
         ? [...(state.currentFolderTrail.length ? state.currentFolderTrail : [previousFolder]), target]
@@ -653,11 +730,14 @@ function renderList(items: BrowserEntry[]) {
     const rows = document.getElementById("browserRows")
     if (!rows) return
     const fragment = document.createDocumentFragment()
+    const global = isGlobalSearch()
     for (const [index, entry] of items.entries()) {
         const name = getEntryName(entry)
         const safeName = escapeHtml(name)
         const path = entry.kind === "missing-file" ? getEntryPath(entry) : ""
-        const sub = path ? escapeHtml(path) : escapeHtml(getEntryMetaText(entry))
+        const sub = global
+            ? `${entryLocationHtml(entry)}<span class="fx-loc-meta">${escapeHtml(getEntryMetaText(entry))}</span>`
+            : path ? escapeHtml(path) : escapeHtml(getEntryMetaText(entry))
         const row = document.createElement("div")
         row.className = "fx-row"
         row.setAttribute("role", "row")
@@ -669,7 +749,7 @@ function renderList(items: BrowserEntry[]) {
                 ${fileKindIcon(getEntryKind(entry))}
                 <div class="fx-name-wrap">
                     <div class="fx-name-line"><span class="fx-name" title="${safeName}">${safeName}</span>${getEntryBadge(entry)}</div>
-                    <div class="fx-sub${path ? " is-path" : ""}">${sub}</div>
+                    <div class="fx-sub${path || global ? " is-path" : ""}${global ? " is-location" : ""}">${sub}</div>
                 </div>
             </div>
             <div class="fx-cell fx-cell-size">${entry.kind === "folder" ? "—" : escapeHtml(getEntrySizeText(entry))}</div>
@@ -685,6 +765,7 @@ function renderGrid(items: BrowserEntry[]) {
     const grid = document.getElementById("browserGrid")
     if (!grid) return
     const fragment = document.createDocumentFragment()
+    const global = isGlobalSearch()
     for (const [index, entry] of items.entries()) {
         const name = getEntryName(entry)
         const safeName = escapeHtml(name)
@@ -699,7 +780,7 @@ function renderGrid(items: BrowserEntry[]) {
             ${moreButtonHtml(name)}
             <div class="fx-tile-body">
                 <div class="fx-tile-name" title="${safeName}">${safeName}</div>
-                <div class="fx-tile-meta">${escapeHtml(getEntryMetaText(entry))}</div>
+                <div class="fx-tile-meta${global ? " is-location" : ""}">${global ? entryLocationHtml(entry) : escapeHtml(getEntryMetaText(entry))}</div>
             </div>`
         attachEntryHandlers(tile, entry, index)
         fragment.appendChild(tile)
@@ -715,11 +796,12 @@ function renderEmptyState(visible: boolean) {
         return
     }
     const searching = state.query.length > 0
+    const global = isGlobalSearch()
     const title = searching
-        ? `No results for “${state.query}”`
+        ? `No results for “${state.query}”${global ? " anywhere" : ""}`
         : state.currentFolder ? "This folder is empty" : "No files yet"
     const text = searching
-        ? "Try a different name, or search for a UFID."
+        ? global ? "Try a different name, or search for a UFID." : "Try a different name, or search everywhere."
         : "Upload files or drop them here. Everything is encrypted in your browser before it reaches Telegram."
     empty.innerHTML = `
         <span class="fx-empty-art">${icon(searching ? "search" : "cloudUp")}</span>
@@ -727,7 +809,8 @@ function renderEmptyState(visible: boolean) {
         <p>${escapeHtml(text)}</p>
         <div class="fx-empty-actions">
             ${searching
-                ? `<button type="button" class="fx-btn fx-btn-secondary" data-empty-action="clear">${icon("close")}Clear search</button>`
+                ? `${global ? "" : `<button type="button" class="fx-btn fx-btn-primary" data-empty-action="everywhere">${icon("globe")}Search everywhere</button>`}
+                   <button type="button" class="fx-btn fx-btn-secondary" data-empty-action="clear">${icon("close")}Clear search</button>`
                 : `<button type="button" class="fx-btn fx-btn-primary" data-empty-action="upload">${icon("upload")}Upload files</button>
                    <button type="button" class="fx-btn fx-btn-secondary" data-empty-action="folder">${icon("folderPlus")}New folder</button>`}
         </div>`
@@ -771,9 +854,11 @@ function renderBrowser(items: BrowserEntry[]) {
     renderGrid(items)
     renderEmptyState(items.length === 0)
     updateFolderLocation()
+    updateSearchScopeBar()
     updatePager(items)
     applyViewMode()
     updateSelectionDisplay()
+    hydrateEntryLocations()
 }
 
 function applyViewMode() {
@@ -912,6 +997,12 @@ function getAllSelectionActions(entries: BrowserEntry[]): SelectionAction[] {
     if (single && isFileEntry(single)) {
         actions.push({ key: "download", id: "browserActionDownload", menuId: "actionDownloadItem", label: "Download", icon: "download", run: () => downloadEntry(single) })
     }
+    // Global search results come from many folders: offer "Show in folder", and leave Move to the folder view
+    // (moves tombstone the source folder's manifest, which is the folder being viewed).
+    const globalResults = isGlobalSearch()
+    if (globalResults && single && (isFileEntry(single) || isFolderEntry(single))) {
+        actions.push({ key: "reveal", id: "browserActionReveal", menuId: "actionRevealItem", label: "Show in folder", shortLabel: "Show", icon: "folder", run: () => void revealEntryInFolder(single) })
+    }
     const selectionItems = toSelectionItems(entries)
     for (const extra of getExtraBrowserActions()) {
         if (!extra.isVisible(selectionItems)) continue
@@ -929,7 +1020,7 @@ function getAllSelectionActions(entries: BrowserEntry[]): SelectionAction[] {
     if (single && (isFileEntry(single) || isFolderEntry(single))) {
         actions.push({ key: "rename", id: "browserActionRename", menuId: "actionRenameItem", label: "Rename", icon: "pencil", hint: "F2", run: () => renameEntry(single) })
     }
-    if (allFilesOrFolders && client) {
+    if (allFilesOrFolders && client && !globalResults) {
         actions.push({ key: "move", id: "browserActionMove", menuId: "actionMoveItem", label: "Move", icon: "move", run: () => moveSelectedEntries(client) })
     }
     if (entries.length > 0 && files.length === entries.length) {
@@ -1344,7 +1435,8 @@ function folderEntryFromRecord(record: { msgId: number; date: number; data: Tglf
 
 async function loadDirectoryPage(
     client: any,
-    parentFolderId: string,
+    /** Undefined lists matches from every folder (global search). */
+    parentFolderId: string | undefined,
     options: { folderOffsetId?: number; fileOffsetId?: number } = {},
 ) {
     const items: BrowserEntry[] = []
@@ -1463,7 +1555,8 @@ async function loadFirstPage(client: any, refreshSequence = browserRefreshSequen
     state.lastClickedIndex = null
     state.totalPages = null
     state.totalItems = null
-    const parentFolderId = currentDirectoryParentId()
+    const parentFolderId = listingParentFolderId()
+    if (!parentFolderId) locationResolver.clear()
     const countPromise = countDirectoryEntries(client, {
         parentFolderId,
         query: state.query,
@@ -1490,7 +1583,7 @@ async function loadFirstPage(client: any, refreshSequence = browserRefreshSequen
 }
 
 async function loadNextPage(client: any) {
-    const page = await loadDirectoryPage(client, currentDirectoryParentId(), {
+    const page = await loadDirectoryPage(client, listingParentFolderId(), {
         folderOffsetId: state.lastFolderOffsetId,
         fileOffsetId: state.lastOffsetId,
     })
@@ -2347,6 +2440,7 @@ function commitPendingDelete(pending: PendingDelete): Promise<void> {
             await tombstoneFolderInParentManifest(client, record, now)
             await tombstoneFolderTree(client, record, now)
         }
+        window.dispatchEvent(new Event(STORAGE_CHANGED_EVENT))
     }).catch(async (error) => {
         console.error("Deferred delete failed", error)
         for (const id of pending.entryIds) hiddenEntryIds.delete(id)
@@ -2633,6 +2727,14 @@ async function runSingleOpenAction(selected: BrowserEntry | null) {
         return
     }
     if (isFileEntry(selected)) {
+        rememberRecentItem({
+            kind: "file",
+            msgId: selected.msgId,
+            ufid: selected.data.ufid,
+            name: selected.data.name,
+            parentFolderId: fileCardParentId(selected.data),
+            at: Date.now(),
+        })
         await previewModal?.open(selected, getVisiblePreviewEntries())
     }
 }
@@ -3834,7 +3936,15 @@ function isEditableTarget(target: EventTarget | null) {
 async function handleKeydown(event: KeyboardEvent) {
     const browserDiv = document.getElementById("fileBrowser")
     if (!browserDiv || browserDiv.hasAttribute("hidden")) return
-    if (document.querySelector(".fx-dialog-backdrop") || isMenuOpen()) return
+    if (document.querySelector(".fx-dialog-backdrop") || isMenuOpen() || commandPalette?.isOpen()) return
+
+    const mod = event.metaKey || event.ctrlKey
+    if (mod && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "k" && !previewModal?.isOpen()) {
+        // Works from the search box too; "/" stays the shortcut for the search box itself.
+        event.preventDefault()
+        commandPalette?.open()
+        return
+    }
 
     if (previewModal?.isOpen()) {
         if (event.key === "Escape") {
@@ -3850,7 +3960,6 @@ async function handleKeydown(event: KeyboardEvent) {
         return
     }
 
-    const mod = event.metaKey || event.ctrlKey
     if (isEditableTarget(event.target)) {
         if (event.key === "Escape" && (event.target as HTMLElement).id === "browserSearchInput") {
             const input = event.target as HTMLInputElement
@@ -3897,11 +4006,14 @@ async function handleKeydown(event: KeyboardEvent) {
         }
         return
     }
-    if (event.key === "/" || (mod && event.key.toLowerCase() === "k")) {
+    if (event.key === "/" && !mod) {
         event.preventDefault()
-        const input = document.getElementById("browserSearchInput") as HTMLInputElement | null
-        input?.focus()
-        input?.select()
+        focusSearchInput()
+        return
+    }
+    if (event.key === "?" && !mod && !event.altKey) {
+        event.preventDefault()
+        openShortcutsSheet()
         return
     }
     if (mod && event.key.toLowerCase() === "a") {
@@ -3984,6 +4096,155 @@ function wirePreviewChrome() {
     }).observe(modal, { attributes: true, attributeFilter: ["hidden"] })
 }
 
+/* ----------------------------------------- Hooks: palette, paste, storage */
+
+const REVEAL_MAX_PAGES = 20
+const SORT_OPTIONS: Array<{ value: SortMode; label: string }> = [
+    { value: "date_desc", label: "Newest first" },
+    { value: "date_asc", label: "Oldest first" },
+    { value: "name_asc", label: "Name (A–Z)" },
+    { value: "name_desc", label: "Name (Z–A)" },
+    { value: "size_desc", label: "Largest first" },
+    { value: "size_asc", label: "Smallest first" },
+]
+let searchNow: (() => void) | null = null
+
+function focusSearchInput() {
+    const input = document.getElementById("browserSearchInput") as HTMLInputElement | null
+    input?.focus()
+    input?.select()
+}
+
+async function folderEntryById(folderId: string): Promise<FolderBrowserEntry | null> {
+    const cached = folderCache.get(folderId)
+    if (cached) return cached
+    if (!activeBrowserClient) return null
+    const record = await getFolderRecord(activeBrowserClient, folderId).catch(() => null)
+    return record && !record.data.deleted ? folderEntryFromRecord(record) : null
+}
+
+/**
+ * Opens `parentFolderId` and reveals the entry `entryId` in it: pages forward until it shows up, then selects
+ * it (on desktop), scrolls it into view and flashes it. Resolves false when it isn't there.
+ */
+async function revealInFolder(parentFolderId: string, entryId: string): Promise<boolean> {
+    if (parentFolderId === TGLFS_ROOT_PARENT_ID) {
+        await navigateTo(null)
+    } else {
+        const folder = await folderEntryById(parentFolderId)
+        if (!folder) return false
+        await navigateTo(folder)
+    }
+    const client = activeBrowserClient
+    const sequence = browserRefreshSequence
+    let pageIndex = state.pages.findIndex((page) => page.some((entry) => entry.id === entryId))
+    for (let guard = 0; pageIndex === -1 && state.hasMore && client && guard < REVEAL_MAX_PAGES; guard++) {
+        const items = await loadNextPage(client)
+        if (sequence !== browserRefreshSequence) return false
+        if (items.length === 0) break
+        if (items.some((entry) => entry.id === entryId)) pageIndex = state.pages.length - 1
+    }
+    if (pageIndex === -1) return false
+    state.currentPage = pageIndex
+    const page = state.pages[pageIndex]
+    renderBrowser(page)
+    const index = page.findIndex((entry) => entry.id === entryId)
+    if (index === -1) return false
+    if (!isTouchInteraction()) {
+        keyboardNavigation = true
+        selectOnly(page[index], index)
+    }
+    const container = state.viewMode === "grid" ? "#browserGrid" : "#browserRows"
+    document.querySelector<HTMLElement>(`${container} [data-browser-id="${CSS.escape(entryId)}"]`)
+        ?.scrollIntoView({ block: "center" })
+    flashRestoredEntries([entryId])
+    return true
+}
+
+async function revealEntryInFolder(entry: FileBrowserEntry | FolderBrowserEntry) {
+    const parentId = entryParentFolderId(entry)
+    if (parentId === null) return
+    if (!await revealInFolder(parentId, entry.id)) {
+        showUfidToast(`Couldn't find ${quoteName(getEntryName(entry))} in its folder`, { tone: "error" })
+    }
+}
+
+function createBrowserHooks(): BrowserHooks {
+    const isVisible = () => {
+        const browserDiv = document.getElementById("fileBrowser")
+        return !!browserDiv && !browserDiv.hasAttribute("hidden")
+    }
+    return {
+        getClient: () => activeBrowserClient,
+        isBrowserVisible: isVisible,
+        getCurrentFolder: () => state.currentFolder?.data ?? null,
+        getKnownFolders: () => Array.from(folderCache.values(), (entry) => entry.data),
+        getKnownFolder: (folderId) => folderCache.get(folderId)?.data,
+        getSelection: () => {
+            const entries = Array.from(state.selected.values())
+            return {
+                count: entries.length,
+                label: entries.length === 1 ? quoteName(getEntryName(entries[0])) : pluralize(entries.length, "item"),
+                actions: entries.length === 0 ? [] : getSelectionActions(entries).map((action) => ({
+                    key: action.key,
+                    label: action.label,
+                    icon: action.icon,
+                    hint: action.hint,
+                    danger: action.danger,
+                    disabled: action.disabled,
+                    run: action.run,
+                })),
+            }
+        },
+        uploadFiles: (files) => uploadFiles(files),
+        createFolder: () => createFolderHere(),
+        receiveFile: () => receiveFile(),
+        getViewMode: () => state.viewMode,
+        setViewMode: (mode) => setViewMode(mode),
+        getSortOptions: () => SORT_OPTIONS.map((option) => ({ ...option })),
+        getSort: () => state.sort,
+        setSort: (value) => {
+            const select = document.getElementById("browserSortSelect") as HTMLSelectElement | null
+            if (!select || !SORT_OPTIONS.some((option) => option.value === value)) return
+            select.value = value
+            select.dispatchEvent(new Event("change"))
+        },
+        goHome: () => navigateTo(null),
+        goUp: () => goUp(),
+        openFolder: (record) => navigateTo(folderEntryFromRecord(record)),
+        openFolderById: async (folderId) => {
+            const folder = await folderEntryById(folderId)
+            if (!folder) return false
+            await navigateTo(folder)
+            return true
+        },
+        revealFile: async (ref) => {
+            let parentFolderId = ref.parentFolderId
+            let msgId = ref.msgId
+            if (activeBrowserClient) {
+                try {
+                    // The card may have moved (or been re-uploaded) since it was listed.
+                    const fresh = await getFileCardByUfid(activeBrowserClient, ref.ufid)
+                    if (!fresh) return false
+                    parentFolderId = fileCardParentId(fresh.data)
+                    msgId = fresh.msgId
+                } catch (error) {
+                    console.warn("Unable to look up file card", error)
+                }
+            }
+            return revealInFolder(normalizeParentId(parentFolderId), `file:${msgId}`)
+        },
+        searchEverywhere: (query) => {
+            const input = document.getElementById("browserSearchInput") as HTMLInputElement | null
+            if (!input) return
+            writeSearchScope(!state.currentFolder, "everywhere")
+            input.value = query
+            searchNow?.()
+        },
+        focusSearch: focusSearchInput,
+    }
+}
+
 /* --------------------------------------------------------------- Init */
 
 export async function initFileBrowser(client: any, config: Config.Config) {
@@ -3992,6 +4253,9 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         activeBrowserClient = client
         activeBrowserConfig = config
         if (previewModal) (previewModal as any).client = client
+        folderCache.clear()
+        locationResolver.clear()
+        storageSummary?.reset()
         return
     }
     state.initialized = true
@@ -4113,6 +4377,13 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         scheduleSearch(false)
         searchInput.focus()
     })
+    searchNow = () => scheduleSearch(true)
+    document.getElementById("searchScopeBar")?.addEventListener("click", (event) => {
+        const scope = (event.target as HTMLElement).closest<HTMLElement>("[data-search-scope]")?.dataset.searchScope
+        if ((scope !== "folder" && scope !== "everywhere") || scope === currentSearchScope()) return
+        writeSearchScope(!state.currentFolder, scope)
+        scheduleSearch(true)
+    })
 
     /* Sort, view, paging */
     sortSelect.addEventListener("change", () => {
@@ -4198,6 +4469,10 @@ export async function initFileBrowser(client: any, config: Config.Config) {
             searchInput.value = ""
             scheduleSearch(true)
         }
+        if (action === "everywhere") {
+            writeSearchScope(!state.currentFolder, "everywhere")
+            scheduleSearch(true)
+        }
     })
 
     /* Selection chrome */
@@ -4254,6 +4529,13 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     window.addEventListener("keydown", (event) => {
         void handleKeydown(event)
     })
+
+    /* Command palette, paste to upload, storage summary */
+    const hooks = createBrowserHooks()
+    commandPalette = initCommandPalette(hooks)
+    document.getElementById("paletteButton")?.addEventListener("click", () => commandPalette?.open())
+    initPasteUpload(hooks)
+    storageSummary = mountStorageSummary(hooks)
     // A delete still inside its undo window has not been written; leaving the page cancels it. Warn about
     // that (and about interrupting a write in flight) instead of trying to flush async work on unload.
     window.addEventListener("beforeunload", (event) => {
@@ -4268,9 +4550,12 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         const record = await getFolderRecord(client, decodeURIComponent(deepLinkMatch[1])).catch(() => null)
         if (record && !record.data.deleted) {
             await navigateTo(folderEntryFromRecord(record), { push: false })
+            storageSummary?.start()
             return
         }
     }
     writeHistory("replace")
     await doRefresh({ showLoading: true, loadingMessage: "Loading files..." })
+    // The storage summary pages through every file card, so it only starts once the first listing is up.
+    storageSummary?.start()
 }
