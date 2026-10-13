@@ -257,7 +257,19 @@ function usePaginationFixture() {
     return url.searchParams.get("run")?.includes("pagination") ?? false
 }
 
+/** `?mock=folder-browser&slow=1` adds artificial latency to upload parts so transfer UI states can be inspected. */
+function mockTransferDelayMs() {
+    if (typeof window === "undefined") return 0
+    const url = new URL(window.location.href)
+    return url.searchParams.get("slow") === "1" ? 220 : 0
+}
+
+function sleep(ms: number) {
+    return ms > 0 ? new Promise<void>((resolve) => setTimeout(resolve, ms)) : Promise.resolve()
+}
+
 export function createMockFolderBrowserSession() {
+    const transferDelayMs = mockTransferDelayMs()
     const mutableFileCards = fileCards.map((record) => ({ ...record }))
     const mutableFolderRecords = folderRecords.map((record) => ({ ...record }))
     const mutableFolderManifestRecords = folderManifestRecords.map((record) => ({ ...record }))
@@ -410,6 +422,7 @@ export function createMockFolderBrowserSession() {
             return { ...record, peerId: "me" }
         },
         async sendFile(_peer: string, options: { caption?: string; message?: string; file: any }) {
+            await sleep(transferDelayMs)
             const message = options.caption ?? options.message ?? ""
             if (message.length > TELEGRAM_TEXT_MESSAGE_LIMIT) {
                 throw new Error("400: MESSAGE_TOO_LONG (caused by messages.SendMedia)")
@@ -435,6 +448,11 @@ export function createMockFolderBrowserSession() {
             return record?.media ?? ""
         },
         async invoke(request: any) {
+            if (typeof request?.filePart === "number") {
+                // upload.SaveBigFilePart
+                await sleep(transferDelayMs)
+                return true
+            }
             const ids = Array.isArray(request?.id) ? request.id : []
             if (ids.length > 0 && typeof request?.message !== "string") {
                 removeIds(ids)

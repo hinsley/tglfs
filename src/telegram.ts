@@ -58,6 +58,7 @@ import {
     transferFileCard as sharedTransferFileCard,
 } from "../packages/tglfs-cli/src/shared/telegram-files"
 import * as Encryption from "./web/encryption"
+import * as Transfers from "./web/transfers"
 import * as FileProcessing from "./web/fileProcessing"
 import * as Archive from "../packages/tglfs-cli/src/shared/archive"
 import { FileCardData } from "./types/models"
@@ -292,6 +293,290 @@ export async function fileDelete(client: TelegramClient, config: Config.Config) 
     }
 }
 
+function formatFileCardInfo(fileCardData: FileCardData, epochSeconds: number) {
+    const humanReadableFileSize = humanReadableSize(fileCardData.size)
+    const date = new Date(epochSeconds * 1000)
+    const formattedDate = date
+        .toLocaleString("en-US", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+            hour12: false,
+        })
+        .replace(",", "") // Remove the comma between date and time.
+
+    return `Name: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`
+}
+
+const SERVICE_WORKER_READY_TIMEOUT_MS = 10_000
+const SERVICE_WORKER_UNAVAILABLE_MESSAGE =
+    "Downloads need the TGLFS service worker, which isn't running. Reload the page and try again."
+
+/** Waits for the download service worker, failing fast instead of blocking the transfer queue forever. */
+async function waitForDownloadServiceWorker(signal: AbortSignal): Promise<ServiceWorkerRegistration> {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+        throw new Error(SERVICE_WORKER_UNAVAILABLE_MESSAGE)
+    }
+    const registration = await new Promise<ServiceWorkerRegistration>((resolve, reject) => {
+        const cleanup = () => {
+            globalThis.clearTimeout(timer)
+            signal.removeEventListener("abort", onAbort)
+        }
+        const onAbort = () => {
+            cleanup()
+            reject(Transfers.abortError())
+        }
+        const timer = globalThis.setTimeout(() => {
+            cleanup()
+            reject(new Error(SERVICE_WORKER_UNAVAILABLE_MESSAGE))
+        }, SERVICE_WORKER_READY_TIMEOUT_MS)
+        signal.addEventListener("abort", onAbort, { once: true })
+        navigator.serviceWorker.ready.then(
+            (ready) => {
+                cleanup()
+                resolve(ready)
+            },
+            (error) => {
+                cleanup()
+                reject(error)
+            },
+        )
+    })
+    if (!registration.active || !navigator.serviceWorker.controller) {
+        throw new Error(SERVICE_WORKER_UNAVAILABLE_MESSAGE)
+    }
+    return registration
+}
+
+/**
+ * Streams a file card's chunks from Telegram, decrypts and decompresses them, and hands the plaintext to the
+ * service worker download stream. Runs inside a transfer-queue slot (the service worker download stream is a
+ * single global stream, so downloads must never overlap).
+ *
+ * `legacy` selects the old counter scheme (increment by 1 per 1 MiB block) and skips UFID verification.
+ */
+async function runServiceWorkerDownload(
+    client: TelegramClient,
+    fileCardData: FileCardData,
+    password: string,
+    transfer: Transfers.TransferHandle,
+    options: { legacy: boolean },
+) {
+    await gramJsReady
+    const legacy = options.legacy
+    transfer.setPhase(null, { total: fileCardData.size })
+
+    // Request chunk messages by their IDs in the file card.
+    const chunkMsgs: TelegramApi.messages.Messages = await client.getMessages("me", { ids: fileCardData.chunks })
+    transfer.throwIfCancelled()
+
+    const IVBytes = base64ToBytes(fileCardData.IV)
+    // TODO: DRY-ify the salt & counter byte size. Should be
+    // module-level constants.
+    const salt = IVBytes.subarray(0, 16)
+    const aesKey = await Encryption.deriveAESKeyFromPassword(password, salt)
+    let decryptionCounter = IVBytes.slice(16)
+
+    let aesBlockBytesWritten = 0
+    const decryptionBuffer = new Uint8Array(Encryption.ENCRYPTION_CHUNK_SIZE)
+
+    let bytesProcessed = 0
+    // For streaming UFID verification.
+    const UFIDChunkSize = 64 * 1024 // 64 KiB.
+    let ufidRolling = new Uint8Array(0)
+    let ufidPending = new Uint8Array(0)
+    const byteCounterStream = new TransformStream<Uint8Array, Uint8Array>({
+        async transform(chunk, controller) {
+            bytesProcessed += chunk.length
+            transfer.update({ bytes: bytesProcessed })
+            if (!legacy) {
+                // Accumulate data and process in fixed 64 KiB blocks.
+                const combined = new Uint8Array(ufidPending.length + chunk.length)
+                combined.set(ufidPending, 0)
+                combined.set(chunk, ufidPending.length)
+                let offset = 0
+                while (offset + UFIDChunkSize <= combined.length) {
+                    const piece = combined.subarray(offset, offset + UFIDChunkSize)
+                    const toHash = new Uint8Array(ufidRolling.length + UFIDChunkSize)
+                    toHash.set(ufidRolling, 0)
+                    toHash.set(piece, ufidRolling.length)
+                    const hash = await window.crypto.subtle.digest("SHA-256", toHash.buffer)
+                    ufidRolling = new Uint8Array(hash)
+                    offset += UFIDChunkSize
+                }
+                // Save remainder for finalization.
+                ufidPending = combined.subarray(offset)
+            }
+            controller.enqueue(chunk)
+        },
+    })
+
+    const advanceCounter = (bytesDecrypted: number) => {
+        // Legacy behavior: increment the counter by 1 per 1 MiB block (and once for the trailing block set).
+        decryptionCounter = legacy
+            ? Encryption.incrementCounter(decryptionCounter)
+            : Encryption.incrementCounter64By(decryptionCounter, Math.ceil(bytesDecrypted / 16))
+    }
+
+    async function downloadFile(serviceWorkerRegistration: ServiceWorkerRegistration) {
+        const downloadPump = createServiceWorkerDownloadPump(
+            serviceWorkerRegistration,
+            fileCardData.name,
+            byteCounterStream,
+        )
+        let streamError: unknown = null
+        try {
+            // Download each chunk.
+            for (const chunkMsg of chunkMsgs) {
+                let chunkBytesWritten = 0
+                while (chunkBytesWritten < (chunkMsg as any).media.document.size) {
+                    // Stop between parts when the user cancels.
+                    transfer.throwIfCancelled()
+                    // Download the next (up to) `DOWNLOAD_PART_SIZE` bytes of the chunk file.
+                    const chunkPart = await client.invoke(
+                        new Api.upload.GetFile({
+                            location: getFileInfo((chunkMsg as any).media).location,
+                            offset: chunkBytesWritten,
+                            limit: DOWNLOAD_PART_SIZE,
+                            precise: false,
+                            cdnSupported: false,
+                        }),
+                    )
+                    const partBytes = (chunkPart as any).bytes as Uint8Array
+                    chunkBytesWritten += partBytes.length
+
+                    // Write the chunk part to the decryption buffer.
+                    decryptionBuffer.set(partBytes, aesBlockBytesWritten)
+                    aesBlockBytesWritten += partBytes.length
+
+                    // If the decryption buffer is full, decrypt.
+                    if (aesBlockBytesWritten === decryptionBuffer.length) {
+                        const decryptedData = new Uint8Array(
+                            await window.crypto.subtle.decrypt(
+                                {
+                                    name: "AES-CTR",
+                                    counter: decryptionCounter,
+                                    length: 64, // Bit length of the counter block.
+                                },
+                                aesKey,
+                                decryptionBuffer,
+                            ),
+                        )
+                        // Advance counter by number of 16-byte blocks consumed in this call.
+                        advanceCounter(decryptionBuffer.length)
+                        aesBlockBytesWritten = 0
+
+                        await downloadPump.write(decryptedData)
+                    }
+                }
+            }
+
+            // If there is any data left in the decryption buffer, process it.
+            if (aesBlockBytesWritten > 0) {
+                // Decrypt the remaining data.
+                const decryptedData = new Uint8Array(
+                    await window.crypto.subtle.decrypt(
+                        {
+                            name: "AES-CTR",
+                            counter: decryptionCounter,
+                            length: 64, // Bit length of the counter block.
+                        },
+                        aesKey,
+                        decryptionBuffer.subarray(0, aesBlockBytesWritten),
+                    ),
+                )
+                // Advance counter by exact number of 16-byte blocks from the trailing bytes.
+                advanceCounter(aesBlockBytesWritten)
+
+                await downloadPump.write(decryptedData)
+            }
+
+            await downloadPump.close()
+        } catch (error) {
+            streamError = error
+            await downloadPump.abort(error)
+        } finally {
+            serviceWorkerRegistration.active?.postMessage({
+                type: "DOWNLOAD_COMPLETE",
+            })
+        }
+
+        if (streamError) {
+            throw streamError
+        }
+        if (legacy) {
+            return true
+        }
+
+        // Finalize UFID with zero-padded remainder, then verify.
+        if (ufidPending.length > 0) {
+            const padded = new Uint8Array(UFIDChunkSize)
+            padded.set(ufidPending, 0)
+            const toHash = new Uint8Array(ufidRolling.length + UFIDChunkSize)
+            toHash.set(ufidRolling, 0)
+            toHash.set(padded, ufidRolling.length)
+            const hash = await window.crypto.subtle.digest("SHA-256", toHash.buffer)
+            ufidRolling = new Uint8Array(hash)
+            ufidPending = new Uint8Array(0)
+        }
+        const computedUfid = Array.from(ufidRolling)
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("")
+        return computedUfid === fileCardData.ufid
+    }
+
+    const serviceWorkerRegistration = await waitForDownloadServiceWorker(transfer.signal)
+
+    const sanitizedUfid = encodeURIComponent(fileCardData.ufid)
+    const response = await fetch("/download-file?ufid=" + sanitizedUfid)
+    if (!response.ok) {
+        throw new Error("Failed to start the download.")
+    }
+
+    const ufidVerified = await downloadFile(serviceWorkerRegistration)
+
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = fileCardData.name
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+
+    if (ufidVerified) {
+        transfer.complete({ ufid: fileCardData.ufid })
+    } else {
+        transfer.complete({
+            ufid: fileCardData.ufid,
+            tone: "warning",
+            message: "Saved, but the UFID check failed — the file may be corrupted or the password was wrong",
+        })
+    }
+}
+
+/** Queues a file-card download. Ask for the password before calling this so the queue never waits on a dialog. */
+function enqueueFileCardDownload(
+    client: TelegramClient,
+    fileCardData: FileCardData,
+    password: string,
+    options: { legacy?: boolean } = {},
+) {
+    void Transfers.enqueue(
+        {
+            direction: "download",
+            name: fileCardData.name,
+            size: fileCardData.size,
+            meta: { ufid: fileCardData.ufid, legacy: !!options.legacy },
+        },
+        (transfer) => runServiceWorkerDownload(client, fileCardData, password, transfer, { legacy: !!options.legacy }),
+    ).catch((error) => console.warn("Download failed:", error))
+}
+
 export async function fileDownload(client: TelegramClient, config: Config.Config) {
     await gramJsReady
     // TODO: Implement file validation via UFID comparison.
@@ -311,21 +596,7 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
     const fileCardData = parseTelegramFileCardMessage(msgs[0].message)
     // TODO: Verify that uploadComplete field is set to `true`.
 
-    const humanReadableFileSize = humanReadableSize(fileCardData.size)
-    const date = new Date(msgs[0].date * 1000)
-    const formattedDate = date
-        .toLocaleString("en-US", {
-            year: "numeric",
-            month: "2-digit",
-            day: "2-digit",
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-            hour12: false,
-        })
-        .replace(",", "") // Remove the comma between date and time.
-
-    const fileInfo = `Name: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`
+    const fileInfo = formatFileCardInfo(fileCardData, msgs[0].date)
 
     const confirmation = confirm(`Download file?\n\n${fileInfo}`)
     if (!confirmation) {
@@ -339,242 +610,7 @@ export async function fileDownload(client: TelegramClient, config: Config.Config
         return
     }
 
-    // Hide UI and show progress bar.
-    const { browserWasVisible, restore: restoreTransferUi } = showTransferProgress()
-
-    // Set up progress bar view.
-    const progressBarText = document.getElementById("progressBarText")
-    const progressBar = document.getElementById("progress")
-    const progressBytesText = document.getElementById("progressBytesText")
-    const progressTimeText = document.getElementById("progressTimeText")
-    if (progressBarText && progressBar) {
-        progressBarText.textContent = `Downloading ${fileCardData.name}`
-        progressBar.style.width = "0%"
-        progressBar.textContent = "0%"
-        progressBar.setAttribute("aria-valuenow", "0")
-        if (progressBytesText) progressBytesText.textContent = `0 / ${fileCardData.size} B`
-        if (progressTimeText) progressTimeText.textContent = `Elapsed: 00:00:00 • Remaining: --:--:--`
-    }
-
-    try {
-        // Request chunk messages by their IDs in the file card.
-        const chunkMsgs: TelegramApi.messages.Messages = await client.getMessages("me", { ids: fileCardData.chunks })
-
-        const IVBytes = base64ToBytes(fileCardData.IV)
-        // TODO: DRY-ify the salt & counter byte size. Should be
-        // module-level constants.
-        const salt = IVBytes.subarray(0, 16)
-        const aesKey = await Encryption.deriveAESKeyFromPassword(password, salt)
-        let decryptionCounter = IVBytes.slice(16)
-
-        let aesBlockBytesWritten = 0
-        const decryptionBuffer = new Uint8Array(Encryption.ENCRYPTION_CHUNK_SIZE)
-
-        let bytesProcessed = 0
-        const startTimeMs = Date.now()
-        // For streaming UFID verification.
-        const UFIDChunkSize = 64 * 1024 // 64 KiB.
-        let ufidRolling = new Uint8Array(0)
-        let ufidPending = new Uint8Array(0)
-        const byteCounterStream = new TransformStream({
-            async transform(chunk, controller) {
-                bytesProcessed += chunk.length
-                if (progressBar) {
-                    const progressPercentage = Math.round((bytesProcessed / fileCardData.size) * 100).toString()
-                    progressBar.style.width = `${progressPercentage}%`
-                    progressBar.textContent = `${progressPercentage}%`
-                    progressBar.setAttribute("aria-valuenow", progressPercentage)
-                }
-                if (progressBytesText) {
-                    const units = ["B", "KiB", "MiB", "GiB", "PiB"] as const
-                    const pickUnit = (n: number) => {
-                        let i = 0
-                        while (i < units.length - 1 && n >= 1024) {
-                            n = n / 1024
-                            i++
-                        }
-                        return { value: n, unit: units[i] }
-                    }
-                    const sofar = pickUnit(bytesProcessed)
-                    const total = pickUnit(fileCardData.size)
-                    progressBytesText.textContent = `${sofar.value.toFixed(sofar.unit === "B" ? 0 : 2)} ${sofar.unit} / ${total.value.toFixed(total.unit === "B" ? 0 : 2)} ${total.unit}`
-                }
-                if (progressTimeText) {
-                    const elapsedSec = Math.max(0, Math.floor((Date.now() - startTimeMs) / 1000))
-                    const rate = elapsedSec > 0 ? bytesProcessed / elapsedSec : 0
-                    const remainingBytes = Math.max(0, fileCardData.size - bytesProcessed)
-                    const etaSec = rate > 0 ? Math.ceil(remainingBytes / rate) : 0
-                    const fmt = (s: number) => {
-                        const h = Math.floor(s / 3600)
-                        const m = Math.floor((s % 3600) / 60)
-                        const sec = s % 60
-                        const pad = (n: number) => n.toString().padStart(2, "0")
-                        return `${pad(h)}:${pad(m)}:${pad(sec)}`
-                    }
-                    progressTimeText.textContent = `Elapsed: ${fmt(elapsedSec)} • Remaining: ${etaSec ? fmt(etaSec) : "--:--:--"}`
-                }
-                // Accumulate data and process in fixed 64 KiB blocks.
-                const combined = new Uint8Array(ufidPending.length + chunk.length)
-                combined.set(ufidPending, 0)
-                combined.set(chunk, ufidPending.length)
-                let offset = 0
-                while (offset + UFIDChunkSize <= combined.length) {
-                    const piece = combined.subarray(offset, offset + UFIDChunkSize)
-                    const toHash = new Uint8Array(ufidRolling.length + UFIDChunkSize)
-                    toHash.set(ufidRolling, 0)
-                    toHash.set(piece, ufidRolling.length)
-                    const hash = await window.crypto.subtle.digest("SHA-256", toHash.buffer)
-                    ufidRolling = new Uint8Array(hash)
-                    offset += UFIDChunkSize
-                }
-                // Save remainder for finalization.
-                ufidPending = combined.subarray(offset)
-                controller.enqueue(chunk)
-            },
-        })
-
-        async function downloadFile(serviceWorkerRegistration: ServiceWorkerRegistration) {
-            const downloadPump = createServiceWorkerDownloadPump(
-                serviceWorkerRegistration,
-                fileCardData.name,
-                byteCounterStream,
-            )
-            let streamError: unknown = null
-            try {
-                // Download each chunk.
-                for (const chunkMsg of chunkMsgs) {
-                    let chunkBytesWritten = 0
-                    while (chunkBytesWritten < chunkMsg.media.document.size) {
-                        // Download the next (up to) `DOWNLOAD_PART_SIZE` bytes of the chunk file.
-                        const chunkPart = await client.invoke(
-                            new Api.upload.GetFile({
-                                location: getFileInfo(chunkMsg.media).location,
-                                offset: chunkBytesWritten,
-                                limit: DOWNLOAD_PART_SIZE,
-                                precise: false,
-                                cdnSupported: false,
-                            }),
-                        )
-                        chunkBytesWritten += chunkPart.bytes.length
-
-                        // Write the chunk part to the decryption buffer.
-                        decryptionBuffer.set(chunkPart.bytes, aesBlockBytesWritten)
-                        aesBlockBytesWritten += chunkPart.bytes.length
-
-                        // If the decryption buffer is full, decrypt.
-                        if (aesBlockBytesWritten === decryptionBuffer.length) {
-                            const decryptedData = new Uint8Array(
-                                await window.crypto.subtle.decrypt(
-                                    {
-                                        name: "AES-CTR",
-                                        counter: decryptionCounter,
-                                        length: 64, // Bit length of the counter block.
-                                    },
-                                    aesKey,
-                                    decryptionBuffer,
-                                ),
-                            )
-                            // Advance counter by number of 16-byte blocks consumed in this call.
-                            const blocks = Math.ceil(decryptionBuffer.length / 16)
-                            decryptionCounter = Encryption.incrementCounter64By(decryptionCounter, blocks)
-                            aesBlockBytesWritten = 0
-
-                            await downloadPump.write(decryptedData)
-                        }
-                    }
-                }
-
-                // If there is any data left in the decryption buffer, process it.
-                if (aesBlockBytesWritten > 0) {
-                    // Decrypt the remaining data.
-                    const decryptedData = new Uint8Array(
-                        await window.crypto.subtle.decrypt(
-                            {
-                                name: "AES-CTR",
-                                counter: decryptionCounter,
-                                length: 64, // Bit length of the counter block.
-                            },
-                            aesKey,
-                            decryptionBuffer.subarray(0, aesBlockBytesWritten),
-                        ),
-                    )
-                    // Advance counter by exact number of 16-byte blocks from the trailing bytes.
-                    const tailBlocks = Math.ceil(aesBlockBytesWritten / 16)
-                    decryptionCounter = Encryption.incrementCounter64By(decryptionCounter, tailBlocks)
-
-                    await downloadPump.write(decryptedData)
-                }
-
-                await downloadPump.close()
-            } catch (error) {
-                streamError = error
-                await downloadPump.abort(error)
-            } finally {
-                serviceWorkerRegistration.active?.postMessage({
-                    type: "DOWNLOAD_COMPLETE",
-                })
-            }
-
-            if (streamError) {
-                if (streamError instanceof Error && streamError.message === "Incorrect decryption password.") {
-                    alert("Incorrect decryption password entered. Aborting download.")
-                }
-                throw streamError
-            }
-
-            // Finalize UFID with zero-padded remainder, then verify.
-            if (ufidPending.length > 0) {
-                const padded = new Uint8Array(UFIDChunkSize)
-                padded.set(ufidPending, 0)
-                const toHash = new Uint8Array(ufidRolling.length + UFIDChunkSize)
-                toHash.set(ufidRolling, 0)
-                toHash.set(padded, ufidRolling.length)
-                const hash = await window.crypto.subtle.digest("SHA-256", toHash.buffer)
-                ufidRolling = new Uint8Array(hash)
-                ufidPending = new Uint8Array(0)
-            }
-            const computedUfid = Array.from(ufidRolling)
-                .map((b) => b.toString(16).padStart(2, "0"))
-                .join("")
-            if (computedUfid !== fileCardData.ufid) {
-                alert("UFID mismatch. The downloaded file may be corrupted or the wrong password was used.")
-            }
-        }
-
-        const sanitizedUfid = encodeURIComponent(fileCardData.ufid)
-        const responsePromise = fetch("/download-file?ufid=" + sanitizedUfid)
-
-        const response = await responsePromise
-        if (!response.ok) {
-            console.error("Failed to download file.")
-            alert("Failed to download file.")
-            return
-        }
-
-        const serviceWorkerRegistration = await navigator.serviceWorker.ready
-        if (serviceWorkerRegistration.active) {
-            await downloadFile(serviceWorkerRegistration)
-            showToast("Download complete", { tone: "success" })
-        } else {
-            console.error("Service worker is not active.")
-            alert("Service worker is not active. Cannot proceed with the download.")
-        }
-
-        const blob = await response.blob()
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement("a")
-        a.href = url
-        a.download = fileCardData.name
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-        URL.revokeObjectURL(url)
-    } catch (error) {
-        console.error(error)
-    } finally {
-        // Restore previous UI.
-        restoreTransferUi()
-    }
+    enqueueFileCardDownload(client, fileCardData, password)
 }
 
 // TODO: Remove the legacy download pipeline after all existing files have been ported to the new scheme.
@@ -597,21 +633,7 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
     const fileCardData = parseTelegramFileCardMessage(msgs[0].message)
     // TODO: Verify that uploadComplete field is set to `true`.
 
-    const humanReadableFileSize = humanReadableSize(fileCardData.size)
-    const date = new Date(msgs[0].date * 1000)
-    const formattedDate = date
-        .toLocaleString("en-US", {
-            year: "numeric",
-            month: "2-digit",
-            day: "2-digit",
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-            hour12: false,
-        })
-        .replace(",", "") // Remove the comma between date and time.
-
-    const fileInfo = `Name: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`
+    const fileInfo = formatFileCardInfo(fileCardData, msgs[0].date)
 
     const confirmation = confirm(`Download file (legacy pipeline)?\n\n${fileInfo}`)
     if (!confirmation) {
@@ -625,194 +647,7 @@ export async function fileDownloadLegacy(client: TelegramClient, config: Config.
         return
     }
 
-    // Hide UI and show progress bar.
-    const { browserWasVisible, restore: restoreTransferUi } = showTransferProgress()
-
-    // Set up progress bar view.
-    const progressBarText = document.getElementById("progressBarText")
-    const progressBar = document.getElementById("progress")
-    const progressBytesText = document.getElementById("progressBytesText")
-    const progressTimeText = document.getElementById("progressTimeText")
-    if (progressBarText && progressBar) {
-        progressBarText.textContent = `Downloading ${fileCardData.name}`
-        progressBar.style.width = "0%"
-        progressBar.textContent = "0%"
-        progressBar.setAttribute("aria-valuenow", "0")
-        if (progressBytesText) progressBytesText.textContent = `0 / ${fileCardData.size} B`
-        if (progressTimeText) progressTimeText.textContent = `Elapsed: 00:00:00 • Remaining: --:--:--`
-    }
-
-    try {
-        // Request chunk messages by their IDs in the file card.
-        const chunkMsgs: TelegramApi.messages.Messages = await client.getMessages("me", { ids: fileCardData.chunks })
-
-        const IVBytes = base64ToBytes(fileCardData.IV)
-        // TODO: DRY-ify the salt & counter byte size. Should be
-        // module-level constants.
-        const salt = IVBytes.subarray(0, 16)
-        const aesKey = await Encryption.deriveAESKeyFromPassword(password, salt)
-        let decryptionCounter = IVBytes.slice(16)
-
-        let aesBlockBytesWritten = 0
-        const decryptionBuffer = new Uint8Array(Encryption.ENCRYPTION_CHUNK_SIZE)
-
-        let bytesProcessed = 0
-        const startTimeMs = Date.now()
-        const byteCounterStream = new TransformStream({
-            transform(chunk, controller) {
-                bytesProcessed += chunk.length
-                controller.enqueue(chunk)
-                if (progressBar) {
-                    const progressPercentage = Math.round((bytesProcessed / fileCardData.size) * 100).toString()
-                    progressBar.style.width = `${progressPercentage}%`
-                    progressBar.textContent = `${progressPercentage}%`
-                    progressBar.setAttribute("aria-valuenow", progressPercentage)
-                }
-                if (progressBytesText) {
-                    const units = ["B", "KiB", "MiB", "GiB", "PiB"] as const
-                    const pickUnit = (n: number) => {
-                        let i = 0
-                        while (i < units.length - 1 && n >= 1024) {
-                            n = n / 1024
-                            i++
-                        }
-                        return { value: n, unit: units[i] }
-                    }
-                    const sofar = pickUnit(bytesProcessed)
-                    const total = pickUnit(fileCardData.size)
-                    progressBytesText.textContent = `${sofar.value.toFixed(sofar.unit === "B" ? 0 : 2)} ${sofar.unit} / ${total.value.toFixed(total.unit === "B" ? 0 : 2)} ${total.unit}`
-                }
-                if (progressTimeText) {
-                    const elapsedSec = Math.max(0, Math.floor((Date.now() - startTimeMs) / 1000))
-                    const rate = elapsedSec > 0 ? bytesProcessed / elapsedSec : 0
-                    const remainingBytes = Math.max(0, fileCardData.size - bytesProcessed)
-                    const etaSec = rate > 0 ? Math.ceil(remainingBytes / rate) : 0
-                    const fmt = (s: number) => {
-                        const h = Math.floor(s / 3600)
-                        const m = Math.floor((s % 3600) / 60)
-                        const sec = s % 60
-                        const pad = (n: number) => n.toString().padStart(2, "0")
-                        return `${pad(h)}:${pad(m)}:${pad(sec)}`
-                    }
-                    progressTimeText.textContent = `Elapsed: ${fmt(elapsedSec)} • Remaining: ${etaSec ? fmt(etaSec) : "--:--:--"}`
-                }
-            },
-        })
-
-        async function downloadFile(serviceWorkerRegistration: ServiceWorkerRegistration) {
-            const downloadPump = createServiceWorkerDownloadPump(
-                serviceWorkerRegistration,
-                fileCardData.name,
-                byteCounterStream,
-            )
-            let streamError: unknown = null
-            try {
-                // Download each chunk.
-                for (const chunkMsg of chunkMsgs) {
-                    let chunkBytesWritten = 0
-                    while (chunkBytesWritten < chunkMsg.media.document.size) {
-                        // Download the next (up to) `DOWNLOAD_PART_SIZE` bytes of the chunk file.
-                        const chunkPart = await client.invoke(
-                            new Api.upload.GetFile({
-                                location: getFileInfo(chunkMsg.media).location,
-                                offset: chunkBytesWritten,
-                                limit: DOWNLOAD_PART_SIZE,
-                                precise: false,
-                                cdnSupported: false,
-                            }),
-                        )
-                        chunkBytesWritten += chunkPart.bytes.length
-
-                        // Write the chunk part to the decryption buffer.
-                        decryptionBuffer.set(chunkPart.bytes, aesBlockBytesWritten)
-                        aesBlockBytesWritten += chunkPart.bytes.length
-
-                        // If the decryption buffer is full, decrypt.
-                        if (aesBlockBytesWritten === decryptionBuffer.length) {
-                            const decryptedData = new Uint8Array(
-                                await window.crypto.subtle.decrypt(
-                                    { name: "AES-CTR", counter: decryptionCounter, length: 64 },
-                                    aesKey,
-                                    decryptionBuffer,
-                                ),
-                            )
-                            // Legacy behavior: increment the counter by 1 per 1 MiB block.
-                            decryptionCounter = Encryption.incrementCounter(decryptionCounter)
-                            aesBlockBytesWritten = 0
-
-                            await downloadPump.write(decryptedData)
-                        }
-                    }
-                }
-
-                // If there is any data left in the decryption buffer, process it.
-                if (aesBlockBytesWritten > 0) {
-                    // Decrypt the remaining data.
-                    const decryptedData = new Uint8Array(
-                        await window.crypto.subtle.decrypt(
-                            { name: "AES-CTR", counter: decryptionCounter, length: 64 },
-                            aesKey,
-                            decryptionBuffer.subarray(0, aesBlockBytesWritten),
-                        ),
-                    )
-                    // Legacy behavior: increment the counter by 1 per trailing block set.
-                    decryptionCounter = Encryption.incrementCounter(decryptionCounter)
-
-                    await downloadPump.write(decryptedData)
-                }
-
-                await downloadPump.close()
-            } catch (error) {
-                streamError = error
-                await downloadPump.abort(error)
-            } finally {
-                serviceWorkerRegistration.active?.postMessage({
-                    type: "DOWNLOAD_COMPLETE",
-                })
-            }
-
-            if (streamError) {
-                if (streamError instanceof Error && streamError.message === "Incorrect decryption password.") {
-                    alert("Incorrect decryption password entered. Aborting download.")
-                }
-                throw streamError
-            }
-        }
-
-        const sanitizedUfid = encodeURIComponent(fileCardData.ufid)
-        const responsePromise = fetch("/download-file?ufid=" + sanitizedUfid)
-
-        const response = await responsePromise
-        if (!response.ok) {
-            console.error("Failed to download file.")
-            alert("Failed to download file.")
-            return
-        }
-
-        const serviceWorkerRegistration = await navigator.serviceWorker.ready
-        if (serviceWorkerRegistration.active) {
-            await downloadFile(serviceWorkerRegistration)
-            showToast("Download complete", { tone: "success" })
-        } else {
-            console.error("Service worker is not active.")
-            alert("Service worker is not active. Cannot proceed with the download.")
-        }
-
-        const blob = await response.blob()
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement("a")
-        a.href = url
-        a.download = fileCardData.name
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-        URL.revokeObjectURL(url)
-    } catch (error) {
-        console.error(error)
-    } finally {
-        // Restore previous UI.
-        restoreTransferUi()
-    }
+    enqueueFileCardDownload(client, fileCardData, password, { legacy: true })
 }
 
 export async function fileLookup(client: TelegramClient, config: Config.Config) {
@@ -1121,7 +956,6 @@ export async function fileUnsend(client: TelegramClient, config: Config.Config) 
         alert("Failed to unsend file.")
     }
 }
-
 export function resolveUploadParentFolderId(
     options: { parentFolderId?: string } = {},
     browserContext: { browserWasVisible?: boolean; browserParentFolderId?: string } = {},
@@ -1137,32 +971,503 @@ export function resolveUploadParentFolderId(
 }
 
 /**
- * Shows the transfer progress overlay above the file browser (which stays mounted underneath)
- * and returns a callback that hides it again.
+ * Runs `restoreUploadUi`, then (for completed uploads) asks the file browser to refresh. When `parentFolderId` is
+ * given it rides along on the event as `tglfsParentFolderId`, so the browser can skip the refresh if the user is
+ * looking at a different folder by the time a queued upload finishes.
  */
-function showTransferProgress() {
-    const browserDiv = document.getElementById("fileBrowser")
-    const progressDiv = document.getElementById("progressBarContainer")
-    const browserWasVisible = !!browserDiv && !browserDiv.hasAttribute("hidden")
-    if (progressDiv) delete progressDiv.dataset.mode
-    progressDiv?.removeAttribute("hidden")
-    document.body.classList.add("fx-progress-active")
-    return {
-        browserWasVisible,
-        restore: () => {
-            progressDiv?.setAttribute("hidden", "")
-            document.body.classList.remove("fx-progress-active")
-        },
-    }
-}
-
-export function restoreUploadUiAndMaybeRefreshBrowser(restoreUploadUi: () => void, uploadCompleted: boolean) {
+export function restoreUploadUiAndMaybeRefreshBrowser(
+    restoreUploadUi: () => void,
+    uploadCompleted: boolean,
+    parentFolderId?: string,
+) {
     restoreUploadUi()
     if (uploadCompleted) {
-        window.dispatchEvent(new Event("tglfs:refresh-browser"))
+        const event = new Event("tglfs:refresh-browser")
+        if (parentFolderId) {
+            ;(event as Event & { tglfsParentFolderId?: string }).tglfsParentFolderId = parentFolderId
+        }
+        window.dispatchEvent(event)
     }
 }
 
+type VideoRemuxModule = typeof import("./web/videoRemux")
+
+export type UploadJob = {
+    files: File[]
+    /** Encryption password ("" for none). Collected before the job is queued. */
+    password: string
+    /** Destination folder, captured when the upload was queued. */
+    parentFolderId: string
+    /** Archive name for multi-file uploads (defaults to a timestamped name when the job starts). */
+    archiveName?: string
+    /** Set when the user chose to optimize a single video for streaming. */
+    remux?: { module: VideoRemuxModule; kind: import("./web/videoRemux").RemuxableVideoKind } | null
+}
+
+export type UploadJobResult = {
+    msgId: number
+    data: FileCardData
+    parentFolderId: string
+}
+
+/**
+ * Uploads `files` (one file, or several packed into a tar archive) inside a transfer-queue slot. Checks the
+ * transfer's AbortSignal between upload parts; a cancelled upload stops exactly like a failed one, leaving the
+ * incomplete file card as-is (no records are deleted or rewritten).
+ *
+ * `options.span` maps this upload into a sub-range of the transfer's overall progress (used when the upload is
+ * the last step of a longer task, e.g. "Make MP4 previewable").
+ */
+export async function runFileUploadJob(
+    client: TelegramClient,
+    config: Config.Config,
+    job: UploadJob,
+    transfer: Transfers.TransferHandle,
+    options: { span?: [number, number] } = {},
+): Promise<UploadJobResult> {
+    await gramJsReady
+    if (config.chunkSize < UPLOAD_PART_SIZE) {
+        throw new Error(
+            `config.chunkSize (${config.chunkSize}) must be larger than UPLOAD_PART_SIZE (${UPLOAD_PART_SIZE}).`,
+        )
+    }
+    const [spanStart, spanEnd] = options.span ?? [0, 1]
+    const sub = (from: number, to: number): [number, number] => [
+        spanStart + (spanEnd - spanStart) * from,
+        spanStart + (spanEnd - spanStart) * to,
+    ]
+
+    let files = job.files
+    const single = files.length === 1
+    let file = files[0]
+    const parentFolderId = job.parentFolderId
+    let prepareStart = 0
+
+    if (single && job.remux) {
+        const { module: remuxModule, kind: remuxKind } = job.remux
+        transfer.setPhase("Optimizing for streaming", { span: sub(0, 0.3), total: 100, unit: "percent" })
+        try {
+            file = await remuxModule.remuxToStreamingMp4(file, remuxKind, (progress) => {
+                transfer.update({ bytes: progress })
+            })
+        } catch (error) {
+            transfer.throwIfCancelled()
+            const message = error instanceof Error ? error.message : String(error)
+            throw new Error(`Couldn't optimize the video for streaming: ${message}`)
+        }
+        files = [file]
+        transfer.update({ name: file.name, size: file.size })
+        console.log(`Remuxed upload for streaming: ${file.name}`)
+        prepareStart = 0.3
+    }
+    transfer.throwIfCancelled()
+
+    let displayName: string
+    let totalBytes: number
+    let inputStream: ReadableStream<Uint8Array>
+    let ufidStream: ReadableStream<Uint8Array> | null = null
+    if (single) {
+        displayName = file.name
+        totalBytes = file.size
+        inputStream = file.stream()
+    } else {
+        displayName = job.archiveName || Archive.defaultArchiveName()
+        totalBytes = Archive.computeTarSize(files)
+        const tarStream = Archive.createTarStream(files)
+        const teed = tarStream.tee()
+        ufidStream = teed[0]
+        inputStream = teed[1]
+    }
+    transfer.update({ name: displayName, size: totalBytes })
+
+    const salt = window.crypto.getRandomValues(new Uint8Array(16))
+    const aesKey = await Encryption.deriveAESKeyFromPassword(job.password, salt)
+    const initialCounter = window.crypto.getRandomValues(new Uint8Array(16))
+    // Produce initialization vector for AES-CTR encryption (salt & initial counter).
+    const IVBytes = new Uint8Array(salt.length + initialCounter.length)
+    IVBytes.set(salt, 0)
+    IVBytes.set(initialCounter, salt.length)
+    const IV = bytesToBase64(IVBytes)
+    let encryptionCounter = new Uint8Array(initialCounter)
+
+    const uploadStart = prepareStart + (1 - prepareStart) * 0.05
+    transfer.setPhase("Preparing", { span: sub(prepareStart, uploadStart), total: totalBytes })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const onUfidProgress = (bytesProcessed: number) => {
+        // Throwing here aborts the UFID pass at the next 64 KiB block.
+        transfer.throwIfCancelled()
+        transfer.update({ bytes: bytesProcessed })
+    }
+    console.log(`Starting UFID generation for ${displayName}`)
+    const UFID = single
+        ? await FileProcessing.UFID(file, onUfidProgress)
+        : await FileProcessing.UFIDFromStream(ufidStream!, onUfidProgress, totalBytes)
+    console.log(`UFID generated for ${displayName}: ${UFID}`)
+    transfer.throwIfCancelled()
+
+    transfer.setPhase(null, { span: sub(uploadStart, 1), total: totalBytes })
+    console.log(`Upload begins for ${displayName}`)
+    let bytesProcessed = 0
+
+    const existingMsgs = await client.getMessages("me", {
+        search: buildFileCardUfidLookupQuery(UFID),
+    })
+
+    if (existingMsgs.length > 0) {
+        transfer.update({ ufid: UFID })
+        throw new Error("A file with identical contents is already stored (duplicate UFID).")
+    }
+    transfer.throwIfCancelled()
+
+    // Progress reflects bytes actually sent to Telegram, not bytes read from disk: plaintext is read far ahead of the
+    // upload (compression + the 32 MiB encryption buffer), so scale the plaintext read so far by the share of the
+    // compressed stream that has been uploaded. AES-CTR keeps ciphertext the same length as the compressed bytes.
+    let compressedBytesRead = 0
+    let encryptedBytesSent = 0
+    const reportUploadProgress = () => {
+        const sentShare = compressedBytesRead > 0 ? Math.min(1, encryptedBytesSent / compressedBytesRead) : 0
+        transfer.update({ bytes: Math.round(bytesProcessed * sentShare) })
+    }
+    const saveBigFilePart = async (params: { fileId: bigint; filePart: number; fileTotalParts: number; bytes: Uint8Array }) => {
+        // Cancellation checkpoint: stop between parts, before anything new is written to Telegram.
+        transfer.throwIfCancelled()
+        const result = await client.invoke(new Api.upload.SaveBigFilePart(params as any))
+        encryptedBytesSent += params.bytes.length
+        reportUploadProgress()
+        return result
+    }
+
+    let fileCardData: FileCardData = createFileCardData({
+        name: displayName,
+        ufid: UFID,
+        size: totalBytes,
+        uploadComplete: false,
+        chunks: [],
+        IV: IV,
+        parentFolderId,
+    })
+    const fileCardMessage = await client.sendMessage("me", { message: serializeFileCardMessage(fileCardData) })
+    const byteCounterStream = new TransformStream({
+        transform(chunk, controller) {
+            bytesProcessed += chunk.length;
+            controller.enqueue(chunk);
+        },
+    })
+
+    const fileStream = inputStream.pipeThrough(byteCounterStream)
+    const compressedStream = fileStream.pipeThrough(new CompressionStream("gzip"))
+    const reader = compressedStream.getReader()
+
+    let aesBlockBytesWritten = 0
+    const encryptionBuffer = new Uint8Array(Encryption.ENCRYPTION_CHUNK_SIZE)
+    let partBytesWritten = 0
+    const partBuffer = new Uint8Array(UPLOAD_PART_SIZE)
+    let partIndex = 0
+    let chunkIndex = 0
+    let chunkBytesWritten = 0
+    let chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER))
+
+    let done, value
+    while ((({ done, value } = await reader.read()), !done)) {
+        compressedBytesRead += value.length
+        let valueBytesProcessed = 0
+        // Write the value to encryptionBuffer.
+        while (valueBytesProcessed < value.length) {
+            const remainingEncryptionBufferSpace = encryptionBuffer.length - aesBlockBytesWritten // Remaining space in encryptionBuffer.
+            const remainingValueBytesToProcess = value.length - valueBytesProcessed
+            const bytesToCopy = Math.min(remainingValueBytesToProcess, remainingEncryptionBufferSpace)
+            encryptionBuffer.set(
+                value.subarray(valueBytesProcessed, valueBytesProcessed + bytesToCopy),
+                aesBlockBytesWritten,
+            )
+            aesBlockBytesWritten += bytesToCopy
+            valueBytesProcessed += bytesToCopy
+            if (aesBlockBytesWritten === encryptionBuffer.length) {
+                // encryptionBuffer is full. Encrypt it.
+                const encryptedData = new Uint8Array(
+                    await window.crypto.subtle.encrypt(
+                        {
+                            name: "AES-CTR",
+                            counter: encryptionCounter,
+                            length: 64, // Bit length of the counter block.
+                        },
+                        aesKey,
+                        encryptionBuffer,
+                    ),
+                )
+                // Reset the encryption buffer and advance AES-CTR counter by blocks processed.
+                aesBlockBytesWritten = 0
+                const blocks = Math.ceil(encryptionBuffer.length / 16)
+                encryptionCounter = Encryption.incrementCounter64By(encryptionCounter, blocks)
+                // Write the encrypted data to partBuffer in a loop.
+                let encryptedDataBytesProcessed = 0
+                while (encryptedDataBytesProcessed < encryptedData.length) {
+                    const remainingPartBufferSpace = partBuffer.length - partBytesWritten
+                    const remainingEncryptedDataBytesToProcess = encryptedData.length - encryptedDataBytesProcessed
+                    const bytesToCopy = Math.min(remainingEncryptedDataBytesToProcess, remainingPartBufferSpace)
+                    partBuffer.set(
+                        encryptedData.subarray(encryptedDataBytesProcessed, encryptedDataBytesProcessed + bytesToCopy),
+                        partBytesWritten,
+                    )
+                    partBytesWritten += bytesToCopy
+                    encryptedDataBytesProcessed += bytesToCopy
+                    if (partBytesWritten === UPLOAD_PART_SIZE) {
+                        // partBuffer is full. Send as much as will fit in this chunk.
+                        const remainingChunkSpace = config.chunkSize - chunkBytesWritten
+                        if (remainingChunkSpace <= UPLOAD_PART_SIZE) {
+                            // Part overflows chunk size. Finalize the chunk
+                            // and populate next one with leftover data in partBuffer.
+                            const partBufferSubarray = partBuffer.subarray(0, remainingChunkSpace)
+                            // Send partBufferSubarray as a file part to Telegram.
+                            const result = await saveBigFilePart({
+                                fileId: chunkFileId,
+                                filePart: partIndex,
+                                fileTotalParts: partIndex + 1,
+                                bytes: Buffer.from(partBufferSubarray),
+                            })
+                            if (!result) {
+                                throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
+                            }
+                            console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
+
+                            // Finalize the chunk.
+                            const chunkFileUploaded = new Api.InputFileBig({
+                                id: chunkFileId,
+                                parts: partIndex + 1,
+                                name: `${UFID}.chunk${chunkIndex + 1}`,
+                            })
+                            // Send the chunk message.
+                            const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded })
+
+                            // Update file card.
+                            fileCardData.chunks.push(chunkMessage.id)
+                            await client.invoke(
+                                new Api.messages.EditMessage({
+                                    peer: fileCardMessage.peerId,
+                                    id: fileCardMessage.id,
+                                    message: serializeFileCardMessage(fileCardData),
+                                }),
+                            )
+
+                            // Reset chunk index and fileId for the next chunk.
+                            chunkIndex++
+                            chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER))
+
+                            // Left shift bytes in partBuffer by remainingChunkSpace.
+                            partBuffer.copyWithin(0, remainingChunkSpace)
+                            partBytesWritten -= remainingChunkSpace
+                            partIndex = 0
+
+                            // Update chunkBytesWritten with the size of the roll-over data.
+                            chunkBytesWritten = UPLOAD_PART_SIZE - remainingChunkSpace
+                        } else {
+                            // Send the partBuffer data as a file part.
+                            const result = await saveBigFilePart({
+                                fileId: chunkFileId,
+                                filePart: partIndex,
+                                fileTotalParts: -1,
+                                bytes: Buffer.from(partBuffer),
+                            })
+                            if (!result) {
+                                throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
+                            }
+                            console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
+                            partBytesWritten = 0
+                            partIndex++
+
+                            // Update chunkBytesWritten.
+                            chunkBytesWritten += UPLOAD_PART_SIZE
+                        }
+                    }
+                }
+            }
+        }
+        // Update the progress UI.
+        reportUploadProgress()
+    }
+    // Flush encryptionBuffer.
+    if (aesBlockBytesWritten > 0) {
+        const encryptedData = new Uint8Array(
+            await window.crypto.subtle.encrypt(
+                {
+                    name: "AES-CTR",
+                    counter: encryptionCounter,
+                    length: 64, // Bit length of the counter block.
+                },
+                aesKey,
+                encryptionBuffer.subarray(0, aesBlockBytesWritten),
+            ),
+        )
+        const tailBlocks = Math.ceil(aesBlockBytesWritten / 16)
+        encryptionCounter = Encryption.incrementCounter64By(encryptionCounter, tailBlocks)
+        let encryptedDataBytesProcessed = 0
+        while (encryptedDataBytesProcessed < encryptedData.length) {
+            const remainingPartBufferSpace = partBuffer.length - partBytesWritten
+            const remainingEncryptedDataBytesToProcess = encryptedData.length - encryptedDataBytesProcessed
+            const bytesToCopy = Math.min(remainingEncryptedDataBytesToProcess, remainingPartBufferSpace)
+            partBuffer.set(
+                encryptedData.subarray(encryptedDataBytesProcessed, encryptedDataBytesProcessed + bytesToCopy),
+                partBytesWritten,
+            )
+            partBytesWritten += bytesToCopy
+            encryptedDataBytesProcessed += bytesToCopy
+
+            if (partBytesWritten === UPLOAD_PART_SIZE) {
+                // Part buffer is full. Send as much as will fit in this chunk.
+                const remainingChunkSpace = config.chunkSize - chunkBytesWritten
+                if (remainingChunkSpace <= UPLOAD_PART_SIZE) {
+                    // Part overflows chunk size. Finalize the chunk
+                    // and populate next one with leftover data in partBuffer.
+                    const partBufferSubarray = partBuffer.subarray(0, remainingChunkSpace)
+                    const result = await saveBigFilePart({
+                        fileId: chunkFileId,
+                        filePart: partIndex,
+                        fileTotalParts: partIndex + 1,
+                        bytes: Buffer.from(partBufferSubarray),
+                    })
+                    if (!result) {
+                        throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
+                    }
+                    console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
+
+                    const chunkFileUploaded = new Api.InputFileBig({
+                        id: chunkFileId,
+                        parts: partIndex + 1,
+                        name: `${UFID}.chunk${chunkIndex + 1}`,
+                    })
+                    // Send the chunk message.
+                    const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded })
+
+                    // Update file card.
+                    fileCardData.chunks.push(chunkMessage.id)
+                    await client.invoke(
+                        new Api.messages.EditMessage({
+                            peer: fileCardMessage.peerId,
+                            id: fileCardMessage.id,
+                            message: serializeFileCardMessage(fileCardData),
+                        }),
+                    )
+
+                    // Reset chunk index and fileId for the next chunk.
+                    chunkIndex++
+                    chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER))
+
+                    // Left shift bytes in partBuffer by remainingChunkSpace.
+                    partBuffer.copyWithin(0, remainingChunkSpace)
+                    partBytesWritten -= remainingChunkSpace
+                    partIndex = 0
+
+                    // Update chunkBytesWritten with the size of the roll-over data.
+                    chunkBytesWritten = UPLOAD_PART_SIZE - remainingChunkSpace
+                } else {
+                    const result = await saveBigFilePart({
+                        fileId: chunkFileId,
+                        filePart: partIndex,
+                        fileTotalParts: -1,
+                        bytes: Buffer.from(partBuffer),
+                    })
+                    if (!result) {
+                        throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
+                    }
+                    console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
+                    partBytesWritten = 0
+                    partIndex++
+
+                    // Update chunkBytesWritten.
+                    chunkBytesWritten += UPLOAD_PART_SIZE
+                }
+            }
+        }
+    }
+    // Flush partBuffer.
+    if (partBytesWritten > 0) {
+        const remainingChunkSpace = config.chunkSize - chunkBytesWritten
+        if (remainingChunkSpace <= partBytesWritten) {
+            // Part overflows chunk size. Finalize the chunk
+            // and populate next one with leftover data in partBuffer.
+            const partBufferSubarray = partBuffer.subarray(0, remainingChunkSpace)
+            const result = await saveBigFilePart({
+                fileId: chunkFileId,
+                filePart: partIndex,
+                fileTotalParts: partIndex + 1,
+                bytes: Buffer.from(partBufferSubarray),
+            })
+            if (!result) {
+                throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
+            }
+            console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
+
+            const chunkFileUploaded = new Api.InputFileBig({
+                id: chunkFileId,
+                parts: partIndex + 1,
+                name: `${UFID}.chunk${chunkIndex + 1}`,
+            })
+            // Send the chunk message.
+            const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded })
+
+            // Update file card.
+            fileCardData.chunks.push(chunkMessage.id)
+            await client.invoke(
+                new Api.messages.EditMessage({
+                    peer: fileCardMessage.peerId,
+                    id: fileCardMessage.id,
+                    message: serializeFileCardMessage(fileCardData),
+                }),
+            )
+
+            // Reset chunk index and fileId for the next chunk.
+            chunkIndex++
+            chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER))
+
+            // Left shift bytes in partBuffer by remainingChunkSpace.
+            partBuffer.copyWithin(0, remainingChunkSpace)
+            partBytesWritten -= remainingChunkSpace
+            partIndex = 0
+
+            // Note: We don't need chunkBytesWritten anymore,
+            // so we don't update it here as we did before.
+        }
+        // Upload the roll-over data in partBuffer as the last chunk.
+        const partBufferSubarray = partBuffer.subarray(0, partBytesWritten)
+        const result = await saveBigFilePart({
+            fileId: chunkFileId,
+            filePart: partIndex,
+            fileTotalParts: partIndex + 1,
+            bytes: Buffer.from(partBufferSubarray),
+        })
+        if (!result) {
+            throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
+        }
+        console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
+    }
+    const chunkFileUploaded = new Api.InputFileBig({
+        id: chunkFileId,
+        parts: partIndex + 1,
+        name: `${UFID}.chunk${chunkIndex + 1}`,
+    })
+    // Send the chunk message.
+    const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded })
+
+    // Update file card with last chunk included and uploadComplete being true.
+    fileCardData.chunks.push(chunkMessage.id)
+    fileCardData.uploadComplete = true
+    await client.invoke(
+        new Api.messages.EditMessage({
+            peer: fileCardMessage.peerId,
+            id: fileCardMessage.id,
+            message: serializeFileCardMessage(fileCardData),
+        }),
+    )
+    transfer.update({ bytes: totalBytes, ufid: fileCardData.ufid })
+    console.log(`Upload complete: ${displayName} (${humanReadableSize(fileCardData.size)})`)
+    restoreUploadUiAndMaybeRefreshBrowser(() => {}, true, parentFolderId)
+    return { msgId: fileCardMessage.id, data: fileCardData, parentFolderId }
+}
+
+/**
+ * Asks for the upload password (and, for videos, whether to optimize for streaming), captures the destination
+ * folder, and queues the upload in the transfer tray. Returns once the upload is queued, not when it finishes.
+ */
 export async function fileUpload(
     client: TelegramClient,
     config: Config.Config,
@@ -1184,16 +1489,23 @@ export async function fileUpload(
         const uploadFileInput = document.getElementById("uploadFileInput") as HTMLInputElement | null
         const selectedFiles = uploadFileInput?.files
         if (!selectedFiles || selectedFiles.length === 0) {
-            alert("No file selected. Aborting.")
+            showToast("No file selected.", { tone: "error" })
             return
         }
         files = Array.from(selectedFiles)
     }
     const single = files.length === 1
-    let file = files[0]
+    const file = files[0]
     console.log(single ? `Selected file: ${file.name}` : `Selected ${files.length} files for archive upload.`)
 
-    let password = await requestText({
+    // Capture the destination now: with a queue, the user may have navigated elsewhere by the time this starts.
+    const browserDiv = document.getElementById("fileBrowser")
+    const parentFolderId = resolveUploadParentFolderId(options, {
+        browserWasVisible: !!browserDiv && !browserDiv.hasAttribute("hidden"),
+        browserParentFolderId: (window as any).__tglfsUploadParentFolderId,
+    })
+
+    const password = await requestText({
         title: single ? "Upload file" : `Upload ${files.length} files`,
         message: single ? file.name : "Multiple files are packed into a single archive before upload.",
         label: "Encryption password (optional)",
@@ -1206,7 +1518,7 @@ export async function fileUpload(
         return
     }
 
-    let remuxModule: typeof import("./web/videoRemux") | null = null
+    let remuxModule: VideoRemuxModule | null = null
     let remuxKind: import("./web/videoRemux").RemuxableVideoKind | null = null
     if (single && isPotentialStreamingRemuxCandidate(file)) {
         remuxModule = await import("./web/videoRemux")
@@ -1222,513 +1534,24 @@ export async function fileUpload(
                 icon: "film",
             })
             : false
-    
-    // Hide UI and show progress bar.
-    const { browserWasVisible, restore: restoreTransferUi } = showTransferProgress()
-    const restoreUploadUi = restoreTransferUi
-    
-    // Set up progress bar view.
-    const progressBarText = document.getElementById("progressBarText")
-    const progressBar = document.getElementById("progress")
-    const progressBytesText = document.getElementById("progressBytesText")
-    const progressTimeText = document.getElementById("progressTimeText")
-    let displayName = single ? file.name : Archive.defaultArchiveName()
-    let totalBytes = single ? file.size : Archive.computeTarSize(files)
-    let inputStream: ReadableStream<Uint8Array>
-    let ufidStream: ReadableStream<Uint8Array> | null = null
-    const progressUnits = ["B", "KiB", "MiB", "GiB", "PiB"] as const
-    const pickProgressUnit = (n: number) => {
-        let i = 0
-        let unitValue = n
-        while (i < progressUnits.length - 1 && unitValue >= 1024) {
-            unitValue = unitValue / 1024
-            i++
-        }
-        return { value: unitValue, unit: progressUnits[i] }
+
+    const archiveName = single ? undefined : Archive.defaultArchiveName()
+    const job: UploadJob = {
+        files,
+        password,
+        parentFolderId,
+        archiveName,
+        remux: shouldRemuxForStreaming && remuxModule && remuxKind ? { module: remuxModule, kind: remuxKind } : null,
     }
-    const progressFormatDuration = (s: number) => {
-        const h = Math.floor(s / 3600)
-        const m = Math.floor((s % 3600) / 60)
-        const sec = s % 60
-        const pad = (n: number) => n.toString().padStart(2, "0")
-        return `${pad(h)}:${pad(m)}:${pad(sec)}`
-    }
-    const setProgressPhase = (phaseText: string) => {
-        if (progressBarText) {
-            progressBarText.textContent = phaseText
-        }
-        if (progressBar) {
-            progressBar.style.width = "0%"
-            progressBar.textContent = "0%"
-            progressBar.setAttribute("aria-valuenow", "0")
-        }
-        if (progressBytesText) progressBytesText.textContent = `0 / ${totalBytes} B`
-        if (progressTimeText) progressTimeText.textContent = `Elapsed: 00:00:00 • Remaining: --:--:--`
-    }
-    const updateProgressBar = (bytesProcessed: number, phaseStartMs: number, phaseText: string) => {
-        const progress = totalBytes > 0 ? Math.round((bytesProcessed / totalBytes) * 100) : 0
-        if (progressBar) {
-            progressBar.style.width = `${progress}%`
-            progressBar.textContent = `${progress}%`
-            progressBar.setAttribute("aria-valuenow", progress.toString())
-        }
-        if (progressBytesText) {
-            const sofar = pickProgressUnit(bytesProcessed)
-            const total = pickProgressUnit(totalBytes)
-            progressBytesText.textContent = `${sofar.value.toFixed(sofar.unit === "B" ? 0 : 2)} ${sofar.unit} / ${total.value.toFixed(total.unit === "B" ? 0 : 2)} ${total.unit}`
-        }
-        if (progressTimeText) {
-            const elapsedSec = Math.max(0, Math.floor((Date.now() - phaseStartMs) / 1000))
-            const rate = elapsedSec > 0 ? bytesProcessed / elapsedSec : 0
-            const remainingBytes = Math.max(0, totalBytes - bytesProcessed)
-            const etaSec = rate > 0 ? Math.ceil(remainingBytes / rate) : 0
-            progressTimeText.textContent = `Elapsed: ${progressFormatDuration(elapsedSec)} • Remaining: ${
-                etaSec ? progressFormatDuration(etaSec) : "--:--:--"
-            }`
-        }
-        if (progressBarText) {
-            progressBarText.textContent = phaseText
-        }
-    }
-
-    if (shouldRemuxForStreaming && remuxModule !== null && remuxKind !== null) {
-        const remuxPhaseLabel = `Remuxing ${file.name} for streaming`
-        const remuxStartMs = Date.now()
-        setProgressPhase(remuxPhaseLabel)
-        try {
-            file = await remuxModule.remuxToStreamingMp4(file, remuxKind, (progress) => {
-                updateProgressBar(Math.round((progress / 100) * totalBytes), remuxStartMs, remuxPhaseLabel)
-            })
-            files = [file]
-            displayName = file.name
-            totalBytes = file.size
-            console.log(`Remuxed upload for streaming: ${displayName}`)
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            alert(`Remux failed.\n\n${message}`)
-            restoreUploadUi()
-            return
-        }
-    }
-
-    if (single) {
-        displayName = file.name
-        totalBytes = file.size
-        inputStream = file.stream()
-    } else {
-        displayName = Archive.defaultArchiveName()
-        totalBytes = Archive.computeTarSize(files)
-        const tarStream = Archive.createTarStream(files)
-        const teed = tarStream.tee()
-        ufidStream = teed[0]
-        inputStream = teed[1]
-    }
-
-    const ufidPhaseLabel = `Calculating UFID for ${displayName}`
-    const uploadPhaseLabel = `Uploading ${displayName}`
-    setProgressPhase(ufidPhaseLabel)
-
-    let uploadCompleted = false
-    try {
-        const salt = window.crypto.getRandomValues(new Uint8Array(16))
-        const aesKey = await Encryption.deriveAESKeyFromPassword(password, salt)
-        const initialCounter = window.crypto.getRandomValues(new Uint8Array(16))
-        // Produce initialization vector for AES-CTR encryption (salt & initial counter).
-        const IVBytes = new Uint8Array(salt.length + initialCounter.length)
-        IVBytes.set(salt, 0)
-        IVBytes.set(initialCounter, salt.length)
-        const IV = bytesToBase64(IVBytes)
-        let encryptionCounter = new Uint8Array(initialCounter)
-
-        const ufidStartMs = Date.now()
-        updateProgressBar(0, ufidStartMs, ufidPhaseLabel)
-        await new Promise((resolve) => setTimeout(resolve, 0))
-        const onUfidProgress = (bytesProcessed: number) => {
-            updateProgressBar(bytesProcessed, ufidStartMs, ufidPhaseLabel)
-        }
-        console.log(`Starting UFID generation for ${displayName}`)
-        const UFID = single
-            ? await FileProcessing.UFID(file, onUfidProgress)
-            : await FileProcessing.UFIDFromStream(ufidStream!, onUfidProgress, totalBytes)
-        console.log(`UFID generated for ${displayName}: ${UFID}`)
-
-        setProgressPhase(uploadPhaseLabel)
-        console.log(`Upload begins for ${displayName}`)
-        const startTimeMs = Date.now()
-        let bytesProcessed = 0
-
-        const existingMsgs = await client.getMessages("me", {
-            search: buildFileCardUfidLookupQuery(UFID),
-        })
-
-        if (existingMsgs.length > 0) {
-            alert(`Error: Duplicate UFID.\n\nA file with the same contents already exists.\n\nCopying UFID to clipboard.`)
-            await navigator.clipboard.writeText(UFID)
-            return
-        }
-
-        const browserParentFolderId = (window as any).__tglfsUploadParentFolderId
-        const parentFolderId = resolveUploadParentFolderId(options, { browserWasVisible, browserParentFolderId })
-
-        let fileCardData: FileCardData = createFileCardData({
-            name: displayName,
-            ufid: UFID,
-            size: totalBytes,
-            uploadComplete: false,
-            chunks: [],
-            IV: IV,
-            parentFolderId,
-        })
-        const fileCardMessage = await client.sendMessage("me", { message: serializeFileCardMessage(fileCardData) })
-
-        const byteCounterStream = new TransformStream({
-            transform(chunk, controller) {
-                bytesProcessed += chunk.length;
-                controller.enqueue(chunk);
-            },
-        })
-
-        const fileStream = inputStream.pipeThrough(byteCounterStream)
-        const compressedStream = fileStream.pipeThrough(new CompressionStream("gzip"))
-        const reader = compressedStream.getReader()
-
-        let aesBlockBytesWritten = 0
-        const encryptionBuffer = new Uint8Array(Encryption.ENCRYPTION_CHUNK_SIZE)
-        let partBytesWritten = 0
-        const partBuffer = new Uint8Array(UPLOAD_PART_SIZE)
-        let partIndex = 0
-        let chunkIndex = 0
-        let chunkBytesWritten = 0
-        let chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER))
-
-        let done, value
-        while ((({ done, value } = await reader.read()), !done)) {
-            let valueBytesProcessed = 0
-            // Write the value to encryptionBuffer.
-            while (valueBytesProcessed < value.length) {
-                const remainingEncryptionBufferSpace = encryptionBuffer.length - aesBlockBytesWritten // Remaining space in encryptionBuffer.
-                const remainingValueBytesToProcess = value.length - valueBytesProcessed
-                const bytesToCopy = Math.min(remainingValueBytesToProcess, remainingEncryptionBufferSpace)
-                encryptionBuffer.set(
-                    value.subarray(valueBytesProcessed, valueBytesProcessed + bytesToCopy),
-                    aesBlockBytesWritten,
-                )
-                aesBlockBytesWritten += bytesToCopy
-                valueBytesProcessed += bytesToCopy
-                if (aesBlockBytesWritten === encryptionBuffer.length) {
-                    // encryptionBuffer is full. Encrypt it.
-                    const encryptedData = new Uint8Array(
-                        await window.crypto.subtle.encrypt(
-                            {
-                                name: "AES-CTR",
-                                counter: encryptionCounter,
-                                length: 64, // Bit length of the counter block.
-                            },
-                            aesKey,
-                            encryptionBuffer,
-                        ),
-                    )
-                    // Reset the encryption buffer and advance AES-CTR counter by blocks processed.
-                    aesBlockBytesWritten = 0
-                    const blocks = Math.ceil(encryptionBuffer.length / 16)
-                    encryptionCounter = Encryption.incrementCounter64By(encryptionCounter, blocks)
-                    // Write the encrypted data to partBuffer in a loop.
-                    let encryptedDataBytesProcessed = 0
-                    while (encryptedDataBytesProcessed < encryptedData.length) {
-                        const remainingPartBufferSpace = partBuffer.length - partBytesWritten
-                        const remainingEncryptedDataBytesToProcess = encryptedData.length - encryptedDataBytesProcessed
-                        const bytesToCopy = Math.min(remainingEncryptedDataBytesToProcess, remainingPartBufferSpace)
-                        partBuffer.set(
-                            encryptedData.subarray(encryptedDataBytesProcessed, encryptedDataBytesProcessed + bytesToCopy),
-                            partBytesWritten,
-                        )
-                        partBytesWritten += bytesToCopy
-                        encryptedDataBytesProcessed += bytesToCopy
-                        if (partBytesWritten === UPLOAD_PART_SIZE) {
-                            // partBuffer is full. Send as much as will fit in this chunk.
-                            const remainingChunkSpace = config.chunkSize - chunkBytesWritten
-                            if (remainingChunkSpace <= UPLOAD_PART_SIZE) {
-                                // Part overflows chunk size. Finalize the chunk
-                                // and populate next one with leftover data in partBuffer.
-                                const partBufferSubarray = partBuffer.subarray(0, remainingChunkSpace)
-                                // Send partBufferSubarray as a file part to Telegram.
-                                const result = await client.invoke(
-                                    new Api.upload.SaveBigFilePart({
-                                        fileId: chunkFileId,
-                                        filePart: partIndex,
-                                        fileTotalParts: partIndex + 1,
-                                        bytes: Buffer.from(partBufferSubarray),
-                                    }),
-                                )
-                                if (!result) {
-                                    throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-                                }
-                                console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-
-                                // Finalize the chunk.
-                                const chunkFileUploaded = new Api.InputFileBig({
-                                    id: chunkFileId,
-                                    parts: partIndex + 1,
-                                    name: `${UFID}.chunk${chunkIndex + 1}`,
-                                })
-                                // Send the chunk message.
-                                const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded })
-
-                                // Update file card.
-                                fileCardData.chunks.push(chunkMessage.id)
-                                await client.invoke(
-                                    new Api.messages.EditMessage({
-                                        peer: fileCardMessage.peerId,
-                                        id: fileCardMessage.id,
-                                        message: serializeFileCardMessage(fileCardData),
-                                    }),
-                                )
-
-                                // Reset chunk index and fileId for the next chunk.
-                                chunkIndex++
-                                chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER))
-
-                                // Left shift bytes in partBuffer by remainingChunkSpace.
-                                partBuffer.copyWithin(0, remainingChunkSpace)
-                                partBytesWritten -= remainingChunkSpace
-                                partIndex = 0
-
-                                // Update chunkBytesWritten with the size of the roll-over data.
-                                chunkBytesWritten = UPLOAD_PART_SIZE - remainingChunkSpace
-                            } else {
-                                // Send the partBuffer data as a file part.
-                                const result = await client.invoke(
-                                    new Api.upload.SaveBigFilePart({
-                                        fileId: chunkFileId,
-                                        filePart: partIndex,
-                                        fileTotalParts: -1,
-                                        bytes: Buffer.from(partBuffer),
-                                    }),
-                                )
-                                if (!result) {
-                                    throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-                                }
-                                console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-                                partBytesWritten = 0
-                                partIndex++
-
-                                // Update chunkBytesWritten.
-                                chunkBytesWritten += UPLOAD_PART_SIZE
-                            }
-                        }
-                    }
-                }
-            }
-            // Update the progress UI.
-            updateProgressBar(bytesProcessed, startTimeMs, uploadPhaseLabel)
-        }
-        // Flush encryptionBuffer.
-        if (aesBlockBytesWritten > 0) {
-            const encryptedData = new Uint8Array(
-                await window.crypto.subtle.encrypt(
-                    {
-                        name: "AES-CTR",
-                        counter: encryptionCounter,
-                        length: 64, // Bit length of the counter block.
-                    },
-                    aesKey,
-                    encryptionBuffer.subarray(0, aesBlockBytesWritten),
-                ),
-            )
-            const tailBlocks = Math.ceil(aesBlockBytesWritten / 16)
-            encryptionCounter = Encryption.incrementCounter64By(encryptionCounter, tailBlocks)
-            let encryptedDataBytesProcessed = 0
-            while (encryptedDataBytesProcessed < encryptedData.length) {
-                const remainingPartBufferSpace = partBuffer.length - partBytesWritten
-                const remainingEncryptedDataBytesToProcess = encryptedData.length - encryptedDataBytesProcessed
-                const bytesToCopy = Math.min(remainingEncryptedDataBytesToProcess, remainingPartBufferSpace)
-                partBuffer.set(
-                    encryptedData.subarray(encryptedDataBytesProcessed, encryptedDataBytesProcessed + bytesToCopy),
-                    partBytesWritten,
-                )
-                partBytesWritten += bytesToCopy
-                encryptedDataBytesProcessed += bytesToCopy
-
-                if (partBytesWritten === UPLOAD_PART_SIZE) {
-                    // Part buffer is full. Send as much as will fit in this chunk.
-                    const remainingChunkSpace = config.chunkSize - chunkBytesWritten
-                    if (remainingChunkSpace <= UPLOAD_PART_SIZE) {
-                        // Part overflows chunk size. Finalize the chunk
-                        // and populate next one with leftover data in partBuffer.
-                        const partBufferSubarray = partBuffer.subarray(0, remainingChunkSpace)
-                        const result = await client.invoke(
-                            new Api.upload.SaveBigFilePart({
-                                fileId: chunkFileId,
-                                filePart: partIndex,
-                                fileTotalParts: partIndex + 1,
-                                bytes: Buffer.from(partBufferSubarray),
-                            }),
-                        )
-                        if (!result) {
-                            throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-                        }
-                        console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-
-                        const chunkFileUploaded = new Api.InputFileBig({
-                            id: chunkFileId,
-                            parts: partIndex + 1,
-                            name: `${UFID}.chunk${chunkIndex + 1}`,
-                        })
-                        // Send the chunk message.
-                        const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded })
-
-                        // Update file card.
-                        fileCardData.chunks.push(chunkMessage.id)
-                        await client.invoke(
-                            new Api.messages.EditMessage({
-                                peer: fileCardMessage.peerId,
-                                id: fileCardMessage.id,
-                                message: serializeFileCardMessage(fileCardData),
-                            }),
-                        )
-
-                        // Reset chunk index and fileId for the next chunk.
-                        chunkIndex++
-                        chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER))
-
-                        // Left shift bytes in partBuffer by remainingChunkSpace.
-                        partBuffer.copyWithin(0, remainingChunkSpace)
-                        partBytesWritten -= remainingChunkSpace
-                        partIndex = 0
-
-                        // Update chunkBytesWritten with the size of the roll-over data.
-                        chunkBytesWritten = UPLOAD_PART_SIZE - remainingChunkSpace
-                    } else {
-                        const result = await client.invoke(
-                            new Api.upload.SaveBigFilePart({
-                                fileId: chunkFileId,
-                                filePart: partIndex,
-                                fileTotalParts: -1,
-                                bytes: Buffer.from(partBuffer),
-                            }),
-                        )
-                        if (!result) {
-                            throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-                        }
-                        console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-                        partBytesWritten = 0
-                        partIndex++
-
-                        // Update chunkBytesWritten.
-                        chunkBytesWritten += UPLOAD_PART_SIZE
-                    }
-                }
-            }
-        }
-        // Flush partBuffer.
-        if (partBytesWritten > 0) {
-            const remainingChunkSpace = config.chunkSize - chunkBytesWritten
-            if (remainingChunkSpace <= partBytesWritten) {
-                // Part overflows chunk size. Finalize the chunk
-                // and populate next one with leftover data in partBuffer.
-                const partBufferSubarray = partBuffer.subarray(0, remainingChunkSpace)
-                const result = await client.invoke(
-                    new Api.upload.SaveBigFilePart({
-                        fileId: chunkFileId,
-                        filePart: partIndex,
-                        fileTotalParts: partIndex + 1,
-                        bytes: Buffer.from(partBufferSubarray),
-                    }),
-                )
-                if (!result) {
-                    throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-                }
-                console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-
-                const chunkFileUploaded = new Api.InputFileBig({
-                    id: chunkFileId,
-                    parts: partIndex + 1,
-                    name: `${UFID}.chunk${chunkIndex + 1}`,
-                })
-                // Send the chunk message.
-                const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded })
-
-                // Update file card.
-                fileCardData.chunks.push(chunkMessage.id)
-                await client.invoke(
-                    new Api.messages.EditMessage({
-                        peer: fileCardMessage.peerId,
-                        id: fileCardMessage.id,
-                        message: serializeFileCardMessage(fileCardData),
-                    }),
-                )
-
-                // Reset chunk index and fileId for the next chunk.
-                chunkIndex++
-                chunkFileId = BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER))
-
-                // Left shift bytes in partBuffer by remainingChunkSpace.
-                partBuffer.copyWithin(0, remainingChunkSpace)
-                partBytesWritten -= remainingChunkSpace
-                partIndex = 0
-
-                // Note: We don't need chunkBytesWritten anymore,
-                // so we don't update it here as we did before.
-            }
-            // Upload the roll-over data in partBuffer as the last chunk.
-            const partBufferSubarray = partBuffer.subarray(0, partBytesWritten)
-            const result = await client.invoke(
-                new Api.upload.SaveBigFilePart({
-                    fileId: chunkFileId,
-                    filePart: partIndex,
-                    fileTotalParts: partIndex + 1,
-                    bytes: Buffer.from(partBufferSubarray),
-                }),
-            )
-            if (!result) {
-                throw new Error(`Failed to upload chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-            }
-            console.log(`Uploaded chunk ${chunkIndex + 1} part ${partIndex + 1}.`)
-        }
-        const chunkFileUploaded = new Api.InputFileBig({
-            id: chunkFileId,
-            parts: partIndex + 1,
-            name: `${UFID}.chunk${chunkIndex + 1}`,
-        })
-        // Send the chunk message.
-        const chunkMessage = await client.sendFile("me", { file: chunkFileUploaded })
-
-        // Update file card with last chunk included and uploadComplete being true.
-        fileCardData.chunks.push(chunkMessage.id)
-        fileCardData.uploadComplete = true
-        await client.invoke(
-            new Api.messages.EditMessage({
-                peer: fileCardMessage.peerId,
-                id: fileCardMessage.id,
-                message: serializeFileCardMessage(fileCardData),
-            }),
-        )
-        uploadCompleted = true
-
-        const humanReadableFileSize = humanReadableSize(fileCardData.size)
-        const date = new Date(fileCardMessage.date * 1000)
-        const formattedDate = date
-            .toLocaleString("en-US", {
-                year: "numeric",
-                month: "2-digit",
-                day: "2-digit",
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
-                hour12: false,
-            })
-            .replace(",", "") // Remove the comma between date and time.
-
-        const fileInfo = `Name: ${fileCardData.name}\nUFID: ${fileCardData.ufid}\nSize: ${humanReadableFileSize}\nTimestamp: ${formattedDate}`
-    
-        alert(`File upload complete:\n\n${fileInfo}\n\nCopying UFID to clipboard.`)
-
-        await navigator.clipboard.writeText(fileCardData.ufid)
-    } catch (error) {
-        console.error(error)
-    } finally {
-        restoreUploadUiAndMaybeRefreshBrowser(restoreUploadUi, uploadCompleted)
-    }
+    void Transfers.enqueue(
+        {
+            direction: "upload",
+            name: single ? file.name : archiveName!,
+            size: single ? file.size : Archive.computeTarSize(files),
+            meta: { parentFolderId },
+        },
+        (transfer) => runFileUploadJob(client, config, job, transfer),
+    ).catch((error) => console.warn("Upload failed:", error))
 }
 
 export async function listFileCards(
@@ -2516,200 +2339,9 @@ export async function downloadFileCard(
     password: string | null,
 ): Promise<void> {
     await gramJsReady
-    // Lightweight wrapper calling existing fileDownload code path with minor factoring would be ideal.
-    // For now, reuse core logic by temporarily stashing into window and invoking a specialized path is not necessary.
-    // We inline minimal setup and call the internal logic similar to fileDownload, but without prompts.
-    const { browserWasVisible, restore: restoreTransferUi } = showTransferProgress()
-
-    const progressBarText = document.getElementById("progressBarText")
-    const progressBar = document.getElementById("progress")
-    const progressBytesText = document.getElementById("progressBytesText")
-    const progressTimeText = document.getElementById("progressTimeText")
-    if (progressBarText && progressBar) {
-        progressBarText.textContent = `Downloading ${data.name}`
-        progressBar.style.width = "0%"
-        progressBar.textContent = "0%"
-        progressBar.setAttribute("aria-valuenow", "0")
-        if (progressBytesText) progressBytesText.textContent = `0 / ${data.size} B`
-        if (progressTimeText) progressTimeText.textContent = `Elapsed: 00:00:00 • Remaining: --:--:--`
-    }
-
-    try {
-        const chunkMsgs: TelegramApi.messages.Messages = await client.getMessages("me", { ids: data.chunks })
-        const IVBytes = base64ToBytes(data.IV)
-        const salt = IVBytes.subarray(0, 16)
-        const aesKey = await Encryption.deriveAESKeyFromPassword(password ?? "", salt)
-        let decryptionCounter = IVBytes.slice(16)
-
-        let aesBlockBytesWritten = 0
-        const decryptionBuffer = new Uint8Array(Encryption.ENCRYPTION_CHUNK_SIZE)
-
-        let bytesProcessed = 0
-        const startTimeMs = Date.now()
-        const UFIDChunkSize = 64 * 1024
-        let ufidRolling = new Uint8Array(0)
-        let ufidPending = new Uint8Array(0)
-        const progressBytesTextEl = progressBytesText
-        const progressBarEl = progressBar as HTMLElement | null
-        const progressTimeTextEl = progressTimeText
-        const byteCounterStream = new TransformStream<Uint8Array, Uint8Array>({
-            async transform(chunk, controller) {
-                bytesProcessed += chunk.length
-                if (progressBarEl) {
-                    const progressPercentage = Math.round((bytesProcessed / data.size) * 100).toString()
-                    progressBarEl.style.width = `${progressPercentage}%`
-                    progressBarEl.textContent = `${progressPercentage}%`
-                    progressBarEl.setAttribute("aria-valuenow", progressPercentage)
-                }
-                if (progressBytesTextEl) {
-                    const units = ["B", "KiB", "MiB", "GiB", "PiB"] as const
-                    const pickUnit = (n: number) => {
-                        let i = 0
-                        while (i < units.length - 1 && n >= 1024) {
-                            n = n / 1024
-                            i++
-                        }
-                        return { value: n, unit: units[i] }
-                    }
-                    const sofar = pickUnit(bytesProcessed)
-                    const total = pickUnit(data.size)
-                    progressBytesTextEl.textContent = `${sofar.value.toFixed(sofar.unit === "B" ? 0 : 2)} ${sofar.unit} / ${total.value.toFixed(total.unit === "B" ? 0 : 2)} ${total.unit}`
-                }
-                if (progressTimeTextEl) {
-                    const elapsedSec = Math.max(0, Math.floor((Date.now() - startTimeMs) / 1000))
-                    const rate = elapsedSec > 0 ? bytesProcessed / elapsedSec : 0
-                    const remainingBytes = Math.max(0, data.size - bytesProcessed)
-                    const etaSec = rate > 0 ? Math.ceil(remainingBytes / rate) : 0
-                    const fmt = (s: number) => {
-                        const h = Math.floor(s / 3600)
-                        const m = Math.floor((s % 3600) / 60)
-                        const sec = s % 60
-                        const pad = (n: number) => n.toString().padStart(2, "0")
-                        return `${pad(h)}:${pad(m)}:${pad(sec)}`
-                    }
-                    progressTimeTextEl.textContent = `Elapsed: ${fmt(elapsedSec)} • Remaining: ${etaSec ? fmt(etaSec) : "--:--:--"}`
-                }
-                const combined = new Uint8Array(ufidPending.length + chunk.length)
-                combined.set(ufidPending, 0)
-                combined.set(chunk, ufidPending.length)
-                let offset = 0
-                while (offset + UFIDChunkSize <= combined.length) {
-                    const piece = combined.subarray(offset, offset + UFIDChunkSize)
-                    const toHash = new Uint8Array(ufidRolling.length + UFIDChunkSize)
-                    toHash.set(ufidRolling, 0)
-                    toHash.set(piece, ufidRolling.length)
-                    const hash = await window.crypto.subtle.digest("SHA-256", toHash.buffer)
-                    ufidRolling = new Uint8Array(hash)
-                    offset += UFIDChunkSize
-                }
-                ufidPending = combined.subarray(offset)
-                controller.enqueue(chunk)
-            },
-        })
-
-        async function downloadFile(serviceWorkerRegistration: ServiceWorkerRegistration) {
-            const downloadPump = createServiceWorkerDownloadPump(serviceWorkerRegistration, data.name, byteCounterStream)
-            let streamError: unknown = null
-            try {
-                for (const chunkMsg of chunkMsgs) {
-                    let chunkBytesWritten = 0
-                    while (chunkBytesWritten < (chunkMsg as any).media.document.size) {
-                        const chunkPart = await client.invoke(
-                            new Api.upload.GetFile({
-                                location: getFileInfo((chunkMsg as any).media).location,
-                                offset: chunkBytesWritten,
-                                limit: DOWNLOAD_PART_SIZE,
-                                precise: false,
-                                cdnSupported: false,
-                            }),
-                        )
-                        chunkBytesWritten += (chunkPart as any).bytes.length
-                        decryptionBuffer.set((chunkPart as any).bytes, aesBlockBytesWritten)
-                        aesBlockBytesWritten += (chunkPart as any).bytes.length
-                        if (aesBlockBytesWritten === decryptionBuffer.length) {
-                            const decryptedData = new Uint8Array(
-                                await window.crypto.subtle.decrypt(
-                                    { name: "AES-CTR", counter: decryptionCounter, length: 64 },
-                                    aesKey,
-                                    decryptionBuffer,
-                                ),
-                            )
-                            const blocks = Math.ceil(decryptionBuffer.length / 16)
-                            decryptionCounter = Encryption.incrementCounter64By(decryptionCounter, blocks)
-                            aesBlockBytesWritten = 0
-                            await downloadPump.write(decryptedData)
-                        }
-                    }
-                }
-                if (aesBlockBytesWritten > 0) {
-                    const decryptedData = new Uint8Array(
-                        await window.crypto.subtle.decrypt(
-                            { name: "AES-CTR", counter: decryptionCounter, length: 64 },
-                            aesKey,
-                            decryptionBuffer.subarray(0, aesBlockBytesWritten),
-                        ),
-                    )
-                    const tailBlocks = Math.ceil(aesBlockBytesWritten / 16)
-                    decryptionCounter = Encryption.incrementCounter64By(decryptionCounter, tailBlocks)
-                    await downloadPump.write(decryptedData)
-                }
-                await downloadPump.close()
-            } catch (error) {
-                streamError = error
-                await downloadPump.abort(error)
-            } finally {
-                serviceWorkerRegistration.active?.postMessage({ type: "DOWNLOAD_COMPLETE" })
-            }
-            if (streamError) {
-                if (streamError instanceof Error && streamError.message === "Incorrect decryption password.") {
-                    alert("Incorrect decryption password entered. Aborting download.")
-                }
-                throw streamError
-            }
-            if (ufidPending.length > 0) {
-                const padded = new Uint8Array(UFIDChunkSize)
-                padded.set(ufidPending, 0)
-                const toHash = new Uint8Array(ufidRolling.length + UFIDChunkSize)
-                toHash.set(ufidRolling, 0)
-                toHash.set(padded, ufidRolling.length)
-                const hash = await window.crypto.subtle.digest("SHA-256", toHash.buffer)
-                ufidRolling = new Uint8Array(hash)
-                ufidPending = new Uint8Array(0)
-            }
-            const computedUfid = Array.from(ufidRolling)
-                .map((b) => b.toString(16).padStart(2, "0"))
-                .join("")
-            if (computedUfid !== data.ufid) {
-                alert("UFID mismatch. The downloaded file may be corrupted or the wrong password was used.")
-            }
-        }
-        const sanitizedUfid = encodeURIComponent(data.ufid)
-        const response = await fetch("/download-file?ufid=" + sanitizedUfid)
-        if (!response.ok) {
-            console.error("Failed to download file.")
-            alert("Failed to download file.")
-            return
-        }
-        const serviceWorkerRegistration = await navigator.serviceWorker.ready
-        if (serviceWorkerRegistration.active) {
-            await downloadFile(serviceWorkerRegistration)
-            showToast("Download complete", { tone: "success" })
-        } else {
-            console.error("Service worker is not active.")
-            alert("Service worker is not active. Cannot proceed with the download.")
-        }
-        const blob = await response.blob()
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement("a")
-        a.href = url
-        a.download = data.name
-        document.body.appendChild(a)
-        a.click()
-        document.body.removeChild(a)
-        URL.revokeObjectURL(url)
-    } finally {
-        restoreTransferUi()
-    }
+    // Queues the download in the transfer tray and returns immediately; progress, errors and cancellation are
+    // handled there.
+    enqueueFileCardDownload(client, data, password ?? "")
 }
 
 export type AuthHandlers = {

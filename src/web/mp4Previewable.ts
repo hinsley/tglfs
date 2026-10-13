@@ -15,6 +15,8 @@ import { createStreamingPreviewableMp4 } from "./streamingMp4Conversion"
 import { uploadGeneratedFileStream } from "./generatedUpload"
 import { notifyBrowserActionsChanged, registerBrowserAction, type BrowserSelectionItem } from "./browserActions"
 import { requestConfirm, requestText, showToast } from "./dialogs"
+import { enqueue as enqueueTransfer, type TransferHandle } from "./transfers"
+import { TGLFS_ROOT_PARENT_ID } from "../../packages/tglfs-cli/src/shared/constants"
 
 const DESKTOP_ID = "browserActionMakeMp4Previewable"
 const MOBILE_ID = "actionMakeMp4PreviewableItem"
@@ -32,10 +34,6 @@ function selectedMp4(selection: BrowserSelectionItem[]): SelectedMp4 | null {
         : null
 }
 
-function showStatus(message: string, persistent = false) {
-    showToast(message, { durationMs: persistent ? null : 2200 })
-}
-
 function parentFolderId(data: FileCardData): string | undefined {
     const value = (data as FileCardData & { parentFolderId?: unknown }).parentFolderId
     return typeof value === "string" && value.trim() ? value.trim() : undefined
@@ -50,19 +48,14 @@ async function loadFileCard(client: any, selected: SelectedMp4): Promise<FileCar
     return data
 }
 
-async function reportGeneratedUploadComplete(record: Awaited<ReturnType<typeof uploadGeneratedFileStream>>) {
-    window.dispatchEvent(new Event("tglfs:refresh-browser"))
-    let copied = false
-    try {
-        await navigator.clipboard.writeText(record.data.ufid)
-        copied = true
-    } catch (error) {
-        console.warn("Unable to copy generated MP4 UFID", error)
-    }
-    showToast(
-        `Created ${record.data.name} (${formatFileCardSize(record.data.size)})${copied ? " · UFID copied" : ""}`,
-        { tone: "success", durationMs: 4000 },
-    )
+function reportGeneratedUploadComplete(record: Awaited<ReturnType<typeof uploadGeneratedFileStream>>, transfer: TransferHandle) {
+    const event = new Event("tglfs:refresh-browser") as Event & { tglfsParentFolderId?: string }
+    event.tglfsParentFolderId = parentFolderId(record.data) ?? TGLFS_ROOT_PARENT_ID
+    window.dispatchEvent(event)
+    transfer.complete({
+        ufid: record.data.ufid,
+        message: `Created · ${formatFileCardSize(record.data.size)}`,
+    })
 }
 
 async function runStreamingPath(
@@ -71,21 +64,10 @@ async function runStreamingPath(
     data: FileCardData,
     outputName: string,
     stream: ReadableStream<Uint8Array>,
+    uploadPassword: string,
+    transfer: TransferHandle,
 ) {
-    const uploadPassword = await requestText({
-        title: "Encrypt previewable MP4",
-        label: "Encryption password (optional)",
-        inputType: "password",
-        allowEmpty: true,
-        confirmLabel: "Start",
-        icon: "lock",
-    })
-    if (uploadPassword === null) {
-        await stream.cancel("Previewable MP4 creation cancelled.")
-        return
-    }
-
-    showStatus("Starting storage-free MP4 conversion...", true)
+    transfer.setPhase("Converting and uploading", { span: [0.02, 1], total: data.size })
     const conversion = await createStreamingPreviewableMp4(stream)
     let uploadPromise: ReturnType<typeof uploadGeneratedFileStream> | null = null
 
@@ -95,12 +77,14 @@ async function runStreamingPath(
             stream: conversion.stream,
             password: uploadPassword,
             parentFolderId: parentFolderId(data),
+            signal: transfer.signal,
             onProgress: ({ plaintextBytes }) => {
-                showStatus(`Streaming converted MP4 to Telegram: ${formatFileCardSize(plaintextBytes)}`, true)
+                // The converted MP4 is roughly the size of the source; cap at the source size for the bar.
+                transfer.update({ bytes: Math.min(plaintextBytes, data.size) })
             },
         })
         const [record] = await Promise.all([uploadPromise, conversion.completion])
-        await reportGeneratedUploadComplete(record)
+        reportGeneratedUploadComplete(record, transfer)
     } catch (error) {
         try { await conversion.cancel() } catch {}
         try { await uploadPromise } catch {}
@@ -114,31 +98,47 @@ async function runStagedPath(
     data: FileCardData,
     outputName: string,
     stream: ReadableStream<Uint8Array>,
+    uploadPassword: string,
+    transfer: TransferHandle,
 ): Promise<DownloadedSource> {
     const remux = await import("./videoRemux")
     if (data.size >= remux.MAX_FFMPEG_INPUT_BYTES) {
         throw new Error(`Browser conversion is limited to files smaller than ${remux.MAX_FFMPEG_INPUT_BYTES.toLocaleString()} bytes by FFmpeg WebAssembly.`)
     }
 
-    showStatus("MP4 metadata is trailing; staging the source in temporary OPFS...", true)
+    transfer.setPhase("Downloading source", { span: [0.02, 0.35], total: 100, unit: "percent" })
     const downloaded = await stagePlaintextStreamToTemporaryFile(
         stream,
         outputName,
         data.size,
-        (progress) => showStatus(`Staging trailing-metadata MP4 ${progress}%`, true),
+        (progress) => {
+            transfer.throwIfCancelled()
+            transfer.update({ bytes: progress })
+        },
         { allowMemoryFallback: false },
     )
 
-    showStatus("Preparing FFmpeg conversion from temporary storage...", true)
-    const converted = await remux.remuxToStreamingMp4(downloaded.file, "mp4", (progress) => {
-        showStatus(`Making MP4 previewable ${progress}%`, true)
-    })
-    remux.markVideoPreviewReady(converted)
+    try {
+        transfer.setPhase("Making previewable", { span: [0.35, 0.6], total: 100, unit: "percent" })
+        const converted = await remux.remuxToStreamingMp4(downloaded.file, "mp4", (progress) => {
+            transfer.update({ bytes: progress })
+        })
+        remux.markVideoPreviewReady(converted)
+        transfer.throwIfCancelled()
 
-    showStatus("Starting encrypted upload of the new MP4...", true)
-    const Telegram = await import("../telegram")
-    await Telegram.fileUpload(client, config, [converted], { parentFolderId: parentFolderId(data) })
-    showStatus("MP4 upload flow finished")
+        const Telegram = await import("../telegram")
+        const uploaded = await Telegram.runFileUploadJob(
+            client,
+            config,
+            { files: [converted], password: uploadPassword, parentFolderId: parentFolderId(data) ?? TGLFS_ROOT_PARENT_ID, remux: null },
+            transfer,
+            { span: [0.6, 1] },
+        )
+        transfer.complete({ ufid: uploaded.data.ufid, message: `Created · ${formatFileCardSize(uploaded.data.size)}` })
+    } catch (error) {
+        await downloaded.cleanup()
+        throw error
+    }
     return downloaded
 }
 
@@ -152,57 +152,69 @@ async function makePreviewable(selection: BrowserSelectionItem[]) {
         return
     }
 
-    const confirmed = await requestConfirm({
-        title: "Make MP4 previewable?",
-        message: `Creates a new streaming-friendly copy of "${selected.name}". The original remains unchanged. ` +
-            "Front-loaded MP4s are converted and uploaded as one bounded stream; MP4s with trailing metadata are staged in temporary browser storage first.",
-        confirmLabel: "Continue",
-        icon: "film",
-    })
-    if (!confirmed) return
-    const sourcePassword = await requestText({
-        title: "Decrypt source MP4",
-        label: "Decryption password (leave empty if none)",
-        inputType: "password",
-        allowEmpty: true,
-        confirmLabel: "Continue",
-        icon: "key",
-    })
-    if (sourcePassword === null) return
-
+    // All questions are asked up front, so the queued job never waits on a dialog.
     busy = true
     notifyBrowserActionsChanged()
-    let downloaded: DownloadedSource | null = null
+    let sourcePassword: string | null = null
+    let uploadPassword: string | null = null
     try {
-        const data = await loadFileCard(client, selected)
-        const outputName = getPreviewableMp4Name(data.name)
-        let sourcePhase = "Inspecting MP4 metadata layout"
-        const plaintext = await createFileCardPlaintextStream(client, data, sourcePassword, (progress) => {
-            showStatus(`${sourcePhase} ${progress}%`, true)
+        const confirmed = await requestConfirm({
+            title: "Make MP4 previewable?",
+            message: `Creates a new streaming-friendly copy of "${selected.name}". The original remains unchanged. ` +
+                "Front-loaded MP4s are converted and uploaded as one bounded stream; MP4s with trailing metadata are staged in temporary browser storage first.",
+            confirmLabel: "Continue",
+            icon: "film",
         })
-        const probed = await probeMp4MetadataPlacement(plaintext)
-
-        if (probed.placement === "front-loaded") {
-            sourcePhase = "Streaming source MP4"
-            await runStreamingPath(client, config, data, outputName, probed.stream)
-            return
-        }
-
-        sourcePhase = probed.placement === "trailing"
-            ? "Downloading trailing-metadata MP4"
-            : "Downloading MP4 with an unconfirmed metadata layout"
-        downloaded = await runStagedPath(client, config, data, outputName, probed.stream)
-    } catch (error) {
-        console.error(error)
-        showToast(
-            `Unable to make this MP4 previewable: ${error instanceof Error ? error.message : String(error)}`,
-            { tone: "error", durationMs: 6000 },
-        )
+        if (!confirmed) return
+        sourcePassword = await requestText({
+            title: "Decrypt source MP4",
+            label: "Decryption password (leave empty if none)",
+            inputType: "password",
+            allowEmpty: true,
+            confirmLabel: "Continue",
+            icon: "key",
+        })
+        if (sourcePassword === null) return
+        uploadPassword = await requestText({
+            title: "Encrypt previewable MP4",
+            label: "Encryption password (optional)",
+            inputType: "password",
+            allowEmpty: true,
+            confirmLabel: "Start",
+            icon: "lock",
+        })
+        if (uploadPassword === null) return
     } finally {
-        await downloaded?.cleanup()
         busy = false
         notifyBrowserActionsChanged()
     }
+
+    const decryptPassword = sourcePassword
+    const encryptPassword = uploadPassword
+    void enqueueTransfer(
+        { direction: "upload", name: getPreviewableMp4Name(selected.name), meta: { sourceMsgId: selected.msgId } },
+        async (transfer) => {
+            transfer.setPhase("Reading source", { span: [0, 0.02] })
+            const data = await loadFileCard(client, selected)
+            const outputName = getPreviewableMp4Name(data.name)
+            transfer.update({ name: outputName, size: data.size })
+            const plaintext = await createFileCardPlaintextStream(client, data, decryptPassword, () => {
+                transfer.throwIfCancelled()
+            })
+            const probed = await probeMp4MetadataPlacement(plaintext)
+            transfer.throwIfCancelled()
+
+            if (probed.placement === "front-loaded") {
+                await runStreamingPath(client, config, data, outputName, probed.stream, encryptPassword, transfer)
+                return
+            }
+            const downloaded = await runStagedPath(client, config, data, outputName, probed.stream, encryptPassword, transfer)
+            await downloaded.cleanup()
+        },
+    ).catch((error) => {
+        // The failure (with its message) is shown on the transfer's row in the tray.
+        console.warn("Make MP4 previewable failed:", error)
+    })
 }
 
 registerBrowserAction({

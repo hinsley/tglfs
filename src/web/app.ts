@@ -1,6 +1,8 @@
 import "./polyfills"
 import { hydrateIcons, icon } from "./icons"
 import { requestConfirm, showToast } from "./dialogs"
+import { begin as beginTransfer, type TransferHandle } from "./transfers"
+import { mountTransferTray } from "./transferTray"
 
 type TelegramModule = typeof import("../telegram")
 type BrowserModule = typeof import("./browser")
@@ -134,32 +136,6 @@ function wireThemeToggle() {
     })
 }
 
-function syncProgressDecorations() {
-    const progressBar = document.getElementById("progress")
-    const percent = document.getElementById("progressPercent")
-    const title = document.getElementById("progressBarText")
-    const badge = document.querySelector<HTMLElement>("#progressBarContainer .fx-progress-badge")
-    if (!progressBar || !percent) {
-        return
-    }
-    const update = () => {
-        const text = (progressBar.textContent ?? "").trim()
-        percent.textContent = text || ""
-        const downloading = /download|receiv|migrat|fold/i.test(title?.textContent ?? "")
-        const kind = /migrat|fold/i.test(title?.textContent ?? "") ? "wrench" : downloading ? "download" : "cloudUp"
-        if (badge && badge.dataset.kind !== kind) {
-            badge.dataset.kind = kind
-            badge.innerHTML = icon(kind)
-        }
-    }
-    const observer = new MutationObserver(update)
-    observer.observe(progressBar, { childList: true, characterData: true, subtree: true })
-    if (title) {
-        observer.observe(title, { childList: true, characterData: true, subtree: true })
-    }
-    update()
-}
-
 function clearShareTargetQuery() {
     if (!window.location.search.includes("share-target")) {
         return
@@ -177,44 +153,23 @@ function queueShareFiles(files: File[]) {
     void maybeUploadSharedFiles()
 }
 
-function renderDirectoryMigrationProgress(progress: DirectoryParentMigrationProgress) {
-    const progressDiv = document.getElementById("progressBarContainer")
-    const progressBarText = document.getElementById("progressBarText")
-    const progressBar = document.getElementById("progress") as HTMLElement | null
-    const progressBytesText = document.getElementById("progressBytesText")
-    const progressTimeText = document.getElementById("progressTimeText")
-    if (progressDiv) {
-        progressDiv.dataset.mode = "background"
-    }
-    progressDiv?.removeAttribute("hidden")
-
-    const total = progress.total ?? 0
-    const completed = progress.completed ?? 0
-    const percentage = total > 0 ? Math.max(0, Math.min(100, Math.round((completed / total) * 100))) : 0
-    if (progressBar) {
-        progressBar.style.width = `${percentage}%`
-        progressBar.textContent = total > 0 ? `${percentage}%` : ""
-        progressBar.setAttribute("aria-valuenow", percentage.toString())
-    }
-    if (progressBarText) {
-        progressBarText.textContent = progress.message
-    }
-    if (progressBytesText) {
-        progressBytesText.textContent = total > 0
-            ? `${completed} / ${total} records`
-            : `${completed} records`
-    }
-    if (progressTimeText) {
-        const counts = [
-            progress.foldersScanned !== undefined ? `Folders scanned: ${progress.foldersScanned}` : "",
-            progress.manifestsRead !== undefined ? `Manifests read: ${progress.manifestsRead}` : "",
-            progress.filesScanned !== undefined ? `Files scanned: ${progress.filesScanned}` : "",
-            progress.foldersUpdated !== undefined ? `Folders updated: ${progress.foldersUpdated}` : "",
-            progress.filesUpdated !== undefined ? `Files updated: ${progress.filesUpdated}` : "",
-            progress.waitSeconds !== undefined ? `Waiting: ${progress.waitSeconds}s` : "",
-        ].filter(Boolean)
-        progressTimeText.textContent = counts.join(" | ")
-    }
+/** Shows a folder-index migration progress report on its transfer-tray task row. */
+function reportDirectoryMigrationProgress(task: TransferHandle, progress: DirectoryParentMigrationProgress) {
+    const counts = [
+        progress.foldersScanned !== undefined ? `${progress.foldersScanned} folders scanned` : "",
+        progress.manifestsRead !== undefined ? `${progress.manifestsRead} manifests read` : "",
+        progress.filesScanned !== undefined ? `${progress.filesScanned} files scanned` : "",
+        progress.foldersUpdated !== undefined ? `${progress.foldersUpdated} folders updated` : "",
+        progress.filesUpdated !== undefined ? `${progress.filesUpdated} files updated` : "",
+        progress.waitSeconds !== undefined ? `waiting ${progress.waitSeconds}s` : "",
+    ].filter(Boolean)
+    task.update({
+        phase: progress.message,
+        bytes: progress.completed ?? 0,
+        total: progress.total ?? 0,
+        unit: "items",
+        detail: counts.join(" · ") || null,
+    })
 }
 
 function normalizeSharedFiles(payload: unknown): File[] {
@@ -761,38 +716,37 @@ async function finalizeLogin(client: any, config: any, phoneValue: string) {
             const originalText = label?.textContent ?? "Migrate folder index"
             migrateDirectoryParentsButton.disabled = true
             if (label) label.textContent = "Migrating…"
+            const task = beginTransfer({
+                direction: "task",
+                name: "Folder index migration",
+                queue: false,
+                cancellable: false,
+                phase: "Starting folder index migration…",
+            })
             try {
                 const Telegram = await getTelegramModule()
-                renderDirectoryMigrationProgress({
-                    phase: "scanning-folders",
-                    message: "Starting folder index migration...",
-                    completed: 0,
-                })
                 const result = await Telegram.migrateDirectoryParentRefs(activeClient, {
-                    onProgress: renderDirectoryMigrationProgress,
+                    onProgress: (progress) => reportDirectoryMigrationProgress(task, progress),
                 })
                 const conflicts = result.folderParentConflicts.length + result.fileParentConflicts.length
-                showToast(
-                    [
-                        `Folder index migrated: ${result.foldersUpdated} folders and ${result.filesUpdated} files updated`,
-                        `(${result.foldersScanned} folders, ${result.filesScanned} files scanned)`,
-                        conflicts ? `· ${conflicts} conflicts skipped` : "",
-                    ].filter(Boolean).join(" "),
-                    { tone: "success", durationMs: 8000 },
-                )
+                const summary = [
+                    `${result.foldersUpdated} folders and ${result.filesUpdated} files updated`,
+                    conflicts ? `${conflicts} conflicts skipped` : "",
+                ].filter(Boolean).join(" · ")
+                task.update({
+                    detail: `${result.foldersScanned} folders and ${result.filesScanned} files scanned`,
+                })
+                task.complete({ message: summary, tone: conflicts ? "warning" : "success" })
+                showToast(`Folder index migrated: ${summary}`, { tone: "success", durationMs: 8000 })
                 window.dispatchEvent(new Event("tglfs:refresh-browser"))
             } catch (error) {
                 console.error(error)
+                task.fail(error)
                 const message = error instanceof Error ? error.message : String(error)
                 showToast(`Folder index migration failed: ${message}`, { tone: "error", durationMs: 8000 })
             } finally {
                 migrateDirectoryParentsButton.disabled = false
                 if (label) label.textContent = originalText
-                const progressDiv = document.getElementById("progressBarContainer")
-                progressDiv?.setAttribute("hidden", "")
-                if (progressDiv) {
-                    delete progressDiv.dataset.mode
-                }
             }
         })
 
@@ -1010,7 +964,7 @@ function wireLoginHandlers() {
 
 hydrateIcons()
 wireThemeToggle()
-syncProgressDecorations()
+mountTransferTray()
 wireLoginHandlers()
 
 window.addEventListener("load", async () => {

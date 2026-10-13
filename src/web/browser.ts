@@ -2295,8 +2295,6 @@ async function handleKeydown(event: KeyboardEvent) {
     const browserDiv = document.getElementById("fileBrowser")
     if (!browserDiv || browserDiv.hasAttribute("hidden")) return
     if (document.querySelector(".fx-dialog-backdrop") || isMenuOpen()) return
-    if (!document.getElementById("progressBarContainer")?.hasAttribute("hidden") &&
-        document.getElementById("progressBarContainer")?.dataset.mode !== "background") return
 
     if (previewModal?.isOpen()) {
         if (event.key === "Escape") {
@@ -2481,11 +2479,13 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     }
     refreshBrowser = doRefresh
 
-    window.addEventListener("tglfs:refresh-browser", async () => {
+    window.addEventListener("tglfs:refresh-browser", async (event) => {
         const browserDiv = document.getElementById("fileBrowser")
-        if (browserDiv && !browserDiv.hasAttribute("hidden")) {
-            await doRefresh()
-        }
+        if (!browserDiv || browserDiv.hasAttribute("hidden")) return
+        // Queued uploads finish later; only reload when the user still looks at the destination (or a search).
+        const targetFolderId = (event as Event & { tglfsParentFolderId?: string }).tglfsParentFolderId
+        if (targetFolderId && !state.query && targetFolderId !== currentDirectoryParentId()) return
+        await doRefresh()
     })
     window.addEventListener(BROWSER_ACTIONS_CHANGED_EVENT, () => updateActionStates())
     let resizeTimer: number | undefined

@@ -21,6 +21,11 @@ export type GeneratedUploadOptions = {
     password: string
     parentFolderId?: string
     onProgress?: (progress: GeneratedUploadProgress) => void
+    /**
+     * Cancels the upload between reads. Cancelling behaves exactly like a failure: the temporary chunk messages
+     * are removed and no file card is published.
+     */
+    signal?: AbortSignal
 }
 
 const DELETE_BATCH_SIZE = 50
@@ -165,6 +170,7 @@ export async function uploadGeneratedFileStream(
 
     try {
         while (true) {
+            options.signal?.throwIfAborted()
             const { done, value } = await reader.read()
             if (done) break
             if (!value?.byteLength) continue
@@ -188,6 +194,7 @@ export async function uploadGeneratedFileStream(
         if (partBufferLength) await uploadPart(nextPartIndex + 1)
         await finalizeChunk()
         if (!uploadedChunkMessageIds.length) throw new Error("The generated upload produced no Telegram chunks.")
+        options.signal?.throwIfAborted()
 
         const ufid = await ufidAccumulator.digest()
         const duplicate = await lookupFileCardByUfid(client, ufid, { peer: "me" })

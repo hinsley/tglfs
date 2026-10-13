@@ -44,6 +44,10 @@ const PATHS = {
     lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
     cloudUp: '<path d="M4 14.9A7 7 0 1 1 15.7 8h1.8a4.5 4.5 0 0 1 2.5 8.24"/><path d="M12 12v9M16 16l-4-4-4 4"/>',
     selectAll: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="m8 12 3 3 5-6"/>',
+    chevronUp: '<path d="m18 15-6-6-6 6"/>',
+    arrowUp: '<path d="M12 19V5M5 12l7-7 7 7"/>',
+    arrowDown: '<path d="M12 5v14M19 12l-7 7-7-7"/>',
+    ban: '<circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 14.14 14.14"/>',
 } as const
 
 export type IconName = keyof typeof PATHS
