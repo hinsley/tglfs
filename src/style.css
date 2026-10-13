@@ -3855,3 +3855,640 @@ kbd {
         left: calc(var(--sidebar-w) + (100vw - var(--sidebar-w) - 400px) / 2);
     }
 }
+
+/* ------------------------------------------------ History (time machine) */
+
+.fx-tb-history.is-active,
+.fx-tb-history.is-active:hover:not(:disabled) {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+}
+
+.fx-hbadges-secondary {
+    display: contents;
+}
+
+.fx-hsub .fx-hbadges-secondary {
+    display: none;
+}
+
+.fx-history-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 10px 20px 0;
+    padding: 8px 14px;
+    border: 1px solid color-mix(in srgb, var(--accent) 24%, transparent);
+    border-radius: var(--radius);
+    background: var(--accent-soft);
+    color: var(--text);
+    font-size: 13.5px;
+    animation: fx-fade 180ms ease both;
+}
+
+.fx-history-banner[hidden] {
+    display: none;
+}
+
+.fx-history-banner-icon {
+    display: inline-flex;
+    flex: none;
+    color: var(--accent-text);
+}
+
+.fx-history-banner-icon .fx-svg {
+    width: 17px;
+    height: 17px;
+}
+
+.fx-history-banner-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fx-history-banner-sep {
+    color: var(--text-3);
+}
+
+.fx-history-banner-back {
+    flex: none;
+    font-weight: 600;
+}
+
+.fx-history {
+    flex: none;
+    position: relative;
+    z-index: 5;
+    padding: 12px 20px 14px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    box-shadow: 0 -10px 28px -22px rgba(16, 24, 40, 0.45);
+    animation: fx-dock 240ms var(--ease) both;
+}
+
+.fx-history[hidden] {
+    display: none;
+}
+
+.fx-history-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.fx-history-badge {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    background: var(--accent-soft);
+    color: var(--accent-text);
+}
+
+.fx-history-badge .fx-svg {
+    width: 18px;
+    height: 18px;
+}
+
+.fx-history-titles {
+    flex: 1;
+    min-width: 0;
+}
+
+.fx-history-title {
+    overflow: hidden;
+    font-size: 14px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fx-history-sub {
+    overflow: hidden;
+    color: var(--text-3);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fx-history-legend {
+    display: flex;
+    gap: 12px;
+    color: var(--text-2);
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.fx-history-legend .is-added,
+.fx-hchip.is-added .fx-hchip-sym {
+    color: var(--success);
+}
+
+.fx-history-legend .is-removed,
+.fx-hchip.is-removed .fx-hchip-sym {
+    color: var(--danger);
+}
+
+.fx-history-legend .is-changed,
+.fx-hchip.is-changed .fx-hchip-sym {
+    color: var(--text-3);
+}
+
+.fx-hchip.is-created .fx-hchip-sym {
+    color: var(--accent-text);
+}
+
+.fx-history-about {
+    margin-top: 10px;
+    padding: 10px 14px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    color: var(--text-2);
+    font-size: 12.5px;
+    line-height: 1.5;
+}
+
+.fx-history-about[hidden] {
+    display: none;
+}
+
+.fx-history-about p {
+    margin: 0 0 4px;
+}
+
+.fx-history-about ul {
+    margin: 0;
+    padding-left: 18px;
+}
+
+.fx-history-scrub {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 8px;
+}
+
+.fx-history-skel {
+    flex: 1;
+    height: 6px;
+    margin: 14px 44px;
+    border-radius: 999px;
+}
+
+.fx-history-step {
+    width: 32px;
+    height: 32px;
+}
+
+.fx-history-track {
+    position: relative;
+    flex: 1;
+    height: 34px;
+    margin: 0 10px;
+    border-radius: 999px;
+    cursor: pointer;
+    outline: none;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.fx-history-rail,
+.fx-history-fill {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    height: 4px;
+    margin-top: -2px;
+    border-radius: 999px;
+}
+
+.fx-history-rail {
+    right: 0;
+    background: var(--surface-3);
+}
+
+.fx-history-fill {
+    width: 0;
+    background: color-mix(in srgb, var(--accent) 55%, var(--surface-3));
+    transition: width 140ms var(--ease);
+}
+
+.fx-history-tick {
+    position: absolute;
+    top: 50%;
+    width: 10px;
+    height: 10px;
+    margin: -5px 0 0 -5px;
+    border: 2px solid var(--text-3);
+    border-radius: 50%;
+    background: var(--surface);
+    transition: transform 140ms var(--ease);
+}
+
+.fx-history-tick.is-added {
+    border-color: var(--success);
+}
+
+.fx-history-tick.is-removed {
+    border-color: var(--danger);
+}
+
+.fx-history-tick.is-mixed {
+    border-color: var(--warning);
+}
+
+.fx-history-tick.is-created,
+.fx-history-tick.is-now {
+    border-color: var(--accent);
+}
+
+.fx-history-tick.is-past.is-added {
+    background: var(--success);
+}
+
+.fx-history-tick.is-past.is-removed {
+    background: var(--danger);
+}
+
+.fx-history-tick.is-past.is-mixed {
+    background: var(--warning);
+}
+
+.fx-history-tick.is-past.is-changed {
+    background: var(--text-3);
+}
+
+.fx-history-tick.is-past.is-created {
+    background: var(--accent);
+}
+
+.fx-history-tick.is-active {
+    transform: scale(1.3);
+}
+
+.fx-history-thumb {
+    position: absolute;
+    top: 50%;
+    width: 20px;
+    height: 20px;
+    margin: -10px 0 0 -10px;
+    border: 3px solid var(--surface);
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent), var(--shadow-md);
+    pointer-events: none;
+    transition: left 140ms var(--ease);
+}
+
+.fx-history-track.is-dragging .fx-history-thumb,
+.fx-history-track.is-dragging .fx-history-fill {
+    transition: none;
+}
+
+.fx-history-track:focus-visible .fx-history-thumb {
+    box-shadow: 0 0 0 4px var(--accent-ring), var(--shadow-md);
+}
+
+.fx-history-axis {
+    display: flex;
+    justify-content: space-between;
+    margin: -4px 46px 0;
+    color: var(--text-3);
+    font-size: 11.5px;
+    font-variant-numeric: tabular-nums;
+}
+
+.fx-history-detail {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 32px;
+    margin-top: 8px;
+}
+
+.fx-history-when {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 10px;
+}
+
+.fx-history-when-label {
+    font-size: 13.5px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.fx-btn.fx-history-now {
+    height: 30px;
+    padding: 0 10px;
+    font-size: 12.5px;
+}
+
+.fx-history-now .fx-svg {
+    width: 15px;
+    height: 15px;
+}
+
+.fx-history-changes {
+    display: flex;
+    flex: 1;
+    gap: 6px;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.fx-history-changes::-webkit-scrollbar {
+    display: none;
+}
+
+.fx-history-hint {
+    color: var(--text-3);
+    font-size: 12.5px;
+}
+
+.fx-hchip {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    max-width: 320px;
+    padding: 0 11px 0 9px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: 12.5px;
+    white-space: nowrap;
+}
+
+.fx-hchip:hover:not(:disabled) {
+    border-color: var(--border-strong);
+    background: var(--surface-3);
+}
+
+.fx-hchip:disabled {
+    cursor: default;
+}
+
+.fx-hchip-sym {
+    width: 10px;
+    font-weight: 700;
+    text-align: center;
+}
+
+.fx-hchip-name {
+    min-width: 0;
+    overflow: hidden;
+    font-weight: 500;
+    text-overflow: ellipsis;
+}
+
+.fx-hchip-detail {
+    flex: none;
+    color: var(--text-3);
+}
+
+/* History listing */
+.fx-history-active .fx-fab {
+    display: none;
+}
+
+.fx-history-active .fx-tb-upload {
+    opacity: 0.45;
+}
+
+.fx-history-active .fx-list-head .fx-check {
+    visibility: hidden;
+}
+
+.fx-history-active .fx-content {
+    padding-bottom: 20px;
+}
+
+.fx-history-active .fx-toast {
+    bottom: calc(190px + var(--safe-b));
+}
+
+.fx-hmark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1;
+}
+
+.fx-hmark.is-added {
+    background: color-mix(in srgb, var(--success) 15%, transparent);
+    color: var(--success);
+}
+
+.fx-hmark.is-removed {
+    background: var(--danger-soft);
+    color: var(--danger);
+}
+
+.fx-hmark.is-changed {
+    background: var(--surface-3);
+    color: var(--text-2);
+}
+
+.fx-tile-art .fx-hmark {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+}
+
+.fx-hrow.is-diff-added:not(.selected) {
+    background: color-mix(in srgb, var(--success) 6%, transparent);
+}
+
+.fx-hrow.is-ghost:not(.selected) {
+    background: color-mix(in srgb, var(--danger) 5%, transparent);
+}
+
+.fx-hrow.is-ghost .fx-name,
+.fx-hrow.is-ghost .fx-tile-name {
+    color: var(--text-3);
+    text-decoration: line-through;
+    text-decoration-color: color-mix(in srgb, var(--danger) 60%, transparent);
+}
+
+.fx-hrow.is-ghost .fx-ficon,
+.fx-hrow.is-uncertain .fx-ficon {
+    opacity: 0.5;
+}
+
+.fx-hrow.is-uncertain .fx-name,
+.fx-hrow.is-uncertain .fx-tile-name {
+    color: var(--text-2);
+}
+
+.fx-hrow.is-flash {
+    animation: fx-history-flash 1s var(--ease);
+}
+
+@keyframes fx-history-flash {
+    0%,
+    40% {
+        box-shadow: inset 0 0 0 2px var(--accent);
+    }
+
+    100% {
+        box-shadow: inset 0 0 0 2px transparent;
+    }
+}
+
+.fx-tile-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.fx-tile-badges:empty {
+    display: none;
+}
+
+.fx-badge--deleted {
+    background: var(--danger-soft);
+    color: var(--danger);
+}
+
+.fx-badge--moved {
+    background: var(--warning-soft);
+    color: var(--warning);
+}
+
+.fx-badge--maybe {
+    border: 1px dashed var(--border-strong);
+    background: transparent;
+    color: var(--text-2);
+}
+
+.fx-badge--gone {
+    background: var(--surface-3);
+    color: var(--text-2);
+}
+
+.fx-badge--renamed {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+}
+
+@media (max-width: 900px) {
+    .fx-history-legend {
+        display: none;
+    }
+}
+
+@media (max-width: 640px) {
+    .fx-tb-history {
+        width: 38px;
+        height: 38px;
+    }
+
+    .fx-name-line .fx-hbadges-secondary {
+        display: none;
+    }
+
+    .fx-hrow .fx-sub.fx-hsub {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+
+    .fx-hsub .fx-hbadges-secondary {
+        display: inline-flex;
+        flex: none;
+        gap: 4px;
+    }
+
+    .fx-hsub .fx-badge {
+        height: 18px;
+        padding: 0 6px;
+        font-size: 10.5px;
+    }
+
+    .fx-hsub-text {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .fx-history-banner-text {
+        white-space: normal;
+        line-height: 1.35;
+    }
+
+    .fx-history-banner-sep,
+    .fx-hsub .fx-hbadges-secondary:empty {
+        display: none;
+    }
+
+    .fx-history-banner {
+        margin: 2px 10px 4px;
+        padding: 8px 12px;
+        font-size: 13px;
+    }
+
+    .fx-history {
+        padding: 10px 12px calc(10px + var(--safe-b));
+        border-radius: 18px 18px 0 0;
+        box-shadow: 0 -12px 30px -16px rgba(16, 24, 40, 0.35);
+    }
+
+    .fx-history-scrub {
+        margin-top: 4px;
+    }
+
+    .fx-history-track {
+        height: 40px;
+        margin: 0 6px;
+    }
+
+    .fx-history-axis {
+        margin: -6px 40px 0;
+    }
+
+    .fx-history-detail {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+
+    .fx-history-when {
+        justify-content: space-between;
+        min-height: 30px;
+    }
+
+    .fx-history-changes {
+        flex: none;
+    }
+
+    .fx-hchip {
+        max-width: 78vw;
+    }
+
+    .fx-history-active .fx-content {
+        padding-bottom: 16px;
+    }
+
+    .fx-history-active .fx-toast {
+        bottom: calc(210px + var(--safe-b));
+    }
+}

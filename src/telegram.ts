@@ -31,6 +31,7 @@ import {
 } from "../packages/tglfs-cli/src/shared/telegram-web-dc"
 import {
     TGLFS_FOLDER_ENTRIES_MIME_TYPE,
+    TGLFS_FOLDER_MANIFEST_TYPE,
     TGLFS_FOLDER_TYPE,
     buildFolderManifestSearchQuery,
     buildFolderParentSearchQuery,
@@ -1751,6 +1752,67 @@ export async function getFolderManifest(
         }
     }
     return null
+}
+
+export type RawRecordMessage = { msgId: number; date: number; text: string }
+
+async function searchRawRecordMessages(
+    client: TelegramClient,
+    search: string,
+    accepts: (text: string) => boolean,
+    limit: number,
+): Promise<RawRecordMessage[]> {
+    const results: RawRecordMessage[] = []
+    const pageSize = Math.min(100, Math.max(1, limit))
+    let offsetId = 0
+    while (results.length < limit) {
+        const messages = await client.getMessages("me", {
+            search,
+            limit: pageSize,
+            addOffset: 0,
+            minId: 0,
+            maxId: offsetId,
+            waitTime: 0,
+        } as any)
+        if (messages.length === 0) break
+        let nextOffsetId = offsetId
+        for (const message of messages as any[]) {
+            nextOffsetId = message.id
+            if (typeof message.message === "string" && accepts(message.message)) {
+                results.push({ msgId: message.id, date: message.date, text: message.message })
+                if (results.length >= limit) break
+            }
+        }
+        if (messages.length < pageSize || nextOffsetId === offsetId) break
+        offsetId = nextOffsetId
+    }
+    return results
+}
+
+/**
+ * Read-only: every folder record message for a parent folder or a folder id, including deleted and
+ * superseded records (unlike listFolderRecords/getFolderRecord). Used to reconstruct folder history.
+ */
+export async function listFolderRecordMessages(
+    client: TelegramClient,
+    opts: { parentFolderId?: string; folderId?: string; limit?: number },
+): Promise<RawRecordMessage[]> {
+    await gramJsReady
+    const search = opts.folderId
+        ? buildFolderSearchQuery(opts.folderId)
+        : buildFolderParentSearchQuery(opts.parentFolderId ?? TGLFS_ROOT_PARENT_ID)
+    const isFolderRecord = (text: string) => text.startsWith(TGLFS_FOLDER_TYPE) && !text.startsWith(TGLFS_FOLDER_MANIFEST_TYPE)
+    return searchRawRecordMessages(client, search, isFolderRecord, opts.limit ?? 500)
+}
+
+/** Read-only: every legacy `tglfs:folder-manifest` message for a folder (older snapshots of its entries). */
+export async function listFolderManifestMessages(
+    client: TelegramClient,
+    folderId: string,
+    limit = 20,
+): Promise<RawRecordMessage[]> {
+    await gramJsReady
+    return searchRawRecordMessages(client, buildFolderManifestSearchQuery(folderId), (text) => text.startsWith(TGLFS_FOLDER_MANIFEST_TYPE), limit)
 }
 
 type DirectoryParentMigrationPhase =

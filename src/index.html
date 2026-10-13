@@ -175,6 +175,7 @@
                         <kbd class="fx-search-kbd">/</kbd>
                     </div>
                     <div class="fx-tb-tools">
+                        <button id="browserHistoryButton" class="fx-icon-btn fx-tb-history" type="button" aria-label="History" title="History (H)" aria-pressed="false" data-icon="history"></button>
                         <label class="fx-sort" title="Sort">
                             <span data-icon="sort"></span>
                             <select id="browserSortSelect" aria-label="Sort by">
@@ -193,6 +194,8 @@
                         <button id="topbarUploadButton" class="fx-btn fx-btn-primary fx-tb-upload" type="button" data-icon="upload">Upload</button>
                     </div>
                 </header>
+
+                <div id="historyBanner" class="fx-history-banner" role="status" aria-live="polite" hidden></div>
 
                 <div id="browserContent" class="fx-content" aria-busy="false">
                     <div id="browserList" class="fx-list">
@@ -215,6 +218,8 @@
                         </div>
                     </div>
                 </div>
+
+                <section id="historyPanel" class="fx-history" aria-label="Folder history" hidden></section>
             </main>
 
             <button id="fxFab" class="fx-fab" type="button" aria-label="New" data-icon="plus"></button>

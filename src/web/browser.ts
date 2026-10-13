@@ -10,6 +10,8 @@ import {
     getFolderManifest,
     getFolderRecord,
     listFileCards,
+    listFolderManifestMessages,
+    listFolderRecordMessages,
     listFolderRecords,
     renameFileCard,
     deleteFileCard,
@@ -22,6 +24,8 @@ import type { FileCardData } from "../types/models"
 import {
     createTglfsFolder,
     createTglfsFolderManifest,
+    parseTglfsFolderManifestMessage,
+    parseTglfsFolderMessage,
 } from "../../packages/tglfs-cli/src/folders"
 import type { TglfsFolder, TglfsFolderManifest, TglfsFolderManifestEntry, TglfsFolderManifestRecord, TglfsFolderRecord } from "../../packages/tglfs-cli/src/folders"
 import { TGLFS_ROOT_PARENT_ID } from "../../packages/tglfs-cli/src/shared/constants"
@@ -50,6 +54,19 @@ import {
     type BrowserSelectionItem,
 } from "./browserActions"
 import { classifyUndoCandidate, createMutationQueue } from "./undoSupport"
+import {
+    buildFolderHistory,
+    folderRecordTextHasOnlyKnownFields,
+    folderSnapshotAt,
+    historyPointIndexAt,
+    type FolderHistory,
+    type FolderHistoryInput,
+    type HistoryAnnotation,
+    type HistoryItem,
+    type HistoryManifestInput,
+    type HistoryMessageInput,
+} from "./folderHistory"
+import { HistoryPanel, formatHistoryDay, formatHistoryTime, renderHistoryBanner } from "./folderHistoryView"
 
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"])
 const VIDEO_EXTS = new Set(["mp4", "webm", "mov", "avi", "mkv", "m4v"])
@@ -276,6 +293,21 @@ function resetBrowserListingState() {
 
 function renderBrowserLoading(message = "Loading files...") {
     resetBrowserListingState()
+    renderListingSkeleton()
+
+    updateFolderLocation()
+    const pageInfo = document.getElementById("browserPageInfo")
+    if (pageInfo) pageInfo.textContent = message
+    const prevButton = document.getElementById("browserPrevPage") as HTMLButtonElement | null
+    const nextButton = document.getElementById("browserNextPage") as HTMLButtonElement | null
+    if (prevButton) prevButton.disabled = true
+    if (nextButton) nextButton.disabled = true
+    document.getElementById("browserPager")?.classList.add("is-single")
+    applyViewMode()
+    updateSelectionDisplay()
+}
+
+function renderListingSkeleton() {
     clearViews()
     const content = document.getElementById("browserContent")
     content?.setAttribute("aria-busy", "true")
@@ -301,17 +333,6 @@ function renderBrowserLoading(message = "Loading files...") {
                 <div class="fx-tile-body"><span class="fx-skel fx-skel-line" style="width:80%"></span><span class="fx-skel fx-skel-line" style="width:45%;margin-top:8px"></span></div>
             </div>`).join("")
     }
-
-    updateFolderLocation()
-    const pageInfo = document.getElementById("browserPageInfo")
-    if (pageInfo) pageInfo.textContent = message
-    const prevButton = document.getElementById("browserPrevPage") as HTMLButtonElement | null
-    const nextButton = document.getElementById("browserNextPage") as HTMLButtonElement | null
-    if (prevButton) prevButton.disabled = true
-    if (nextButton) nextButton.disabled = true
-    document.getElementById("browserPager")?.classList.add("is-single")
-    applyViewMode()
-    updateSelectionDisplay()
 }
 
 function beginBrowserNavigationLoading(message: string) {
@@ -464,6 +485,17 @@ function resetSearchInput() {
 }
 
 async function navigateTo(
+    target: FolderBrowserEntry | null,
+    options: { push?: boolean; trail?: FolderBrowserEntry[] } = {},
+) {
+    // The time machine stays open while navigating: the next folder is shown as of the same time.
+    const keepHistoryAt = historyMode ? historyMode.at : undefined
+    if (historyMode) exitHistoryState()
+    await navigateToFolder(target, options)
+    if (keepHistoryAt !== undefined) await openHistory(keepHistoryAt)
+}
+
+async function navigateToFolder(
     target: FolderBrowserEntry | null,
     options: { push?: boolean; trail?: FolderBrowserEntry[] } = {},
 ) {
@@ -799,6 +831,7 @@ function selectRange(fromIndex: number, toIndex: number, additive: boolean) {
 }
 
 function selectAllVisible() {
+    if (historyMode) return
     const items = getVisibleItems()
     const allSelected = items.length > 0 && items.every((entry) => state.selected.has(entry.id))
     if (allSelected) {
@@ -854,7 +887,15 @@ function toSelectionItems(entries: BrowserEntry[]): BrowserSelectionItem[] {
     }))
 }
 
+/** Actions that never change anything in Telegram; the only ones offered while viewing history. */
+const READ_ONLY_ACTION_KEYS = new Set(["open", "download", "copy", "history"])
+
 function getSelectionActions(entries: BrowserEntry[]): SelectionAction[] {
+    const actions = getAllSelectionActions(entries)
+    return historyMode ? actions.filter((action) => READ_ONLY_ACTION_KEYS.has(action.key)) : actions
+}
+
+function getAllSelectionActions(entries: BrowserEntry[]): SelectionAction[] {
     const client = activeBrowserClient
     const single = entries.length === 1 ? entries[0] : null
     const files = entries.filter(isFileEntry)
@@ -864,6 +905,7 @@ function getSelectionActions(entries: BrowserEntry[]): SelectionAction[] {
 
     if (single && isFolderEntry(single)) {
         actions.push({ key: "open", id: "browserActionPreview", menuId: "actionPreviewItem", label: "Open", icon: "open", hint: "↵", run: () => runSingleOpenAction(single) })
+        actions.push({ key: "history", id: "browserActionHistory", menuId: "actionHistoryItem", label: "History", icon: "history", hint: "H", menuOnly: true, run: () => openFolderHistory(single) })
     } else if (single && isFileEntry(single) && isPreviewableName(single.data.name)) {
         actions.push({ key: "open", id: "browserActionPreview", menuId: "actionPreviewItem", label: "Preview", icon: "eye", hint: "↵", run: () => runSingleOpenAction(single) })
     }
@@ -2077,6 +2119,7 @@ async function moveEntriesToRootInSinglePass(client: any, entries: BrowserEntry[
 }
 
 async function moveSelectedEntries(client: any) {
+    if (blockedByHistory()) return
     const selectedEntries = Array.from(state.selected.values())
     const movableEntries = selectedEntries.filter((entry) => isFileEntry(entry) || isFolderEntry(entry))
     if (selectedEntries.length === 0 || movableEntries.length !== selectedEntries.length) return
@@ -2256,6 +2299,7 @@ function restoreEntriesToView(pending: PendingDelete) {
 function deleteEntriesWithUndo(entries: BrowserEntry[]) {
     const client = activeBrowserClient
     const deletable = entries.filter((entry) => isFileEntry(entry) || isFolderEntry(entry))
+    if (blockedByHistory()) return
     if (!client || deletable.length === 0 || deletable.length !== entries.length) return
     void flushPendingDelete()
 
@@ -2352,7 +2396,7 @@ function moveDestinationName(destination: MoveDestination) {
 async function moveEntriesWithUndo(entries: BrowserEntry[], destination: MoveDestination): Promise<MoveResult | null> {
     const client = activeBrowserClient
     const movableEntries = entries.filter((entry) => isFileEntry(entry) || isFolderEntry(entry))
-    if (!client || movableEntries.length === 0) return null
+    if (!client || movableEntries.length === 0 || blockedByHistory()) return null
     void flushPendingDelete()
 
     const destinationName = moveDestinationName(destination)
@@ -2480,7 +2524,7 @@ type RenameUndoRecord =
  */
 async function renameEntryTo(entry: BrowserEntry, requestedName: string, options: { undoable?: boolean } = {}): Promise<boolean> {
     const client = activeBrowserClient
-    if (!client) return false
+    if (!client || blockedByHistory()) return false
     const undoable = options.undoable ?? true
     if (isFolderEntry(entry)) {
         const newName = validateFolderName(requestedName)
@@ -2611,7 +2655,7 @@ async function downloadEntry(entry: FileBrowserEntry) {
 }
 
 async function renameEntry(entry: BrowserEntry) {
-    if (!activeBrowserClient) return
+    if (!activeBrowserClient || blockedByHistory()) return
     if (isFolderEntry(entry)) {
         await renameFolderEntry(entry)
         return
@@ -2664,7 +2708,7 @@ async function copyEntryId(entry: BrowserEntry) {
  */
 async function deleteSelectedEntries() {
     const client = activeBrowserClient
-    if (!client) return
+    if (!client || blockedByHistory()) return
     const selectedEntries = Array.from(state.selected.values())
     const files = selectedEntries.filter(isFileEntry)
     const folders = selectedEntries.filter(isFolderEntry)
@@ -2704,7 +2748,7 @@ async function confirmCascadingFolderDelete(client: any, entries: BrowserEntry[]
 function uploadFiles(files?: File[]) {
     const config = activeBrowserConfig
     const client = activeBrowserClient
-    if (!client || !config) return
+    if (!client || !config || blockedByHistory()) return
     setNextUploadParentFromBrowserState()
     if (files && files.length > 0) {
         void import("../telegram").then((Telegram) => Telegram.fileUpload(client, config, files))
@@ -2715,17 +2759,18 @@ function uploadFiles(files?: File[]) {
 }
 
 async function createFolderHere() {
-    if (!activeBrowserClient) return
+    if (!activeBrowserClient || blockedByHistory()) return
     await createFolderInCurrentLocation(activeBrowserClient)
 }
 
 async function receiveFile() {
-    if (!activeBrowserClient || !activeBrowserConfig) return
+    if (!activeBrowserClient || !activeBrowserConfig || blockedByHistory()) return
     await (await import("../telegram")).fileReceive(activeBrowserClient, activeBrowserConfig)
 }
 
 function openNewMenu(anchor?: HTMLElement) {
     closeSidebar()
+    if (blockedByHistory()) return
     openMenu({
         anchor,
         sheet: !anchor,
@@ -2737,6 +2782,1014 @@ function openNewMenu(anchor?: HTMLElement) {
             { id: "browserActionReceiveItem", label: "Receive file", icon: "inbox", onSelect: () => receiveFile() },
         ],
     })
+}
+
+/* ------------------------------------------------ History (time machine) */
+
+type HistoryRow = {
+    item: HistoryItem
+    state: "present" | "uncertain"
+    annotations: HistoryAnnotation[]
+    /** Change of this item at exactly the selected timeline point (diff markers). */
+    diff: "added" | "removed" | "changed" | null
+    ghost: boolean
+}
+
+type HistoryModeState = {
+    scope: FolderBrowserEntry | null
+    /** The exact time being viewed (epoch ms), or null for now. */
+    at: number | null
+    history: FolderHistory | null
+    cards: Map<number, FileBrowserEntry>
+    folders: Map<string, HistoryFolderRecord>
+    rows: HistoryRow[]
+    focusKey: string | null
+    /** Set after a restore or background refresh: the normal listing must be reloaded on exit. */
+    dirty: boolean
+}
+
+type HistoryFolderRecord = TglfsFolderRecord & { text: string }
+
+let historyMode: HistoryModeState | null = null
+let historyPanel: HistoryPanel | null = null
+let historyLoadSequence = 0
+
+const HISTORY_FILE_LIMIT = 2000
+const HISTORY_FOLDER_LIMIT = 1000
+const HISTORY_LOOKUP_LIMIT = 100
+
+function blockedByHistory() {
+    if (!historyMode) return false
+    showUfidToast("You're viewing history. Go back to now to make changes.")
+    return true
+}
+
+function historyScopeName(scope = historyMode?.scope ?? null) {
+    return scope?.data.name ?? "All files"
+}
+
+function setHistoryChrome(active: boolean) {
+    document.body.classList.toggle("fx-history-active", active)
+    const button = document.getElementById("browserHistoryButton")
+    button?.setAttribute("aria-pressed", String(active))
+    button?.classList.toggle("is-active", active)
+    const dateHead = document.querySelector(".fx-list-head .fx-cell-date")
+    if (dateHead) dateHead.textContent = active ? "Added" : "Modified"
+}
+
+function exitHistoryState() {
+    historyLoadSequence++
+    historyMode = null
+    historyPanel?.hide()
+    const banner = document.getElementById("historyBanner")
+    if (banner) renderHistoryBanner(banner, { folderName: "", at: null, onBack: () => {} })
+    setHistoryChrome(false)
+}
+
+function closeHistory() {
+    if (!historyMode) return
+    const dirty = historyMode.dirty
+    exitHistoryState()
+    closeMenu()
+    if (dirty) {
+        void refreshBrowser?.({ showLoading: true, loadingMessage: "Loading files..." })
+    } else {
+        renderBrowser(state.pages[state.currentPage] ?? [])
+    }
+}
+
+async function toggleHistory() {
+    if (historyMode) {
+        closeHistory()
+        return
+    }
+    await openHistory(null)
+}
+
+async function openFolderHistory(folder: FolderBrowserEntry) {
+    const at = historyMode?.at ?? null
+    if (historyMode) exitHistoryState()
+    if (state.currentFolder?.data.folderId !== folder.data.folderId) {
+        await navigateToFolder(folder)
+    }
+    await openHistory(at)
+}
+
+function parseHistoryFolderMessages(messages: Array<{ msgId: number; date: number; text: string }>) {
+    const records: HistoryFolderRecord[] = []
+    for (const message of messages) {
+        const data = parseTglfsFolderMessage(message.text)
+        if (data) records.push({ msgId: message.msgId, date: message.date, data, text: message.text })
+    }
+    return records
+}
+
+/** The record readers use for a folder id: the newest live record, else the newest record (like getFolderRecord). */
+function canonicalHistoryFolder(records: HistoryFolderRecord[], folderId: string): HistoryFolderRecord | null {
+    const versions = records.filter((record) => record.data.folderId === folderId).sort((a, b) => b.msgId - a.msgId)
+    return versions.find((record) => !record.data.deleted) ?? versions[0] ?? null
+}
+
+async function loadHistoryData(client: any, scope: FolderBrowserEntry | null) {
+    const scopeId = scope?.data.folderId ?? TGLFS_ROOT_PARENT_ID
+    const [childMessages, fileRecords, manifestRecord, legacyManifests] = await Promise.all([
+        listFolderRecordMessages(client, { parentFolderId: scopeId, limit: HISTORY_FOLDER_LIMIT }),
+        listFileCards(client, { parentFolderId: scopeId, limit: HISTORY_FILE_LIMIT }),
+        scope ? getFolderManifest(client, scope.data.folderId).catch((error) => {
+            console.warn("Unable to read folder entries for history", error)
+            return null
+        }) : Promise.resolve(null),
+        scope ? listFolderManifestMessages(client, scope.data.folderId).catch(() => []) : Promise.resolve([]),
+    ])
+
+    const manifests: HistoryManifestInput[] = []
+    const manifestObjects: TglfsFolderManifest[] = []
+    if (manifestRecord) {
+        manifests.push({ data: manifestRecord.data, msgId: manifestRecord.msgId })
+        manifestObjects.push(manifestRecord.data)
+    }
+    for (const message of legacyManifests) {
+        // The current manifest may itself be one of the legacy messages.
+        if (message.msgId === manifestRecord?.msgId) continue
+        manifests.push({ text: message.text, msgId: message.msgId })
+        const parsed = parseTglfsFolderManifestMessage(message.text)
+        if (parsed) manifestObjects.push(parsed)
+    }
+
+    // Look up records that tell where removed entries went (or whether they still exist at all).
+    const folderMessages = [...childMessages]
+    const childRecords = parseHistoryFolderMessages(childMessages)
+    const liveHere = new Set(
+        childRecords.filter((record) => !record.data.deleted && record.data.parentFolderId === scopeId).map((record) => record.data.folderId),
+    )
+    const folderLookups = new Set<string>()
+    for (const record of childRecords) {
+        if (!liveHere.has(record.data.folderId)) folderLookups.add(record.data.folderId)
+    }
+    const cardUfids = new Set(fileRecords.map((record) => record.data.ufid))
+    const ufidLookups = new Set<string>()
+    for (const manifest of manifestObjects) {
+        for (const entry of Object.values(manifest.entries)) {
+            if (entry.kind === "folder" && entry.folderId && !liveHere.has(entry.folderId)) folderLookups.add(entry.folderId)
+            if (entry.kind === "file" && entry.ufid && !cardUfids.has(entry.ufid)) ufidLookups.add(entry.ufid)
+        }
+    }
+    const folderIds = [...folderLookups].slice(0, HISTORY_LOOKUP_LIMIT)
+    const ufids = [...ufidLookups].slice(0, HISTORY_LOOKUP_LIMIT)
+    const [folderLookupResults, cardLookupResults] = await Promise.all([
+        Promise.all(folderIds.map((folderId) => listFolderRecordMessages(client, { folderId, limit: 20 }).catch(() => []))),
+        Promise.all(ufids.map((ufid) => getFileCardByUfid(client, ufid).catch(() => null))),
+    ])
+    for (const messages of folderLookupResults) folderMessages.push(...messages)
+
+    const fileInputs: HistoryMessageInput[] = fileRecords.map((record) => ({ msgId: record.msgId, date: record.date, data: record.data }))
+    for (const record of cardLookupResults) {
+        if (record) fileInputs.push({ msgId: record.msgId, date: record.date, data: record.data })
+    }
+
+    const cards = new Map<number, FileBrowserEntry>()
+    for (const record of [...fileRecords, ...cardLookupResults]) {
+        if (record) cards.set(record.msgId, fileEntryFromRecord(record))
+    }
+    const allFolderRecords = parseHistoryFolderMessages(folderMessages)
+    const folders = new Map<string, HistoryFolderRecord>()
+    for (const folderId of new Set(allFolderRecords.map((record) => record.data.folderId))) {
+        const canonical = canonicalHistoryFolder(allFolderRecords, folderId)
+        if (canonical) folders.set(folderId, canonical)
+    }
+
+    const input: FolderHistoryInput = {
+        folderId: scope?.data.folderId ?? null,
+        folder: scope ? { msgId: scope.msgId, date: scope.date, data: scope.data } : null,
+        folderRecords: folderMessages,
+        fileCards: fileInputs,
+        manifests,
+        now: Date.now(),
+    }
+    const truncated = childMessages.length >= HISTORY_FOLDER_LIMIT || fileRecords.length >= HISTORY_FILE_LIMIT ||
+        folderLookups.size > HISTORY_LOOKUP_LIMIT || ufidLookups.size > HISTORY_LOOKUP_LIMIT
+    return { input, cards, folders, truncated }
+}
+
+function renderHistoryLoading() {
+    renderListingSkeleton()
+    updateFolderLocation()
+    const pageInfo = document.getElementById("browserPageInfo")
+    if (pageInfo) pageInfo.textContent = "Reconstructing history..."
+    document.getElementById("browserPager")?.classList.add("is-single")
+    applyViewMode()
+}
+
+async function openHistory(at: number | null) {
+    const client = activeBrowserClient
+    if (!client) return
+    closeMenu()
+    closeSidebar()
+    state.selected.clear()
+    state.lastClickedIndex = null
+    updateSelectionDisplay()
+
+    const scope = state.currentFolder
+    const sequence = ++historyLoadSequence
+    historyMode = {
+        scope,
+        at,
+        history: null,
+        cards: new Map(),
+        folders: new Map(),
+        rows: [],
+        focusKey: null,
+        dirty: historyMode?.dirty ?? false,
+    }
+    setHistoryChrome(true)
+    const title = `History · ${historyScopeName(scope)}`
+    historyPanel?.showLoading(title)
+    renderHistoryBannerForState()
+    renderHistoryLoading()
+
+    try {
+        const loaded = await loadHistoryData(client, scope)
+        if (sequence !== historyLoadSequence || !historyMode) return
+        const history = buildFolderHistory(loaded.input)
+        if (history.warnings.length || history.skipped) {
+            console.warn("Folder history skipped unreadable records", { skipped: history.skipped, warnings: history.warnings })
+        }
+        historyMode.history = history
+        historyMode.cards = loaded.cards
+        historyMode.folders = loaded.folders
+        const index = at === null ? history.points.length - 1 : historyPointIndexAt(history, at)
+        historyPanel?.setData(title, history, index, at)
+        if (loaded.truncated) showUfidToast("This folder is large; only part of its history was read.")
+        renderHistoryListing()
+    } catch (error) {
+        if (sequence !== historyLoadSequence || !historyMode) return
+        console.error(error)
+        historyPanel?.showError(title, "Couldn't read this folder's history. Check your connection and try again.")
+        renderHistoryListing()
+    }
+}
+
+function selectHistoryPoint(index: number) {
+    const history = historyMode?.history
+    if (!historyMode || !history) return
+    const clamped = Math.max(0, Math.min(history.points.length - 1, index))
+    const point = history.points[clamped]
+    historyMode.at = point.isNow ? null : point.at
+    historyMode.focusKey = null
+    historyPanel?.setIndex(clamped)
+    renderHistoryListing()
+}
+
+function goToHistoryNow() {
+    const history = historyMode?.history
+    if (history) {
+        selectHistoryPoint(history.points.length - 1)
+    } else if (historyMode) {
+        historyMode.at = null
+        renderHistoryBannerForState()
+    }
+}
+
+function renderHistoryBannerForState() {
+    const banner = document.getElementById("historyBanner")
+    if (!banner || !historyMode) return
+    renderHistoryBanner(banner, { folderName: historyScopeName(), at: historyMode.at, onBack: () => goToHistoryNow() })
+}
+
+function historyItemTime(item: HistoryItem) {
+    return item.presentFrom ?? item.absentBefore ?? 0
+}
+
+function computeHistoryRows(mode: HistoryModeState): HistoryRow[] {
+    const history = mode.history
+    if (!history) return []
+    const at = mode.at ?? history.now
+    const pointIndex = historyPointIndexAt(history, at)
+    const point = history.points[pointIndex]
+    const exactPoint = mode.at === null ? null : point && point.at === mode.at ? point : null
+    const query = state.query.toLowerCase()
+    const matches = (item: HistoryItem) => !query ||
+        item.name.toLowerCase().includes(query) ||
+        item.formerNames.some((name) => name.toLowerCase().includes(query))
+
+    const rows: HistoryRow[] = folderSnapshotAt(history, at)
+        .filter((entry) => matches(entry.item))
+        .map((entry) => {
+            let diff: HistoryRow["diff"] = null
+            if (exactPoint) {
+                const change = exactPoint.changes.find((candidate) => candidate.itemKey === entry.item.key)
+                if (change?.type === "added") diff = "added"
+                else if (change?.type === "changed") diff = "changed"
+            }
+            return { item: entry.item, state: entry.state, annotations: entry.annotations, diff, ghost: false }
+        })
+    if (exactPoint) {
+        // Items removed exactly at this point are shown as struck-through ghosts (the "−" side of the diff).
+        for (const change of exactPoint.changes) {
+            if (change.type !== "removed" || !change.itemKey) continue
+            const item = history.items.find((candidate) => candidate.key === change.itemKey)
+            if (!item || !matches(item) || rows.some((row) => row.item.key === item.key)) continue
+            rows.push({ item, state: "present", annotations: [], diff: "removed", ghost: true })
+        }
+    }
+
+    rows.sort((a, b) => {
+        if ((a.item.kind === "folder") !== (b.item.kind === "folder")) return a.item.kind === "folder" ? -1 : 1
+        switch (state.sort) {
+            case "date_desc":
+                return historyItemTime(b.item) - historyItemTime(a.item)
+            case "date_asc":
+                return historyItemTime(a.item) - historyItemTime(b.item)
+            case "name_desc":
+                return b.item.name.localeCompare(a.item.name, undefined, { numeric: true, sensitivity: "base" })
+            case "size_desc":
+                return (b.item.size ?? 0) - (a.item.size ?? 0)
+            case "size_asc":
+                return (a.item.size ?? 0) - (b.item.size ?? 0)
+            default:
+                return a.item.name.localeCompare(b.item.name, undefined, { numeric: true, sensitivity: "base" })
+        }
+    })
+    return rows
+}
+
+function historyArrivalText(item: HistoryItem) {
+    if (item.presentFrom === null) return ""
+    const day = formatHistoryDay(item.presentFrom)
+    switch (item.arrival) {
+        case "uploaded":
+            return `Uploaded ${day}`
+        case "created":
+            return `Created ${day}`
+        case "moved-in":
+            return item.arrivalExact ? `Moved here ${day}` : `Here by ${day}`
+        case "returned":
+            return `Back by ${day}`
+        default:
+            return ""
+    }
+}
+
+/** Primary badges say whether the item stays; secondary ones qualify what is known about it. */
+function historyBadges(row: HistoryRow, group: "primary" | "secondary" | "all" = "all") {
+    const primary: string[] = []
+    const secondary: string[] = []
+    const badge = (tone: string, label: string, title: string) =>
+        `<span class="fx-badge fx-badge--${tone}" title="${escapeHtml(title)}">${escapeHtml(label)}</span>`
+    const item = row.item
+    if (row.ghost) {
+        return group === "secondary" ? "" : badge("deleted", item.status === "moved-out" ? "Moved out here" : "Deleted here", "Removed from this folder at this point")
+    }
+    for (const annotation of row.annotations) {
+        switch (annotation) {
+            case "deleted-later":
+                primary.push(badge("deleted", "Deleted later", item.removedAt ? `Deleted ${formatHistoryTime(item.removedAt)}` : "Deleted later"))
+                break
+            case "moved-out-later":
+                primary.push(badge("moved", "Moved out later", item.removedAt ? `Moved out ${formatHistoryTime(item.removedAt)}` : "Moved out later"))
+                break
+            case "removed-unknown":
+                primary.push(badge("moved", item.status === "moved-out" ? "Moved out since" : "Deleted since", "Removed from this folder at a time that is not recorded"))
+                break
+            case "arrival-unknown":
+                secondary.push(badge("maybe", "Maybe", "This item was here at some point, but when it arrived is not recorded"))
+                break
+            case "contents-gone":
+                secondary.push(badge("gone", "Not stored", "Its contents are no longer stored in Telegram"))
+                break
+            case "renamed":
+                secondary.push(badge("renamed", "Renamed", `Earlier name: ${item.formerNames.join(", ")}`))
+                break
+        }
+    }
+    if (item.kind === "file" && item.uploadComplete === false) secondary.push(`<span class="fx-badge fx-badge--incomplete">Incomplete</span>`)
+    if (group === "primary") return primary.join("")
+    if (group === "secondary") return secondary.join("")
+    return [...primary, ...secondary].join("")
+}
+
+function historyMetaText(row: HistoryRow) {
+    const item = row.item
+    const parts: string[] = []
+    if (item.kind === "file") parts.push(formatSize(item.size ?? 0))
+    if (row.ghost && item.removedAt !== null) {
+        parts.push(`${item.status === "moved-out" ? "Moved out" : "Deleted"} ${formatHistoryDay(item.removedAt)}`)
+    } else {
+        const arrival = historyArrivalText(item)
+        if (arrival) parts.push(arrival)
+    }
+    return parts.join(" · ")
+}
+
+const DIFF_MARKS = { added: "+", removed: "−", changed: "~" } as const
+
+function historyRowClasses(row: HistoryRow, base: string) {
+    return [
+        base,
+        "fx-hrow",
+        row.state === "uncertain" ? "is-uncertain" : "",
+        row.ghost ? "is-ghost" : "",
+        row.diff ? `is-diff-${row.diff}` : "",
+        historyMode?.focusKey === row.item.key ? "selected" : "",
+    ].filter(Boolean).join(" ")
+}
+
+function renderHistoryListing() {
+    const mode = historyMode
+    if (!mode) return
+    renderHistoryBannerForState()
+    const content = document.getElementById("browserContent")
+    clearViews()
+    updateFolderLocation()
+    const pageInfo = document.getElementById("browserPageInfo")
+    document.getElementById("browserPager")?.classList.add("is-single")
+    const prevButton = document.getElementById("browserPrevPage") as HTMLButtonElement | null
+    const nextButton = document.getElementById("browserNextPage") as HTMLButtonElement | null
+    if (prevButton) prevButton.disabled = true
+    if (nextButton) nextButton.disabled = true
+
+    if (!mode.history) {
+        content?.setAttribute("aria-busy", "false")
+        mode.rows = []
+        renderHistoryEmpty("History unavailable", "The folder's records could not be read.")
+        applyViewMode()
+        return
+    }
+    content?.setAttribute("aria-busy", "false")
+    const rows = computeHistoryRows(mode)
+    mode.rows = rows
+
+    const listRows = document.getElementById("browserRows")
+    const grid = document.getElementById("browserGrid")
+    const listFragment = document.createDocumentFragment()
+    const gridFragment = document.createDocumentFragment()
+    for (const [index, row] of rows.entries()) {
+        const item = row.item
+        const safeName = escapeHtml(item.name)
+        const kind: FileKind = item.kind === "folder" ? "folder" : fileKindForName(item.name)
+        const mark = row.diff ? `<span class="fx-hmark is-${row.diff}" title="${row.diff === "added" ? "Added at this point" : row.diff === "removed" ? "Removed at this point" : "Changed at this point"}">${DIFF_MARKS[row.diff]}</span>` : ""
+        // The date column shows when the item arrived here, and only when that is known.
+        const time = item.presentFrom
+        const dateText = time ? formatHistoryDay(time) : "—"
+        const meta = historyMetaText(row)
+
+        const element = document.createElement("div")
+        element.className = historyRowClasses(row, "fx-row")
+        element.setAttribute("role", "row")
+        element.tabIndex = -1
+        element.dataset.browserId = `history:${item.key}`
+        element.dataset.historyKey = item.key
+        element.dataset.kind = item.kind
+        element.dataset.index = String(index)
+        element.dataset.name = item.name
+        element.innerHTML = `
+            <div class="fx-cell fx-cell-check">${mark}</div>
+            <div class="fx-cell fx-name-cell">
+                ${fileKindIcon(kind)}
+                <div class="fx-name-wrap">
+                    <div class="fx-name-line"><span class="fx-name" title="${safeName}">${safeName}</span>${historyBadges(row, "primary")}<span class="fx-hbadges-secondary">${historyBadges(row, "secondary")}</span></div>
+                    <div class="fx-sub fx-hsub"><span class="fx-hbadges-secondary">${historyBadges(row, "secondary")}</span><span class="fx-hsub-text">${escapeHtml(meta)}</span></div>
+                </div>
+            </div>
+            <div class="fx-cell fx-cell-size">${item.kind === "folder" ? "—" : escapeHtml(formatSize(item.size ?? 0))}</div>
+            <div class="fx-cell fx-cell-date" title="${escapeHtml(time ? formatHistoryTime(time) : "Unknown")}">${escapeHtml(dateText)}</div>
+            <div class="fx-cell fx-cell-more">${moreButtonHtml(item.name)}</div>`
+        attachHistoryRowHandlers(element, row)
+        listFragment.appendChild(element)
+
+        const tile = document.createElement("div")
+        tile.className = historyRowClasses(row, "fx-tile")
+        tile.setAttribute("role", "gridcell")
+        tile.tabIndex = -1
+        tile.dataset.browserId = `history:${item.key}`
+        tile.dataset.historyKey = item.key
+        tile.dataset.kind = item.kind
+        tile.dataset.index = String(index)
+        tile.dataset.name = item.name
+        tile.innerHTML = `
+            <div class="fx-tile-art">${fileKindIcon(kind, "lg")}${mark}</div>
+            ${moreButtonHtml(item.name)}
+            <div class="fx-tile-body">
+                <div class="fx-tile-name" title="${safeName}">${safeName}</div>
+                <div class="fx-tile-badges">${historyBadges(row)}</div>
+                <div class="fx-tile-meta">${escapeHtml(meta)}</div>
+            </div>`
+        attachHistoryRowHandlers(tile, row)
+        gridFragment.appendChild(tile)
+    }
+    listRows?.appendChild(listFragment)
+    grid?.appendChild(gridFragment)
+
+    if (rows.length === 0) {
+        const searching = state.query.length > 0
+        renderHistoryEmpty(
+            searching ? `No results for “${state.query}”` : "Nothing here at this time",
+            searching
+                ? "Nothing with that name was here at this point."
+                : mode.at !== null && mode.history.createdAt !== null && mode.at < mode.history.createdAt
+                    ? "This folder did not exist yet."
+                    : "No recorded items were in this folder at this point.",
+        )
+    } else {
+        document.getElementById("browserEmpty")?.setAttribute("hidden", "")
+    }
+    const present = rows.filter((row) => !row.ghost).length
+    if (pageInfo) {
+        pageInfo.textContent = `${pluralize(present, "item")} ${mode.at === null ? "now" : `as of ${formatHistoryTime(mode.at)}`}`
+    }
+    document.getElementById("browserPager")?.toggleAttribute("hidden", rows.length === 0)
+    applyViewMode()
+}
+
+function renderHistoryEmpty(title: string, text: string) {
+    const empty = document.getElementById("browserEmpty")
+    if (!empty) return
+    empty.innerHTML = `
+        <span class="fx-empty-art">${icon("history")}</span>
+        <h2>${escapeHtml(title)}</h2>
+        <p>${escapeHtml(text)}</p>`
+    empty.removeAttribute("hidden")
+}
+
+function attachHistoryRowHandlers(element: HTMLElement, row: HistoryRow) {
+    element.addEventListener("pointerdown", (event) => {
+        lastPointerType = event.pointerType || "mouse"
+    })
+    element.addEventListener("click", (event) => {
+        const more = (event.target as HTMLElement).closest<HTMLElement>(".fx-more")
+        if (more) {
+            openHistoryItemMenu(row, more)
+            return
+        }
+        if (isTouchInteraction()) {
+            if (canOpenHistoryFolder(row)) {
+                void openHistoryRow(row)
+            } else {
+                openHistoryItemMenu(row)
+            }
+            return
+        }
+        focusHistoryRow(row.item.key)
+    })
+    element.addEventListener("dblclick", (event) => {
+        if ((event.target as HTMLElement).closest(".fx-more") || isTouchInteraction()) return
+        event.preventDefault()
+        void openHistoryRow(row)
+    })
+    element.addEventListener("contextmenu", (event) => {
+        event.preventDefault()
+        if (lastPointerType !== "mouse") return
+        focusHistoryRow(row.item.key)
+        openHistoryItemMenu(row, { x: event.clientX, y: event.clientY })
+    })
+}
+
+function focusHistoryRow(key: string) {
+    if (!historyMode) return
+    historyMode.focusKey = key
+    document.querySelectorAll<HTMLElement>("[data-history-key]").forEach((node) => {
+        node.classList.toggle("selected", node.dataset.historyKey === key)
+    })
+}
+
+function revealHistoryItem(key: string) {
+    const container = state.viewMode === "grid" ? "#browserGrid" : "#browserRows"
+    const node = document.querySelector<HTMLElement>(`${container} [data-history-key="${CSS.escape(key)}"]`)
+    if (!node) {
+        showUfidToast("That item is not shown at this point")
+        return
+    }
+    focusHistoryRow(key)
+    node.scrollIntoView({ block: "nearest", behavior: "smooth" })
+    node.classList.remove("is-flash")
+    void node.offsetWidth
+    node.classList.add("is-flash")
+}
+
+function historyLiveFile(row: HistoryRow): FileBrowserEntry | null {
+    if (row.item.kind !== "file" || row.item.status !== "live" || row.item.msgId === undefined) return null
+    return historyMode?.cards.get(row.item.msgId) ?? null
+}
+
+function canOpenHistoryFolder(row: HistoryRow) {
+    return row.item.kind === "folder" && row.item.status === "live" && !row.ghost && !!row.item.folderId &&
+        !!historyMode?.folders.get(row.item.folderId)
+}
+
+async function openHistoryRow(row: HistoryRow) {
+    if (canOpenHistoryFolder(row)) {
+        const record = historyMode?.folders.get(row.item.folderId!)
+        if (record) await navigateTo(folderEntryFromRecord(record))
+        return
+    }
+    const file = historyLiveFile(row)
+    if (file && isPreviewableName(file.data.name)) {
+        const previewable = historyMode?.rows
+            .map((candidate) => historyLiveFile(candidate))
+            .filter((candidate): candidate is FileBrowserEntry => !!candidate)
+            .map((entry) => ({ msgId: entry.msgId, date: entry.date, data: entry.data })) ?? []
+        await previewModal?.open(file, previewable)
+        return
+    }
+    openHistoryItemMenu(row)
+}
+
+/** One short line for the menu header; details go into informational menu rows. */
+function describeHistoryItem(row: HistoryRow) {
+    const item = row.item
+    if (item.removedAt !== null) {
+        return `${item.status === "moved-out" ? "Moved out" : "Deleted"} ${formatHistoryTime(item.removedAt)}`
+    }
+    if (item.status === "moved-out") return "Moved out since; when is not recorded"
+    if (item.status !== "live") return "Removed since; when is not recorded"
+    const arrival = historyArrivalText(item)
+    const size = item.kind === "file" ? formatSize(item.size ?? 0) : ""
+    return [size, arrival || "Arrival time not recorded"].filter(Boolean).join(" · ")
+}
+
+function historyInfoItems(row: HistoryRow): MenuItem[] {
+    const item = row.item
+    const info: string[] = []
+    if (item.status !== "live" && item.presentFrom !== null) {
+        const arrival = historyArrivalText(item)
+        if (arrival) info.push(arrival)
+    } else if (item.status !== "live" && row.annotations.includes("arrival-unknown")) {
+        info.push("Arrival time not recorded")
+    }
+    if (item.status !== "live") info.push(item.contentsStored ? "Contents still stored" : "Contents no longer stored")
+    if (item.formerNames.length) info.push(`Earlier name: ${item.formerNames.join(", ")}`)
+    if (item.restoreBlockedReason) info.push("Can't restore: unknown record fields")
+    return info.map((label) => ({
+        label,
+        icon: label.startsWith("Contents no longer") || label.startsWith("Can't") ? "alert" : "info",
+        disabled: true,
+        onSelect: () => {},
+    }))
+}
+
+async function showHistoryItemLocation(item: HistoryItem) {
+    const target = item.movedToFolderId
+    if (!target || !activeBrowserClient) return
+    if (target === TGLFS_ROOT_PARENT_ID) {
+        await navigateTo(null)
+        return
+    }
+    const record = historyMode?.folders.get(target) ?? await getFolderRecord(activeBrowserClient, target).catch(() => null)
+    if (!record || record.data.deleted) {
+        showUfidToast("Its current folder could not be found")
+        return
+    }
+    await navigateTo(folderEntryFromRecord(record))
+}
+
+function openHistoryItemMenu(row: HistoryRow, anchor?: HTMLElement | { x: number; y: number }) {
+    const item = row.item
+    const client = activeBrowserClient
+    const scope = historyMode?.scope ?? null
+    const items: MenuItem[] = []
+    const file = historyLiveFile(row)
+    if (canOpenHistoryFolder(row)) {
+        items.push({ label: historyMode?.at === null ? "Open" : "Open at this time", icon: "open", onSelect: () => openHistoryRow(row) })
+    }
+    if (file) {
+        if (isPreviewableName(file.data.name)) items.push({ label: "Preview", icon: "eye", onSelect: () => openHistoryRow(row) })
+        items.push({ label: "Download", icon: "download", onSelect: () => downloadEntry(file) })
+    }
+    if (item.status === "moved-out" && item.movedToFolderId) {
+        items.push({ label: "Show current location", icon: "locate", onSelect: () => showHistoryItemLocation(item) })
+    }
+    if (client && item.kind === "folder" && item.status === "deleted") {
+        if (item.restorable) {
+            items.push({ id: "historyRestoreItem", label: `Restore to ${historyScopeName(scope)}`, icon: "restore", onSelect: () => restoreDeletedFolderFromHistory(client, item) })
+        }
+    }
+    if (client && scope && item.kind === "file" && item.status === "moved-out" && item.contentsStored && item.ufid && item.movedToFolderId) {
+        items.push({ id: "historyMoveBackItem", label: `Move back to ${scope.data.name}`, icon: "restore", onSelect: () => moveFileBackFromHistory(client, item, scope) })
+    }
+    const info = historyInfoItems(row)
+    if (info.length) {
+        if (items.length) items.push({ divider: true })
+        items.push(...info)
+    }
+    const copyValue = item.kind === "folder" ? item.folderId : item.ufid
+    if (copyValue) {
+        if (items.length) items.push({ divider: true })
+        items.push({
+            label: item.kind === "folder" ? "Copy Folder ID" : "Copy UFID",
+            icon: "copy",
+            onSelect: async () => {
+                try {
+                    await navigator.clipboard.writeText(copyValue)
+                    showUfidToast(`${item.kind === "folder" ? "Folder ID" : "UFID"} copied to clipboard`)
+                } catch {
+                    showUfidToast("Unable to copy", { tone: "error" })
+                }
+            },
+        })
+    }
+    const kind: FileKind = item.kind === "folder" ? "folder" : fileKindForName(item.name)
+    openMenu({
+        anchor,
+        headerHtml: fileKindIcon(kind),
+        title: item.name,
+        subtitle: describeHistoryItem(row),
+        items,
+    })
+}
+
+function handleHistoryKeydown(event: KeyboardEvent, mod: boolean) {
+    if (event.key === "Escape") {
+        event.preventDefault()
+        if (isSidebarOpen()) {
+            closeSidebar()
+        } else if (historyMode?.focusKey) {
+            focusHistoryRow("")
+            if (historyMode) historyMode.focusKey = null
+        } else {
+            closeHistory()
+        }
+        return
+    }
+    if (!mod && !event.altKey && event.key.toLowerCase() === "h") {
+        event.preventDefault()
+        closeHistory()
+        return
+    }
+    if (event.key === "/" || (mod && event.key.toLowerCase() === "k")) {
+        event.preventDefault()
+        const input = document.getElementById("browserSearchInput") as HTMLInputElement | null
+        input?.focus()
+        input?.select()
+        return
+    }
+    if (!mod && !event.altKey && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+        event.preventDefault()
+        historyPanel?.step(event.key === "ArrowLeft" ? -1 : 1)
+        return
+    }
+    if (!mod && event.key === "End") {
+        event.preventDefault()
+        goToHistoryNow()
+        return
+    }
+    if (!mod && event.key === "Home") {
+        event.preventDefault()
+        selectHistoryPoint(0)
+        return
+    }
+    if (event.key === "Enter" && historyMode?.focusKey) {
+        const row = historyMode.rows.find((candidate) => candidate.item.key === historyMode?.focusKey)
+        if (row) {
+            event.preventDefault()
+            void openHistoryRow(row)
+        }
+        return
+    }
+    if ((event.key === "Backspace" && !mod) || (event.altKey && event.key === "ArrowUp")) {
+        if (state.currentFolder) {
+            event.preventDefault()
+            void goUp()
+        }
+        return
+    }
+    if (event.key === "Delete" || event.key === "F2" || (mod && ["a", "Backspace"].includes(event.key))) {
+        // Mutations are not available while looking at the past.
+        event.preventDefault()
+    }
+}
+
+/* Restore: undo a folder deletion with the existing write paths (no new record fields or versions). */
+
+async function restoreFolderTreeFromHistory(
+    client: any,
+    record: HistoryFolderRecord,
+    options: { deletedAt: string; oldPath: string; newPath: string; rootId: string; now: string },
+): Promise<{ folder: TglfsFolder; count: number }> {
+    if (!folderRecordTextHasOnlyKnownFields(record.text)) {
+        throw new Error(`Folder record ${record.data.folderId} has fields this client does not understand`)
+    }
+    const folder: TglfsFolder = {
+        ...record.data,
+        deleted: false,
+        updatedAt: options.now,
+        path: rewritePathForMove(record.data.path, options.oldPath, options.newPath),
+        rootId: options.rootId,
+    }
+    // The exact inverse of tombstoneFolderTree's final write.
+    await writeFolderRecord(client, folder, { msgId: record.msgId, date: record.date, data: record.data })
+    let count = 1
+
+    // Subfolders deleted in the same operation share the deletion timestamp.
+    const childMessages = await listFolderRecordMessages(client, { parentFolderId: record.data.folderId, limit: HISTORY_FOLDER_LIMIT })
+    const childIds = new Set(parseHistoryFolderMessages(childMessages).map((child) => child.data.folderId))
+    const restoredChildren: TglfsFolder[] = []
+    for (const childId of childIds) {
+        const versions = parseHistoryFolderMessages(await listFolderRecordMessages(client, { folderId: childId, limit: 20 }))
+        const canonical = canonicalHistoryFolder(versions, childId)
+        if (
+            !canonical ||
+            !canonical.data.deleted ||
+            canonical.data.parentFolderId !== record.data.folderId ||
+            canonical.data.updatedAt !== options.deletedAt ||
+            !folderRecordTextHasOnlyKnownFields(canonical.text)
+        ) continue
+        const restored = await restoreFolderTreeFromHistory(client, canonical, options)
+        restoredChildren.push(restored.folder)
+        count += restored.count
+    }
+
+    if (restoredChildren.length > 0 || folder.path !== record.data.path) {
+        const manifestRecord = await getFolderManifest(client, folder.folderId)
+        const manifest = manifestRecord?.data ?? createTglfsFolderManifest({
+            folderId: folder.folderId,
+            rootId: options.rootId,
+            path: folder.path,
+            now: options.now,
+        })
+        const entries: Record<string, TglfsFolderManifestEntry> = {}
+        for (const [key, entry] of Object.entries(manifest.entries)) {
+            entries[key] = { ...entry, path: rewritePathForMove(entry.path, options.oldPath, options.newPath) }
+        }
+        const activeNames = activeManifestEntryNames(manifest)
+        for (const child of restoredChildren) {
+            const alreadyListed = Object.values(entries).some((entry) =>
+                entry.kind === "folder" && entry.folderId === child.folderId && !entry.deleted)
+            if (alreadyListed || activeNames.has(child.name.toLowerCase())) continue
+            entries[child.name] = {
+                entryId: createRecordId("entry"),
+                name: child.name,
+                path: child.path,
+                kind: "folder",
+                folderId: child.folderId,
+                deleted: false,
+                updatedAt: options.now,
+            }
+        }
+        await writeFolderManifest(client, {
+            ...manifest,
+            rootId: options.rootId,
+            path: folder.path,
+            updatedAt: options.now,
+            entries,
+        }, manifestRecord)
+    }
+    return { folder, count }
+}
+
+async function restoreDeletedFolderFromHistory(client: any, item: HistoryItem) {
+    const mode = historyMode
+    if (!mode || !item.folderId) return
+    const scope = mode.scope
+    const scopeId = scope?.data.folderId ?? TGLFS_ROOT_PARENT_ID
+
+    // Re-read the record right before writing: never act on a stale view.
+    const versions = parseHistoryFolderMessages(await listFolderRecordMessages(client, { folderId: item.folderId, limit: 20 }))
+    const record = canonicalHistoryFolder(versions, item.folderId)
+    if (!record || !record.data.deleted) {
+        showUfidToast("This folder is no longer deleted")
+        await openHistory(mode.at)
+        return
+    }
+    if (record.data.parentFolderId !== scopeId) {
+        showUfidToast("This folder was deleted somewhere else", { tone: "error" })
+        return
+    }
+    if (!folderRecordTextHasOnlyKnownFields(record.text)) {
+        showUfidToast("This folder record has fields this version of TGLFS doesn't understand", { tone: "error" })
+        return
+    }
+
+    const name = record.data.name
+    const now = new Date().toISOString()
+    let parentManifest: { record: TglfsFolderManifestRecord | null; manifest: TglfsFolderManifest } | null = null
+    if (scope) {
+        parentManifest = await getFolderManifestForMutation(client, scope.data, now)
+        const liveSiblings = await listFolderRecords(client, { parentFolderId: scopeId, query: name, limit: 200 })
+        const names = [
+            ...activeManifestEntryNames(parentManifest.manifest),
+            ...liveSiblings.filter((sibling) => !sibling.data.deleted).map((sibling) => sibling.data.name),
+        ]
+        if (!assertFolderNameAvailable(name, names)) return
+    } else if (await topLevelFolderNameExists(client, name, record.data.folderId)) {
+        showUfidToast(`"${name}" already exists here`)
+        return
+    }
+
+    const ok = await requestBrowserConfirm({
+        title: "Restore folder?",
+        message: `"${name}" and any folders deleted with it will come back in ${historyScopeName(scope)}, with the files still stored inside them. This changes the folder now, not just this view. Restoring overwrites the deletion record, so the deletion may no longer show in the history.`,
+        confirmLabel: "Restore",
+        icon: "restore",
+    })
+    if (!ok) return
+
+    showUfidToast(`Restoring "${name}"...`, { durationMs: null })
+    const newPath = scope ? joinFolderPath(scope.data.path, name) : ""
+    const rootId = scope ? (scope.data.rootId ?? scope.data.folderId) : record.data.folderId
+    try {
+        const restored = await restoreFolderTreeFromHistory(client, record, {
+            deletedAt: record.data.updatedAt,
+            oldPath: record.data.path,
+            newPath,
+            rootId,
+            now,
+        })
+        if (scope && parentManifest) {
+            await writeFolderManifest(client, {
+                ...parentManifest.manifest,
+                rootId: scope.data.rootId ?? scope.data.folderId,
+                path: scope.data.path,
+                updatedAt: now,
+                entries: {
+                    ...parentManifest.manifest.entries,
+                    [name]: {
+                        entryId: createRecordId("entry"),
+                        name,
+                        path: newPath,
+                        kind: "folder",
+                        folderId: record.data.folderId,
+                        deleted: false,
+                        updatedAt: now,
+                    },
+                },
+            }, parentManifest.record)
+        }
+        if (historyMode) historyMode.dirty = true
+        showUfidToast(restored.count > 1 ? `Restored "${name}" and ${pluralize(restored.count - 1, "subfolder")}` : `Restored "${name}"`, { tone: "success" })
+    } catch (error) {
+        console.error(error)
+        showUfidToast(`Restoring "${name}" failed`, { tone: "error" })
+    }
+    if (historyMode) await openHistory(historyMode.at)
+}
+
+/* Move a file that was moved out of this folder back, with the same writes as the Move action. */
+async function moveFileBackFromHistory(client: any, item: HistoryItem, scope: FolderBrowserEntry) {
+    if (!item.ufid) return
+    const record = await getFileCardByUfid(client, item.ufid)
+    if (!record) {
+        showUfidToast("This file no longer exists", { tone: "error" })
+        return
+    }
+    const sourceParentId = "parentFolderId" in record.data ? record.data.parentFolderId : undefined
+    if (sourceParentId === scope.data.folderId) {
+        showUfidToast("This file is already here")
+        return
+    }
+    const now = new Date().toISOString()
+    const { record: manifestRecord, manifest } = await getFolderManifestForMutation(client, scope.data, now)
+    const name = record.data.name
+    if (
+        activeManifestEntryNames(manifest).has(name.toLowerCase()) ||
+        activeManifestFileUfids(manifest).has(record.data.ufid) ||
+        await fileNameExistsInParent(client, scope.data.folderId, name, record.msgId)
+    ) {
+        showUfidToast(`"${name}" already exists here`)
+        return
+    }
+    const ok = await requestBrowserConfirm({
+        title: "Move file back?",
+        message: `"${name}" will be moved back to ${scope.data.name}. This changes the folder now, not just this view.`,
+        confirmLabel: "Move back",
+        icon: "restore",
+    })
+    if (!ok) return
+
+    showUfidToast(`Moving "${name}" back...`, { durationMs: null })
+    try {
+        await writeFolderManifest(client, {
+            ...manifest,
+            rootId: scope.data.rootId ?? scope.data.folderId,
+            path: scope.data.path,
+            updatedAt: now,
+            entries: {
+                ...manifest.entries,
+                [name]: {
+                    entryId: createRecordId("entry"),
+                    name,
+                    path: joinFolderPath(scope.data.path, name),
+                    kind: "file",
+                    ufid: record.data.ufid,
+                    size: record.data.size,
+                    mtimeMs: Date.parse(now),
+                    mode: 0o644,
+                    deleted: false,
+                    updatedAt: now,
+                },
+            },
+        }, manifestRecord)
+        await updateFileCardParent(client, record.msgId, "me", record.data, scope.data.folderId)
+        if (sourceParentId && sourceParentId !== TGLFS_ROOT_PARENT_ID) {
+            await tombstoneEntryInFolderManifest(client, sourceParentId, now, (entry) =>
+                entry.kind === "file" && entry.ufid === record.data.ufid)
+        }
+        if (historyMode) historyMode.dirty = true
+        showUfidToast(`Moved "${name}" back`, { tone: "success" })
+    } catch (error) {
+        console.error(error)
+        showUfidToast(`Moving "${name}" back failed`, { tone: "error" })
+    }
+    if (historyMode) await openHistory(historyMode.at)
 }
 
 /* ------------------------------------------------------------- Keyboard */
@@ -2820,6 +3873,22 @@ async function handleKeydown(event: KeyboardEvent) {
         if (triggerActionToast()) event.preventDefault()
         return
     }
+
+    if (historyMode) {
+        handleHistoryKeydown(event, mod)
+        return
+    }
+    if (!mod && !event.altKey && event.key.toLowerCase() === "h") {
+        event.preventDefault()
+        const selected = state.selected.size === 1 ? Array.from(state.selected.values())[0] : null
+        if (selected && isFolderEntry(selected)) {
+            await openFolderHistory(selected)
+        } else {
+            await toggleHistory()
+        }
+        return
+    }
+
     if (event.key === "Escape") {
         if (isSidebarOpen()) {
             closeSidebar()
@@ -2954,6 +4023,12 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     }, { capture: true, passive: true })
 
     const doRefresh = async (options?: BrowserRefreshOptions) => {
+        if (historyMode) {
+            // Background refreshes (e.g. a finished upload) re-read the history and keep the chosen time.
+            historyMode.dirty = true
+            await openHistory(historyMode.at)
+            return
+        }
         const refreshSequence = ++browserRefreshSequence
         if (options?.showLoading) {
             renderBrowserLoading(options.loadingMessage)
@@ -3011,6 +4086,11 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         }
         const run = async () => {
             state.query = nextQuery
+            if (historyMode) {
+                // History listings are filtered locally; they are already fully loaded.
+                renderHistoryListing()
+                return
+            }
             await doRefresh({ showLoading: true, loadingMessage: nextQuery ? `Searching for “${nextQuery}”...` : "Loading files..." })
         }
         if (immediate) {
@@ -3038,7 +4118,9 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     sortSelect.addEventListener("change", () => {
         state.sort = sortSelect.value as SortMode
         writePreference(SORT_STORAGE_KEY, state.sort)
-        if (state.pages[state.currentPage]) {
+        if (historyMode) {
+            renderHistoryListing()
+        } else if (state.pages[state.currentPage]) {
             renderBrowser(state.pages[state.currentPage])
         }
     })
@@ -3046,6 +4128,7 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     document.getElementById("viewGrid")?.addEventListener("click", () => setViewMode("grid"))
 
     prevButton.addEventListener("click", () => {
+        if (historyMode) return
         if (state.currentPage > 0) {
             state.currentPage--
             state.hasMore = state.currentPage < state.pages.length - 1 || state.hasMore
@@ -3054,6 +4137,7 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         }
     })
     nextButton.addEventListener("click", async () => {
+        if (historyMode) return
         if (state.currentPage < state.pages.length - 1 && state.pages[state.currentPage + 1]?.length) {
             state.currentPage++
             state.hasMore = state.currentPage < state.pages.length - 1 || state.hasMore
@@ -3071,6 +4155,17 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         }
         renderBrowser(state.pages[state.currentPage] ?? [])
     })
+
+    /* History (time machine) */
+    const historyPanelElement = document.getElementById("historyPanel")
+    if (historyPanelElement) {
+        historyPanel = new HistoryPanel(historyPanelElement, {
+            onSelect: (index) => selectHistoryPoint(index),
+            onClose: () => closeHistory(),
+            onChangeClick: (itemKey) => revealHistoryItem(itemKey),
+        })
+    }
+    document.getElementById("browserHistoryButton")?.addEventListener("click", () => void toggleHistory())
 
     /* Navigation chrome */
     document.getElementById("browserUpButton")?.addEventListener("click", () => void goUp())

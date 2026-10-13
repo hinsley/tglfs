@@ -17,6 +17,7 @@ const TELEGRAM_TEXT_MESSAGE_LIMIT = 4096
 type MockRecord = {
     id: number
     date: number
+    editDate?: number
     message: string
     media?: string
 }
@@ -240,6 +241,212 @@ const folderManifestRecords = [
     },
 ]
 
+/* ----------------------------------------------------------- History fixtures */
+// A folder with a realistic history for the folder time-machine view. It predates folder-entry
+// compaction, so its legacy v1 manifest still carries tombstones. Times are UTC.
+
+const at = (iso: string) => new Date(iso).toISOString()
+const atSec = (iso: string) => Math.floor(Date.parse(iso) / 1000)
+
+const clientWorkFolder = {
+    ...createTglfsFolder({
+        folderId: "mock-folder-client-work",
+        parentFolderId: TGLFS_ROOT_PARENT_ID,
+        rootId: "mock-folder-client-work",
+        name: "Client Work",
+        path: "",
+        now: at("2026-04-20T09:15:00Z"),
+    }),
+    updatedAt: at("2026-05-08T12:00:00Z"),
+}
+
+const archiveFolder = createTglfsFolder({
+    folderId: "mock-folder-archive",
+    parentFolderId: TGLFS_ROOT_PARENT_ID,
+    rootId: "mock-folder-archive",
+    name: "Archive",
+    path: "",
+    now: at("2026-04-18T08:30:00Z"),
+})
+
+const draftsFolder = {
+    ...createTglfsFolder({
+        folderId: "mock-folder-drafts",
+        parentFolderId: clientWorkFolder.folderId,
+        rootId: clientWorkFolder.folderId,
+        name: "Drafts",
+        path: "Drafts",
+        now: at("2026-04-21T14:05:00Z"),
+    }),
+    // Renamed on 5 May; the previous name is not recorded anywhere.
+    updatedAt: at("2026-05-05T09:00:00Z"),
+}
+
+// Deleted on 4 May together with its subfolder; the records (and the files inside) still exist.
+const oldExportsFolder = {
+    ...createTglfsFolder({
+        folderId: "mock-folder-old-exports",
+        parentFolderId: clientWorkFolder.folderId,
+        rootId: clientWorkFolder.folderId,
+        name: "Old exports",
+        path: "Old exports",
+        now: at("2026-04-22T08:00:00Z"),
+    }),
+    deleted: true,
+    updatedAt: at("2026-05-04T12:00:00Z"),
+}
+
+const oldExportsCsvFolder = {
+    ...createTglfsFolder({
+        folderId: "mock-folder-old-exports-csv",
+        parentFolderId: oldExportsFolder.folderId,
+        rootId: clientWorkFolder.folderId,
+        name: "csv",
+        path: "Old exports/csv",
+        now: at("2026-04-22T08:10:00Z"),
+    }),
+    deleted: true,
+    updatedAt: at("2026-05-04T12:00:00Z"),
+}
+
+// A top-level folder that was deleted (visible in the root "All files" history).
+const tempFolder = {
+    ...createTglfsFolder({
+        folderId: "mock-folder-temp",
+        parentFolderId: TGLFS_ROOT_PARENT_ID,
+        rootId: "mock-folder-temp",
+        name: "Temp",
+        path: "",
+        now: at("2026-04-19T16:00:00Z"),
+    }),
+    deleted: true,
+    updatedAt: at("2026-04-27T10:30:00Z"),
+}
+
+function historyFileEntry(name: string, ufid: string, size: number, movedAt: string, options: { deleted?: string } = {}) {
+    return {
+        entryId: `mock-entry-${ufid}`,
+        name,
+        path: name,
+        kind: "file" as const,
+        ufid,
+        size,
+        mtimeMs: Date.parse(movedAt),
+        mode: 0o644,
+        deleted: !!options.deleted,
+        updatedAt: at(options.deleted ?? movedAt),
+    }
+}
+
+const clientWorkManifest = createTglfsFolderManifest({
+    folderId: clientWorkFolder.folderId,
+    rootId: clientWorkFolder.folderId,
+    path: "",
+    now: at("2026-04-20T09:15:00Z"),
+    entries: {
+        Drafts: {
+            entryId: "mock-entry-drafts",
+            name: "Drafts",
+            path: "Drafts",
+            kind: "folder",
+            folderId: draftsFolder.folderId,
+            deleted: false,
+            updatedAt: at("2026-05-05T09:00:00Z"),
+        },
+        "Old exports": {
+            entryId: "mock-entry-old-exports",
+            name: "Old exports",
+            path: "Old exports",
+            kind: "folder",
+            folderId: oldExportsFolder.folderId,
+            deleted: true,
+            updatedAt: at("2026-05-04T12:00:00Z"),
+        },
+        // Moved in from All files on 25 April.
+        "Invoice March.pdf": historyFileEntry("Invoice March.pdf", "mock-ufid-history-invoice", 184320, "2026-04-25T16:40:00Z"),
+        // Moved in on 26 April and renamed to "Meeting notes.txt" later (the entry keeps the old name).
+        "Notes.txt": historyFileEntry("Notes.txt", "mock-ufid-history-notes", 3412, "2026-04-26T08:05:00Z"),
+        // Deleted on 3 May; its file card and chunks are gone.
+        "Moodboard.jpg": historyFileEntry("Moodboard.jpg", "mock-ufid-history-moodboard", 2457600, "2026-04-22T11:00:00Z", { deleted: "2026-05-03T10:12:00Z" }),
+        // Moved to Archive on 6 May; its file card still exists there.
+        "Contract draft.docx": historyFileEntry("Contract draft.docx", "mock-ufid-history-contract", 48211, "2026-04-23T09:30:00Z", { deleted: "2026-05-06T18:00:00Z" }),
+    },
+})
+clientWorkManifest.updatedAt = at("2026-05-06T18:00:00Z")
+
+const oldExportsManifest = createTglfsFolderManifest({
+    folderId: oldExportsFolder.folderId,
+    rootId: clientWorkFolder.folderId,
+    path: "Old exports",
+    now: at("2026-04-22T08:00:00Z"),
+    entries: {
+        csv: {
+            entryId: "mock-entry-old-exports-csv",
+            name: "csv",
+            path: "Old exports/csv",
+            kind: "folder",
+            folderId: oldExportsCsvFolder.folderId,
+            deleted: true,
+            updatedAt: at("2026-05-04T12:00:00Z"),
+        },
+    },
+})
+oldExportsManifest.updatedAt = at("2026-05-04T12:00:00Z")
+
+const archiveManifest = createTglfsFolderManifest({
+    folderId: archiveFolder.folderId,
+    rootId: archiveFolder.folderId,
+    path: "",
+    now: at("2026-04-18T08:30:00Z"),
+    entries: {
+        "Contract draft.docx": historyFileEntry("Contract draft.docx", "mock-ufid-history-contract", 48211, "2026-05-06T18:00:00Z"),
+    },
+})
+archiveManifest.updatedAt = at("2026-05-06T18:00:00Z")
+
+function historyCard(id: number, uploadedAt: string, name: string, ufid: string, size: number, parentFolderId: string) {
+    return {
+        id,
+        date: atSec(uploadedAt),
+        message: serializeFileCardMessage({
+            name,
+            ufid,
+            size,
+            uploadComplete: true,
+            chunks: [id + 1000],
+            IV: "mock-iv",
+            parentFolderId,
+        }),
+    }
+}
+
+const historyFileCards = [
+    historyCard(401, "2026-03-31T10:00:00Z", "Invoice March.pdf", "mock-ufid-history-invoice", 184320, clientWorkFolder.folderId),
+    historyCard(402, "2026-04-20T09:20:00Z", "Brief.pdf", "mock-ufid-history-brief", 1048576, clientWorkFolder.folderId),
+    historyCard(403, "2026-04-22T09:00:00Z", "export-01.csv", "mock-ufid-history-export", 20480, oldExportsFolder.folderId),
+    historyCard(404, "2026-04-22T09:05:00Z", "2026-04.csv", "mock-ufid-history-export-csv", 8192, oldExportsCsvFolder.folderId),
+    historyCard(405, "2026-04-23T09:00:00Z", "Contract draft.docx", "mock-ufid-history-contract", 48211, archiveFolder.folderId),
+    historyCard(406, "2026-04-26T08:00:00Z", "Meeting notes.txt", "mock-ufid-history-notes", 3412, clientWorkFolder.folderId),
+    historyCard(407, "2026-04-29T15:20:00Z", "Homepage v2.png", "mock-ufid-history-homepage", 734003, draftsFolder.folderId),
+    historyCard(408, "2026-05-08T12:00:00Z", "Final deliverable.zip", "mock-ufid-history-final", 52428800, clientWorkFolder.folderId),
+    historyCard(409, "2026-04-19T16:30:00Z", "scratch.txt", "mock-ufid-history-scratch", 512, tempFolder.folderId),
+]
+
+const historyFolderRecords = [
+    { id: 410, date: atSec(archiveFolder.createdAt), message: serializeTglfsFolderMessage(archiveFolder) },
+    { id: 411, date: atSec(tempFolder.createdAt), message: serializeTglfsFolderMessage(tempFolder) },
+    { id: 412, date: atSec(clientWorkFolder.createdAt), message: serializeTglfsFolderMessage(clientWorkFolder) },
+    { id: 413, date: atSec(draftsFolder.createdAt), message: serializeTglfsFolderMessage(draftsFolder) },
+    { id: 414, date: atSec(oldExportsFolder.createdAt), message: serializeTglfsFolderMessage(oldExportsFolder) },
+    { id: 415, date: atSec(oldExportsCsvFolder.createdAt), message: serializeTglfsFolderMessage(oldExportsCsvFolder) },
+]
+
+const historyFolderManifestRecords = [
+    { id: 420, date: atSec(archiveFolder.createdAt), message: serializeTglfsFolderManifestMessage(toLegacyTglfsFolderManifest(archiveManifest)) },
+    { id: 421, date: atSec(clientWorkFolder.createdAt), message: serializeTglfsFolderManifestMessage(toLegacyTglfsFolderManifest(clientWorkManifest)) },
+    { id: 422, date: atSec(oldExportsFolder.createdAt), message: serializeTglfsFolderManifestMessage(toLegacyTglfsFolderManifest(oldExportsManifest)) },
+]
+
 function quotedValue(search: string, key: string) {
     const match = search.match(new RegExp(`"${key}":"([^"]+)"`))
     return match?.[1]
@@ -270,9 +477,9 @@ function sleep(ms: number) {
 
 export function createMockFolderBrowserSession() {
     const transferDelayMs = mockTransferDelayMs()
-    const mutableFileCards = fileCards.map((record) => ({ ...record }))
-    const mutableFolderRecords = folderRecords.map((record) => ({ ...record }))
-    const mutableFolderManifestRecords = folderManifestRecords.map((record) => ({ ...record }))
+    const mutableFileCards: MockRecord[] = [...fileCards, ...historyFileCards].map((record) => ({ ...record }))
+    const mutableFolderRecords: MockRecord[] = [...folderRecords, ...historyFolderRecords].map((record) => ({ ...record }))
+    const mutableFolderManifestRecords: MockRecord[] = [...folderManifestRecords, ...historyFolderManifestRecords].map((record) => ({ ...record }))
     if (usePaginationFixture()) {
         const sinkFolder = createTglfsFolder({
             folderId: "mock-folder-pagination-sink",
@@ -469,7 +676,8 @@ export function createMockFolderBrowserSession() {
                     if (typeof uploadedFile?.__mockText === "string") {
                         record.media = uploadedFile.__mockText
                     }
-                    record.date = Math.floor(Date.now() / 1000)
+                    // Like Telegram, an edit keeps the original message date and sets editDate.
+                    record.editDate = Math.floor(Date.now() / 1000)
                 }
                 return { updates: [{ id: request.id }] }
             }
