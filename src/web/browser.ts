@@ -82,6 +82,8 @@ import {
 } from "./searchScope"
 import { openShortcutsSheet } from "./shortcutsSheet"
 import { mountStorageSummary, STORAGE_CHANGED_EVENT } from "./storageSummary"
+import * as Labels from "./labelsUi"
+import type { VirtualView } from "./labelsUi"
 
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"])
 const VIDEO_EXTS = new Set(["mp4", "webm", "mov", "avi", "mkv", "m4v"])
@@ -99,6 +101,8 @@ type FileBrowserEntry = {
     msgId: number
     date: number
     data: FileCardData
+    /** Folder path shown in Starred / tag views. */
+    location?: string
 }
 
 type FolderBrowserEntry = {
@@ -107,6 +111,7 @@ type FolderBrowserEntry = {
     msgId: number
     date: number
     data: TglfsFolder
+    location?: string
 }
 
 type MissingFileBrowserEntry = {
@@ -117,6 +122,10 @@ type MissingFileBrowserEntry = {
     path: string
     ufid: string
     size: number
+    /** Set for starred/tagged items that no longer exist in Telegram. */
+    labelKey?: string
+    missingKind?: "file" | "folder"
+    location?: string
 }
 
 type BrowserEntry = FileBrowserEntry | FolderBrowserEntry | MissingFileBrowserEntry
@@ -139,6 +148,8 @@ type BrowserState = {
     totalItems: number | null
     currentFolder: FolderBrowserEntry | null
     currentFolderTrail: FolderBrowserEntry[]
+    /** Starred / tag view listing labelled items across all folders (currentFolder is null meanwhile). */
+    virtual: VirtualView | null
 }
 
 type BrowserRefreshOptions = {
@@ -164,6 +175,7 @@ const state: BrowserState = {
     totalItems: null,
     currentFolder: null,
     currentFolderTrail: [],
+    virtual: null,
 }
 
 let previewModal: PreviewModal | null = null
@@ -233,7 +245,7 @@ function currentSearchScope(): SearchScope {
 
 /** True while the top-bar search lists matches from every folder instead of the current one. */
 function isGlobalSearch() {
-    return state.query !== "" && currentSearchScope() === "everywhere"
+    return !state.virtual && state.query !== "" && currentSearchScope() === "everywhere"
 }
 
 /** Parent filter for listings: none (all folders) during a global search. */
@@ -270,7 +282,8 @@ function updateSearchScopeBar() {
     const bar = document.getElementById("searchScopeBar")
     if (!bar) return
     renderSearchScopeBar(bar, {
-        query: state.query,
+        // Starred/tag views search within themselves, so the scope choice doesn't apply there.
+        query: state.virtual ? "" : state.query,
         atRoot: !state.currentFolder,
         folderName: state.currentFolder?.data.name ?? null,
         scope: currentSearchScope(),
@@ -468,7 +481,7 @@ function getEntryPath(entry: BrowserEntry) {
 }
 
 function getEntryKind(entry: BrowserEntry): FileKind {
-    if (entry.kind === "folder") return "folder"
+    if (entry.kind === "folder" || (entry.kind === "missing-file" && entry.missingKind === "folder")) return "folder"
     return fileKindForName(getEntryName(entry))
 }
 
@@ -491,7 +504,15 @@ function getEntryBadge(entry: BrowserEntry) {
 function getCopyId(entry: BrowserEntry) {
     if (entry.kind === "file") return { label: "UFID", value: entry.data.ufid }
     if (entry.kind === "folder") return { label: "Folder ID", value: entry.data.folderId }
+    if (entry.missingKind === "folder") return { label: "Folder ID", value: entry.ufid }
     return { label: "UFID", value: entry.ufid }
+}
+
+/** Stable label identity: files by UFID, folders by folderId (so stars/tags survive renames and moves). */
+function entryLabelKey(entry: BrowserEntry): string | null {
+    if (entry.kind === "file") return Labels.labelKeyFor("file", entry.data.ufid)
+    if (entry.kind === "folder") return Labels.labelKeyFor("folder", entry.data.folderId)
+    return entry.labelKey ?? null
 }
 
 function applySort(items: BrowserEntry[]) {
@@ -521,6 +542,8 @@ type BrowserHistoryState = {
     tglfs: true
     trail: string[]
     preview?: boolean
+    /** Starred / tag view. The tag name is kept so a reload can resolve `#/tag/<name>` links. */
+    view?: { kind: "starred" } | { kind: "tag"; tagId: string; name: string }
 }
 
 function rememberFolder(entry: FolderBrowserEntry) {
@@ -535,13 +558,21 @@ function currentTrailIds() {
 
 function historyUrlFor(trailIds: string[]) {
     const base = `${window.location.pathname}${window.location.search}`
+    if (state.virtual?.kind === "starred") return `${base}#/starred`
+    if (state.virtual?.kind === "tag") return `${base}#/tag/${encodeURIComponent(Labels.viewTitle(state.virtual))}`
     const last = trailIds[trailIds.length - 1]
     return last ? `${base}#/f/${encodeURIComponent(last)}` : base
 }
 
+function currentHistoryView(): BrowserHistoryState["view"] {
+    if (!state.virtual) return undefined
+    if (state.virtual.kind === "starred") return { kind: "starred" }
+    return { kind: "tag", tagId: state.virtual.tagId, name: Labels.viewTitle(state.virtual) }
+}
+
 function writeHistory(mode: "push" | "replace") {
     const ids = currentTrailIds()
-    const historyState: BrowserHistoryState = { tglfs: true, trail: ids }
+    const historyState: BrowserHistoryState = { tglfs: true, trail: ids, view: currentHistoryView() }
     try {
         if (mode === "push") {
             window.history.pushState(historyState, "", historyUrlFor(ids))
@@ -578,6 +609,7 @@ async function navigateToFolder(
     closeMenu()
     closeSidebar()
     resetSearchInput()
+    state.virtual = null
     const previousFolder = state.currentFolder
     if (!target) {
         state.currentFolder = null
@@ -636,6 +668,49 @@ async function goUp() {
     await navigateTo(null)
 }
 
+/** Reads `#/starred`, `#/tag/<name>` or `#/f/<folderId>` (e.g. a link pasted into the address bar). */
+function historyStateFromHash(): BrowserHistoryState | null {
+    const match = window.location.hash.match(/^#\/(starred|tag\/(.+)|f\/(.+))$/)
+    if (!match) return null
+    const decode = (value: string) => {
+        try {
+            return decodeURIComponent(value)
+        } catch {
+            return value
+        }
+    }
+    if (match[1] === "starred") return { tglfs: true, trail: [], view: { kind: "starred" } }
+    if (match[2]) return { tglfs: true, trail: [], view: { kind: "tag", tagId: "", name: decode(match[2]) } }
+    return { tglfs: true, trail: [decode(match[3])] }
+}
+
+async function restoreHistoryState(historyState: BrowserHistoryState | null) {
+    const view = historyState?.tglfs ? historyState.view : undefined
+    if (view) {
+        await Labels.labelsReady()
+        const tagId = view.kind === "tag" ? (Labels.getTag(view.tagId) ? view.tagId : Labels.findTagIdByName(view.name)) : null
+        if (view.kind === "starred") {
+            await openVirtualView({ kind: "starred" }, { push: false })
+            return
+        }
+        if (tagId) {
+            await openVirtualView({ kind: "tag", tagId }, { push: false })
+            return
+        }
+        showUfidToast(`The tag “${view.name}” no longer exists`)
+        await navigateTo(null, { push: false })
+        writeHistory("replace")
+        return
+    }
+    const ids = historyState?.tglfs ? historyState.trail : []
+    if (state.virtual && ids.length === 0) {
+        await navigateTo(null, { push: false })
+        return
+    }
+    state.virtual = null
+    await restoreHistoryTrail(ids)
+}
+
 async function restoreHistoryTrail(ids: string[]) {
     const current = currentTrailIds()
     if (current.length === ids.length && current.every((id, index) => id === ids[index])) return
@@ -685,11 +760,26 @@ function updateFolderLocation() {
         breadcrumb.appendChild(button)
     }
 
-    addCrumb("All files", trail.length === 0, () => void navigateTo(null))
-    for (const [index, folder] of trail.entries()) {
-        addSeparator()
-        const isCurrent = index === trail.length - 1
-        addCrumb(folder.data.name, isCurrent, () => void navigateTo(folder, { trail: trail.slice(0, index + 1) }))
+    const virtual = state.virtual
+    if (virtual) {
+        // Starred / tag views have a single title crumb instead of a folder trail.
+        const title = document.createElement("span")
+        title.className = "fx-crumb is-current fx-crumb--view"
+        title.setAttribute("aria-current", "page")
+        const name = Labels.viewTitle(virtual)
+        const color = virtual.kind === "tag" ? Labels.tagColor(virtual.tagId) : null
+        title.innerHTML = virtual.kind === "starred"
+            ? `<span class="fx-crumb-star">${icon("star")}</span>Starred`
+            : `<span class="fx-crumb-hash" data-color="${color ?? "gray"}">#</span>${escapeHtml(name)}`
+        title.title = virtual.kind === "starred" ? "Starred" : `Tag: ${name}`
+        breadcrumb.appendChild(title)
+    } else {
+        addCrumb("All files", trail.length === 0, () => void navigateTo(null))
+        for (const [index, folder] of trail.entries()) {
+            addSeparator()
+            const isCurrent = index === trail.length - 1
+            addCrumb(folder.data.name, isCurrent, () => void navigateTo(folder, { trail: trail.slice(0, index + 1) }))
+        }
     }
     requestAnimationFrame(() => {
         breadcrumb.scrollLeft = breadcrumb.scrollWidth
@@ -697,10 +787,14 @@ function updateFolderLocation() {
 
     const upButton = document.getElementById("browserUpButton")
     upButton?.toggleAttribute("hidden", !state.currentFolder)
-    document.getElementById("navAllFiles")?.classList.toggle("is-active", !state.currentFolder)
+    document.getElementById("navAllFiles")?.classList.toggle("is-active", !state.currentFolder && !virtual)
+    document.getElementById("fileBrowser")?.classList.toggle("fx-virtual-view", !!virtual)
+    Labels.renderLabelsSidebar()
     const searchInput = document.getElementById("browserSearchInput") as HTMLInputElement | null
     if (searchInput) {
-        searchInput.placeholder = state.currentFolder ? `Search in ${state.currentFolder.data.name}` : "Search files"
+        searchInput.placeholder = virtual
+            ? virtual.kind === "starred" ? "Search starred" : `Search in #${Labels.viewTitle(virtual)}`
+            : state.currentFolder ? `Search in ${state.currentFolder.data.name}` : "Search files"
     }
     const dropTarget = document.getElementById("dropTarget")
     if (dropTarget) {
@@ -724,6 +818,23 @@ function applyEntryDataset(element: HTMLElement, entry: BrowserEntry, index: num
     element.dataset.index = String(index)
     element.dataset.name = getEntryName(entry)
     if (isFileEntry(entry)) element.dataset.msgid = String(entry.msgId)
+    const labelKey = entryLabelKey(entry)
+    if (labelKey) {
+        element.dataset.labelKey = labelKey
+        element.classList.toggle("is-starred", Labels.isLabelStarred(labelKey))
+    }
+}
+
+function labelSlot(entry: BrowserEntry, slot: Labels.LabelSlot, tag = "span") {
+    return `<${tag} class="fx-label-slot fx-label-slot--${slot}" data-labels-slot="${slot}">${Labels.labelSlotHtml(entryLabelKey(entry), slot)}</${tag}>`
+}
+
+/** Subtitle line under the name: folder location in Starred/tag views, otherwise size · date (phones). */
+function entrySubtitle(entry: BrowserEntry): { text: string; isPath: boolean } {
+    if (entry.kind === "missing-file" && entry.labelKey) return { text: "No longer in Telegram", isPath: true }
+    if (state.virtual && entry.location !== undefined) return { text: entry.location, isPath: true }
+    const path = entry.kind === "missing-file" ? getEntryPath(entry) : ""
+    return path ? { text: path, isPath: true } : { text: getEntryMetaText(entry), isPath: false }
 }
 
 function renderList(items: BrowserEntry[]) {
@@ -734,10 +845,8 @@ function renderList(items: BrowserEntry[]) {
     for (const [index, entry] of items.entries()) {
         const name = getEntryName(entry)
         const safeName = escapeHtml(name)
-        const path = entry.kind === "missing-file" ? getEntryPath(entry) : ""
-        const sub = global
-            ? `${entryLocationHtml(entry)}<span class="fx-loc-meta">${escapeHtml(getEntryMetaText(entry))}</span>`
-            : path ? escapeHtml(path) : escapeHtml(getEntryMetaText(entry))
+        const sub = entrySubtitle(entry)
+        const undated = getEntryDate(entry) <= 0
         const row = document.createElement("div")
         row.className = "fx-row"
         row.setAttribute("role", "row")
@@ -748,12 +857,14 @@ function renderList(items: BrowserEntry[]) {
             <div class="fx-cell fx-name-cell">
                 ${fileKindIcon(getEntryKind(entry))}
                 <div class="fx-name-wrap">
-                    <div class="fx-name-line"><span class="fx-name" title="${safeName}">${safeName}</span>${getEntryBadge(entry)}</div>
-                    <div class="fx-sub${path || global ? " is-path" : ""}${global ? " is-location" : ""}">${sub}</div>
+                    <div class="fx-name-line"><span class="fx-name" title="${safeName}">${safeName}</span>${labelSlot(entry, "inline")}${getEntryBadge(entry)}</div>
+                    <div class="fx-sub${global || sub.isPath ? " is-path" : ""}${global ? " is-location" : ""}">${labelSlot(entry, "sub")}${global
+                        ? `${entryLocationHtml(entry)}<span class="fx-loc-meta">${escapeHtml(getEntryMetaText(entry))}</span>`
+                        : `<span class="fx-sub-text" title="${escapeHtml(sub.text)}">${escapeHtml(sub.text)}</span>`}</div>
                 </div>
             </div>
-            <div class="fx-cell fx-cell-size">${entry.kind === "folder" ? "—" : escapeHtml(getEntrySizeText(entry))}</div>
-            <div class="fx-cell fx-cell-date" title="${escapeHtml(formatFileCardDate(getEntryDate(entry)))}">${escapeHtml(formatEntryDate(getEntryDate(entry)))}</div>
+            <div class="fx-cell fx-cell-size">${entry.kind === "folder" || undated ? "—" : escapeHtml(getEntrySizeText(entry))}</div>
+            <div class="fx-cell fx-cell-date" title="${undated ? "" : escapeHtml(formatFileCardDate(getEntryDate(entry)))}">${undated ? "" : escapeHtml(formatEntryDate(getEntryDate(entry)))}</div>
             <div class="fx-cell fx-cell-more">${moreButtonHtml(name)}</div>`
         attachEntryHandlers(row, entry, index)
         fragment.appendChild(row)
@@ -774,13 +885,16 @@ function renderGrid(items: BrowserEntry[]) {
         tile.setAttribute("role", "gridcell")
         tile.tabIndex = -1
         applyEntryDataset(tile, entry, index)
+        const sub = entrySubtitle(entry)
+        const meta = sub.isPath ? sub.text : getEntryMetaText(entry)
         tile.innerHTML = `
-            <div class="fx-tile-art">${fileKindIcon(getEntryKind(entry), "lg")}${getEntryBadge(entry)}</div>
+            <div class="fx-tile-art">${fileKindIcon(getEntryKind(entry), "lg")}${getEntryBadge(entry)}${labelSlot(entry, "tile-star")}</div>
             ${checkboxHtml(name)}
             ${moreButtonHtml(name)}
             <div class="fx-tile-body">
                 <div class="fx-tile-name" title="${safeName}">${safeName}</div>
-                <div class="fx-tile-meta${global ? " is-location" : ""}">${global ? entryLocationHtml(entry) : escapeHtml(getEntryMetaText(entry))}</div>
+                <div class="fx-tile-meta${global ? " is-location" : ""}" title="${global ? "" : escapeHtml(meta)}">${global ? entryLocationHtml(entry) : `<span class="fx-tile-meta-text">${escapeHtml(meta)}</span>`}</div>
+                ${labelSlot(entry, "tile-tags", "div")}
             </div>`
         attachEntryHandlers(tile, entry, index)
         fragment.appendChild(tile)
@@ -797,6 +911,23 @@ function renderEmptyState(visible: boolean) {
     }
     const searching = state.query.length > 0
     const global = isGlobalSearch()
+    if (state.virtual && !searching) {
+        const starred = state.virtual.kind === "starred"
+        const tagName = Labels.viewTitle(state.virtual)
+        empty.innerHTML = `
+            <span class="fx-empty-art fx-empty-art--${starred ? "star" : "tag"}">${icon(starred ? "star" : "tag")}</span>
+            <h2>${escapeHtml(starred ? "No starred items yet" : `Nothing tagged “${tagName}” yet`)}</h2>
+            <p>${starred
+                ? isTouchInteraction() || isCompactViewport()
+                    ? `Long-press a file or folder and tap <strong>Star</strong>. Starred items from every folder show up here.`
+                    : `Press <kbd>S</kbd> on a file or folder to star it. Starred items from every folder show up here.`
+                : `Select files or folders and choose <strong>Tags…</strong> to add “${escapeHtml(tagName)}”.`}</p>
+            <div class="fx-empty-actions">
+                <button type="button" class="fx-btn fx-btn-secondary" data-empty-action="all-files">${icon("home")}Browse all files</button>
+            </div>`
+        empty.removeAttribute("hidden")
+        return
+    }
     const title = searching
         ? `No results for “${state.query}”${global ? " anywhere" : ""}`
         : state.currentFolder ? "This folder is empty" : "No files yet"
@@ -997,11 +1128,25 @@ function getAllSelectionActions(entries: BrowserEntry[]): SelectionAction[] {
     if (single && isFileEntry(single)) {
         actions.push({ key: "download", id: "browserActionDownload", menuId: "actionDownloadItem", label: "Download", icon: "download", run: () => downloadEntry(single) })
     }
-    // Global search results come from many folders: offer "Show in folder", and leave Move to the folder view
-    // (moves tombstone the source folder's manifest, which is the folder being viewed).
+    // Global search results and Starred/tag views list items from many folders: offer "Show in folder", and
+    // leave Move to the folder view (moves tombstone the source folder's manifest, which is the folder being viewed).
     const globalResults = isGlobalSearch()
-    if (globalResults && single && (isFileEntry(single) || isFolderEntry(single))) {
-        actions.push({ key: "reveal", id: "browserActionReveal", menuId: "actionRevealItem", label: "Show in folder", shortLabel: "Show", icon: "folder", run: () => void revealEntryInFolder(single) })
+    const labelRefs = labelRefsFor(entries)
+    const missingLabelled = entries.filter((entry) => entry.kind === "missing-file" && !!entry.labelKey)
+    if (labelRefs.length === entries.length && entries.length > 0) {
+        const unstar = Labels.allStarred(labelRefs.map((ref) => ref.key))
+        actions.push({
+            key: "star",
+            id: "browserActionStar",
+            menuId: "actionStarItem",
+            label: unstar ? "Unstar" : "Star",
+            icon: unstar ? "starOff" : "star",
+            hint: "S",
+            run: () => toggleStarForEntries(entries),
+        })
+    }
+    if (single && (globalResults || state.virtual) && (isFileEntry(single) || isFolderEntry(single))) {
+        actions.push({ key: "reveal", id: "browserActionReveal", menuId: "actionRevealItem", label: "Show in folder", shortLabel: "Locate", icon: "locate", run: () => void revealEntryInFolder(single) })
     }
     const selectionItems = toSelectionItems(entries)
     for (const extra of getExtraBrowserActions()) {
@@ -1020,8 +1165,31 @@ function getAllSelectionActions(entries: BrowserEntry[]): SelectionAction[] {
     if (single && (isFileEntry(single) || isFolderEntry(single))) {
         actions.push({ key: "rename", id: "browserActionRename", menuId: "actionRenameItem", label: "Rename", icon: "pencil", hint: "F2", run: () => renameEntry(single) })
     }
-    if (allFilesOrFolders && client && !globalResults) {
+    // Moving out of a Starred/tag view or global results would need per-item source folders; use "Show in folder".
+    if (allFilesOrFolders && client && !globalResults && !state.virtual) {
         actions.push({ key: "move", id: "browserActionMove", menuId: "actionMoveItem", label: "Move", icon: "move", run: () => moveSelectedEntries(client) })
+    }
+    if (allFilesOrFolders) {
+        actions.push({
+            key: "tags",
+            id: "browserActionTags",
+            menuId: "actionTagsItem",
+            label: "Tags…",
+            shortLabel: "Tags",
+            icon: "tag",
+            run: () => Labels.openTagEditor(labelRefsFor(entries), entries.length === 1 ? getEntryName(entries[0]) : `${entries.length} items`),
+        })
+    }
+    if (missingLabelled.length > 0 && missingLabelled.length === entries.length) {
+        actions.push({
+            key: "forget-labels",
+            id: "browserActionForgetLabels",
+            menuId: "actionForgetLabelsItem",
+            label: "Remove stale star & tags",
+            shortLabel: "Clean up",
+            icon: "eraser",
+            run: () => forgetMissingLabels(missingLabelled),
+        })
     }
     if (entries.length > 0 && files.length === entries.length) {
         actions.push({ key: "send", id: "browserActionSend", menuId: "actionSendItem", label: "Send", icon: "send", run: () => sendEntries(files) })
@@ -1136,7 +1304,9 @@ function openEntryMenu(entry: BrowserEntry, index: number, anchor?: HTMLElement 
             anchor,
             headerHtml: fileKindIcon(getEntryKind(entry)),
             title: getEntryName(entry),
-            subtitle: entry.kind === "missing-file" ? `Missing file · ${getEntryPath(entry)}` : getEntryMetaText(entry),
+            subtitle: entry.kind === "missing-file"
+                ? entry.labelKey ? "No longer in Telegram" : `Missing file · ${getEntryPath(entry)}`
+                : state.virtual && entry.location ? `${entry.location} · ${getEntryMetaText(entry)}` : getEntryMetaText(entry),
             items,
             onClose,
         })
@@ -1243,7 +1413,7 @@ async function openEntry(entry: BrowserEntry, index: number) {
         await runSingleOpenAction(entry)
         return
     }
-    if (entry.kind === "missing-file") {
+    if (entry.kind === "missing-file" && !entry.labelKey) {
         showUfidToast("This file card could not be found in Telegram", { tone: "error" })
         return
     }
@@ -1555,6 +1725,7 @@ async function loadFirstPage(client: any, refreshSequence = browserRefreshSequen
     state.lastClickedIndex = null
     state.totalPages = null
     state.totalItems = null
+    if (state.virtual) return await loadVirtualPage(client, state.virtual, refreshSequence)
     const parentFolderId = listingParentFolderId()
     if (!parentFolderId) locationResolver.clear()
     const countPromise = countDirectoryEntries(client, {
@@ -2374,7 +2545,7 @@ function removeEntriesFromView(ids: Set<string>) {
 }
 
 function restoreEntriesToView(pending: PendingDelete) {
-    if (currentDirectoryParentId() !== pending.parentFolderId) return
+    if (currentViewKey() !== pending.parentFolderId) return
     const page = state.pages[state.currentPage]
     if (!page || state.query !== pending.query) {
         void refreshBrowser?.()
@@ -2400,7 +2571,7 @@ function deleteEntriesWithUndo(entries: BrowserEntry[]) {
         client,
         entries: deletable,
         entryIds: new Set(deletable.map((entry) => entry.id)),
-        parentFolderId: currentDirectoryParentId(),
+        parentFolderId: currentViewKey(),
         query: state.query,
         toast: null,
         commit: null,
@@ -2441,6 +2612,8 @@ function commitPendingDelete(pending: PendingDelete): Promise<void> {
             await tombstoneFolderTree(client, record, now)
         }
         window.dispatchEvent(new Event(STORAGE_CHANGED_EVENT))
+        // Only now (not during the undo window) do the deleted items' local stars and tags go away.
+        Labels.forgetLabels(pending.entries.map(entryLabelKey).filter((key): key is string => !!key))
     }).catch(async (error) => {
         console.error("Deferred delete failed", error)
         for (const id of pending.entryIds) hiddenEntryIds.delete(id)
@@ -2718,6 +2891,139 @@ async function undoRename(record: RenameUndoRecord) {
     }
 }
 
+/* ------------------------------------------------------- Stars & tags */
+/*
+ * Stars and tags are stored locally per account (labels.ts / labelsUi.ts). Here they hook into the browser:
+ * actions, the S shortcut, the Starred / tag views (`#/starred`, `#/tag/<name>`), and cleanup after a delete
+ * commits. The views list items across all folders; Move and New folder/Upload don't apply there (Move is
+ * replaced by "Show in folder", uploads and New folder switch to All files first).
+ */
+
+/** Keys of the last Starred/tag listing (before search filtering), to notice items added from elsewhere. */
+let virtualResolvedKeys = new Set<string>()
+
+function currentViewKey() {
+    if (state.virtual?.kind === "starred") return "view:starred"
+    if (state.virtual?.kind === "tag") return `view:tag:${state.virtual.tagId}`
+    return currentDirectoryParentId()
+}
+
+function labelRefsFor(entries: BrowserEntry[]) {
+    const refs: Array<{ key: string; name?: string }> = []
+    for (const entry of entries) {
+        const key = entryLabelKey(entry)
+        if (key) refs.push({ key, name: entry.kind === "missing-file" ? undefined : getEntryName(entry) })
+    }
+    return refs
+}
+
+function toggleStarForEntries(entries: BrowserEntry[]) {
+    const refs = labelRefsFor(entries)
+    if (refs.length === 0) return
+    const starred = Labels.toggleItemsStarred(refs)
+    if (starred === null) return
+    if (!starred && state.virtual?.kind === "starred") {
+        offerUndo({
+            message: `Removed ${describeEntries(entries)} from Starred`,
+            undo: () => {
+                Labels.setItemsStarred(refs, true)
+            },
+        })
+    } else if (isCompactViewport() || entries.length > 1) {
+        // On phones (and for bulk changes) the row decoration alone is easy to miss.
+        showUfidToast(starred ? `Starred ${describeEntries(entries)}` : `Unstarred ${describeEntries(entries)}`)
+    }
+}
+
+function forgetMissingLabels(entries: BrowserEntry[]) {
+    const keys = entries.map(entryLabelKey).filter((key): key is string => !!key)
+    Labels.forgetLabels(keys)
+    showUfidToast(keys.length === 1 ? "Removed the stale star and tags" : `Removed stale labels from ${keys.length} items`)
+}
+
+async function openVirtualView(view: VirtualView, options: { push?: boolean } = {}) {
+    if (Labels.sameView(state.virtual, view) && options.push === false) return
+    closeMenu()
+    closeSidebar()
+    resetSearchInput()
+    state.virtual = view
+    state.currentFolder = null
+    state.currentFolderTrail = []
+    if (options.push !== false) writeHistory("push")
+    await refreshBrowser?.({ showLoading: true, loadingMessage: `Loading ${Labels.viewTitle(view)}...` })
+}
+
+async function loadVirtualPage(client: any, view: VirtualView, refreshSequence: number): Promise<BrowserEntry[] | null> {
+    await Labels.labelsReady()
+    const resolved = await Labels.resolveLabelItems(client, Labels.viewKeys(view))
+    if (refreshSequence !== browserRefreshSequence || !Labels.sameView(state.virtual, view)) return null
+    virtualResolvedKeys = new Set(resolved.map((item) => item.key))
+    let items: BrowserEntry[] = resolved.map((item): BrowserEntry => {
+        if (item.kind === "file") return { ...fileEntryFromRecord(item.record), location: item.location }
+        if (item.kind === "folder") return { ...folderEntryFromRecord(item.record), location: item.location }
+        return {
+            kind: "missing-file",
+            id: `missing:${item.key}`,
+            date: 0,
+            name: item.name,
+            path: "",
+            ufid: item.id,
+            size: 0,
+            labelKey: item.key,
+            missingKind: item.itemKind,
+            location: item.location,
+        }
+    })
+    items = withoutHiddenEntries(items)
+    const query = state.query.toLocaleLowerCase()
+    if (query) items = items.filter((entry) => getEntryName(entry).toLocaleLowerCase().includes(query))
+    state.pages = [items]
+    state.hasMore = false
+    state.totalItems = items.length
+    state.totalPages = 1
+    return items
+}
+
+/** Keeps the browser in sync with label changes (from this tab, another tab, an import, …). */
+function handleLabelsChanged(popKeys: Set<string>) {
+    const view = state.virtual
+    if (!view) {
+        Labels.refreshLabelDecorations(popKeys)
+        updateActionStates()
+        return
+    }
+    if (view.kind === "tag" && !Labels.getTag(view.tagId)) {
+        showUfidToast("That tag was deleted")
+        void navigateTo(null)
+        return
+    }
+    updateFolderLocation()
+    // A renamed tag keeps its view; refresh the #/tag/<name> URL to match.
+    if (view.kind === "tag" && !previewModal?.isOpen()) writeHistory("replace")
+    const page = state.pages[state.currentPage]
+    if (!page) return
+    const keys = Labels.viewKeys(view)
+    if (keys.some((key) => !virtualResolvedKeys.has(key))) {
+        // Something new belongs here (undo, import, another tab): look it up.
+        void refreshBrowser?.()
+        return
+    }
+    const remaining = page.filter((entry) => {
+        const key = entryLabelKey(entry)
+        return !key || Labels.viewMatches(view, key)
+    })
+    virtualResolvedKeys = new Set(keys)
+    if (remaining.length !== page.length) {
+        for (const entry of page) if (!remaining.includes(entry)) state.selected.delete(entry.id)
+        state.pages[state.currentPage] = remaining
+        state.totalItems = remaining.length
+        renderBrowser(remaining)
+        return
+    }
+    Labels.refreshLabelDecorations(popKeys)
+    updateActionStates()
+}
+
 /* ------------------------------------------------------------- Actions */
 
 async function runSingleOpenAction(selected: BrowserEntry | null) {
@@ -2851,6 +3157,8 @@ function uploadFiles(files?: File[]) {
     const config = activeBrowserConfig
     const client = activeBrowserClient
     if (!client || !config || blockedByHistory()) return
+    // Starred/tag views have no folder of their own: uploads go to All files, which we switch to.
+    if (state.virtual) void navigateTo(null)
     setNextUploadParentFromBrowserState()
     if (files && files.length > 0) {
         void import("../telegram").then((Telegram) => Telegram.fileUpload(client, config, files))
@@ -2862,6 +3170,7 @@ function uploadFiles(files?: File[]) {
 
 async function createFolderHere() {
     if (!activeBrowserClient || blockedByHistory()) return
+    if (state.virtual) await navigateTo(null)
     await createFolderInCurrentLocation(activeBrowserClient)
 }
 
@@ -4043,6 +4352,14 @@ async function handleKeydown(event: KeyboardEvent) {
         }
         return
     }
+    if (!mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "s" && state.selected.size > 0) {
+        const entries = Array.from(state.selected.values())
+        if (labelRefsFor(entries).length === entries.length) {
+            event.preventDefault()
+            toggleStarForEntries(entries)
+        }
+        return
+    }
     if (event.key === "F2" && state.selected.size === 1) {
         event.preventDefault()
         await renameEntry(Array.from(state.selected.values())[0])
@@ -4088,7 +4405,7 @@ function wirePreviewChrome() {
         const historyState = window.history.state as BrowserHistoryState | null
         if (open && !historyState?.preview) {
             try {
-                window.history.pushState({ tglfs: true, trail: currentTrailIds(), preview: true }, "", window.location.href)
+                window.history.pushState({ tglfs: true, trail: currentTrailIds(), view: currentHistoryView(), preview: true }, "", window.location.href)
             } catch {}
         } else if (!open && historyState?.preview) {
             window.history.back()
@@ -4256,11 +4573,19 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         folderCache.clear()
         locationResolver.clear()
         storageSummary?.reset()
+        void Labels.setLabelsAccount(client, config).catch((error) => console.warn("Unable to load stars and tags", error))
         return
     }
     state.initialized = true
     activeBrowserClient = client
     activeBrowserConfig = config
+
+    Labels.initLabels({
+        openView: (view) => void openVirtualView(view),
+        currentView: () => state.virtual,
+        onChange: handleLabelsChanged,
+    })
+    void Labels.setLabelsAccount(client, config).catch((error) => console.warn("Unable to load stars and tags", error))
 
     previewModal = new PreviewModal(client)
     wirePreviewChrome()
@@ -4335,7 +4660,7 @@ export async function initFileBrowser(client: any, config: Config.Config) {
             window.history.back()
             return
         }
-        void restoreHistoryTrail(historyState?.tglfs ? historyState.trail : [])
+        void restoreHistoryState(historyState?.tglfs ? historyState : historyStateFromHash())
     })
 
     /* Search */
@@ -4465,6 +4790,7 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         const action = (event.target as HTMLElement).closest<HTMLElement>("[data-empty-action]")?.dataset.emptyAction
         if (action === "upload") uploadFiles()
         if (action === "folder") void createFolderHere()
+        if (action === "all-files") void navigateTo(null)
         if (action === "clear") {
             searchInput.value = ""
             scheduleSearch(true)
@@ -4544,6 +4870,14 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         event.returnValue = ""
     })
 
+    // Deep links: #/starred and #/tag/<name> open those views.
+    const linkedView = historyStateFromHash()
+    if (linkedView?.view) {
+        // Opens the view, or falls back to All files when the tag doesn't exist (that path loads the listing).
+        await restoreHistoryState(linkedView)
+        if (state.virtual) writeHistory("replace")
+        return
+    }
     // Deep link: #/f/<folderId> opens that folder directly.
     const deepLinkMatch = window.location.hash.match(/^#\/f\/(.+)$/)
     if (deepLinkMatch) {

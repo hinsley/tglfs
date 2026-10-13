@@ -131,14 +131,19 @@
                 <button id="sidebarNewButton" class="fx-btn fx-btn-primary fx-new-btn" type="button" data-icon="plus">New</button>
                 <nav class="fx-nav">
                     <button id="navAllFiles" class="fx-nav-item is-active" type="button" data-icon="home">All files</button>
+                    <button id="navStarred" class="fx-nav-item fx-nav-starred" type="button" data-icon="star"><span class="fx-nav-label">Starred</span><span id="navStarredCount" class="fx-nav-count"></span></button>
                     <button id="browserActionUpload" class="fx-nav-item" type="button" data-icon="upload">Upload files</button>
                     <button id="browserActionNewFolder" class="fx-nav-item" type="button" data-icon="folderPlus">New folder</button>
                     <button id="browserActionReceive" class="fx-nav-item" type="button" data-icon="inbox">Receive file</button>
                 </nav>
+                <div class="fx-nav-section">Tags</div>
+                <nav id="navTags" class="fx-nav fx-nav--tags" aria-label="Tags"></nav>
                 <div class="fx-nav-section">Tools</div>
                 <nav class="fx-nav">
                     <button id="migrateDirectoryParentsButton" class="fx-nav-item" type="button" data-icon="wrench">Migrate folder index</button>
                     <button id="downloadFileLegacyButton" class="fx-nav-item" type="button" data-icon="key">Download by UFID (legacy)</button>
+                    <button id="labelsExportButton" class="fx-nav-item" type="button" data-icon="download">Export stars &amp; tags</button>
+                    <button id="labelsImportButton" class="fx-nav-item" type="button" data-icon="upload">Import stars &amp; tags</button>
                     <button id="browserActionUnsend" class="fx-nav-item" type="button" data-icon="send" hidden>Unsend</button>
                 </nav>
                 <div class="fx-sidebar-foot">

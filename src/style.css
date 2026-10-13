@@ -32,6 +32,18 @@
     --selbar-text: #f3f5f8;
     --selbar-hover: rgba(255, 255, 255, 0.1);
 
+    /* Stars & tag palette (tag colours are stored as these names, not hex values) */
+    --star: #f0a500;
+    --tag-blue: #2f80ed;
+    --tag-green: #1f9d62;
+    --tag-amber: #d39a00;
+    --tag-purple: #8b5cf6;
+    --tag-pink: #e0478f;
+    --tag-teal: #0f9fa8;
+    --tag-orange: #e8711c;
+    --tag-red: #e0393e;
+    --tag-gray: #7b8494;
+
     --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
     --shadow-md: 0 4px 12px -2px rgba(16, 24, 40, 0.08), 0 2px 4px -2px rgba(16, 24, 40, 0.04);
     --shadow-lg: 0 16px 40px -8px rgba(16, 24, 40, 0.18), 0 4px 10px -4px rgba(16, 24, 40, 0.08);
@@ -79,6 +91,16 @@
     --selbar-bg: #252c37;
     --selbar-text: #eef1f5;
     --selbar-hover: rgba(255, 255, 255, 0.08);
+    --star: #f7b928;
+    --tag-blue: #5a9cf5;
+    --tag-green: #3fbf7a;
+    --tag-amber: #e9b52f;
+    --tag-purple: #a78bfa;
+    --tag-pink: #f06aa8;
+    --tag-teal: #2ec4cc;
+    --tag-orange: #f5913f;
+    --tag-red: #f2555a;
+    --tag-gray: #98a1b0;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 4px 14px -2px rgba(0, 0, 0, 0.45);
     --shadow-lg: 0 18px 44px -8px rgba(0, 0, 0, 0.6), 0 4px 10px -4px rgba(0, 0, 0, 0.4);
@@ -5491,5 +5513,790 @@ kbd {
 @media (hover: none) {
     .fx-pal-item:active {
         background: var(--surface-2);
+    }
+}
+
+/* ------------------------------------------------------ Stars & tags */
+
+/* The sidebar scrolls once it holds more than fits (e.g. many tags); its items must not shrink instead. */
+.fx-sidebar > * {
+    flex-shrink: 0;
+}
+
+[data-color="blue"] { --tag: var(--tag-blue); }
+[data-color="green"] { --tag: var(--tag-green); }
+[data-color="amber"] { --tag: var(--tag-amber); }
+[data-color="purple"] { --tag: var(--tag-purple); }
+[data-color="pink"] { --tag: var(--tag-pink); }
+[data-color="teal"] { --tag: var(--tag-teal); }
+[data-color="orange"] { --tag: var(--tag-orange); }
+[data-color="red"] { --tag: var(--tag-red); }
+[data-color="gray"] { --tag: var(--tag-gray); }
+
+.fx-tag-dot {
+    display: inline-block;
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--tag, var(--tag-gray));
+}
+
+.fx-star {
+    display: inline-flex;
+    flex: none;
+    color: var(--star);
+}
+
+.fx-star .fx-svg {
+    width: 15px;
+    height: 15px;
+    fill: currentColor;
+    stroke-width: 1.6;
+}
+
+.fx-star.is-popping {
+    animation: fx-star-pop 420ms var(--ease) both;
+}
+
+@keyframes fx-star-pop {
+    0% {
+        transform: scale(0.3) rotate(-30deg);
+        opacity: 0;
+    }
+
+    55% {
+        transform: scale(1.3) rotate(8deg);
+        opacity: 1;
+    }
+
+    100% {
+        transform: none;
+    }
+}
+
+.fx-label-slot:empty {
+    display: none;
+}
+
+/* The name truncates first so the star (which comes first in the slot) stays visible; chips clip after it. */
+.fx-label-slot--inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+    max-width: 55%;
+    overflow: hidden;
+}
+
+.fx-label-slot--sub {
+    display: none;
+}
+
+.fx-chips {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.fx-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 128px;
+    height: 20px;
+    padding: 0 8px 0 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--tag, var(--tag-gray)) 13%, transparent);
+    color: var(--text-2);
+    font-size: 11.5px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+.fx-chip-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.fx-chip--more {
+    flex: none;
+    padding: 0 7px;
+    background: var(--surface-2);
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+}
+
+.fx-row.selected .fx-chip--more {
+    background: var(--surface);
+}
+
+/* Subtitle line can hold chips plus text (location in Starred/tag views, size · date on phones). */
+.fx-sub.is-path {
+    display: flex;
+}
+
+.fx-sub {
+    align-items: center;
+    gap: 6px;
+}
+
+.fx-sub-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fx-tile-meta-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.fx-label-slot--tile-star:not(:empty) {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--surface) 90%, transparent);
+    box-shadow: var(--shadow-sm);
+}
+
+.fx-label-slot--tile-tags:not(:empty) {
+    display: flex;
+    margin-top: 7px;
+    min-width: 0;
+}
+
+/* Sidebar */
+.fx-nav-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.fx-nav-count {
+    flex: none;
+    margin-left: auto;
+    color: var(--text-3);
+    font-size: 12px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+}
+
+.fx-nav-item.is-active .fx-nav-count {
+    color: var(--accent-text);
+}
+
+.fx-nav-starred.is-active .fx-svg {
+    color: var(--star);
+    fill: var(--star);
+}
+
+.fx-tag-nav .fx-tag-dot {
+    width: 10px;
+    height: 10px;
+    margin: 0 4px;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--tag) 16%, transparent);
+}
+
+.fx-nav-more {
+    color: var(--text-3);
+    font-size: 12.5px;
+}
+
+.fx-nav-empty {
+    margin: 0 10px 4px;
+    color: var(--text-3);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+/* Breadcrumb title of a Starred / tag view */
+.fx-crumb--view {
+    gap: 8px;
+    max-width: 100%;
+}
+
+.fx-crumb-star {
+    display: inline-flex;
+    color: var(--star);
+}
+
+.fx-crumb-star .fx-svg {
+    width: 19px;
+    height: 19px;
+    fill: currentColor;
+}
+
+.fx-crumb-hash {
+    color: var(--tag);
+    font-weight: 700;
+}
+
+.fx-empty-art--star {
+    background: color-mix(in srgb, var(--star) 15%, transparent);
+    color: var(--star);
+}
+
+.fx-empty-art--star .fx-svg {
+    fill: currentColor;
+}
+
+.fx-empty p kbd {
+    padding: 1px 6px;
+    border-radius: 5px;
+    border: 1px solid var(--border-strong);
+    font-size: 12px;
+    font-family: var(--font);
+}
+
+/* Dialogs (tag editor, manage tags); bottom sheets on phones */
+.fx-tag-dialog,
+.fx-tagman-dialog {
+    width: min(460px, 100%);
+}
+
+.fx-labels-backdrop.is-closing {
+    opacity: 0;
+}
+
+.fx-dialog-grip {
+    display: none;
+}
+
+.fx-labels-backdrop.is-sheet {
+    align-items: flex-end;
+    padding: 0;
+}
+
+.fx-labels-backdrop.is-sheet .fx-dialog {
+    width: 100%;
+    max-width: none;
+    max-height: calc(100dvh - 24px);
+    padding: 8px 16px calc(14px + var(--safe-b));
+    border-radius: 22px 22px 0 0;
+    border-bottom: 0;
+    transform: translateY(48px);
+    transition: transform 260ms var(--ease);
+}
+
+.fx-labels-backdrop.is-sheet.is-open .fx-dialog {
+    transform: none;
+}
+
+.fx-labels-backdrop.is-sheet.is-closing .fx-dialog {
+    transform: translateY(100%);
+}
+
+.fx-labels-backdrop.is-sheet .fx-dialog-grip {
+    display: block;
+    width: 36px;
+    height: 4px;
+    margin: 0 auto -6px;
+    border-radius: 999px;
+    background: var(--border-strong);
+}
+
+.fx-tagbox {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-height: 46px;
+    padding: 7px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--surface);
+    cursor: text;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.fx-tagbox:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.fx-tagbox-chips {
+    display: contents;
+}
+
+.fx-tagbox-input {
+    flex: 1;
+    min-width: 120px;
+    height: 30px;
+    padding: 0 4px;
+    border: 0;
+    outline: 0;
+    background: transparent;
+    color: var(--text);
+    font-size: 14px;
+}
+
+.fx-tagbox-input::placeholder {
+    color: var(--text-3);
+}
+
+.fx-chip--edit {
+    max-width: 100%;
+    height: 30px;
+    gap: 6px;
+    padding: 0 4px 0 10px;
+    color: var(--text);
+    font-size: 13px;
+    cursor: default;
+    animation: fx-chip-in 180ms var(--ease) both;
+}
+
+.fx-chip--edit .fx-tag-dot {
+    width: 9px;
+    height: 9px;
+}
+
+.fx-chip--edit.is-mixed {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--tag) 45%, transparent);
+    color: var(--text-2);
+    cursor: pointer;
+}
+
+.fx-chip-mixed {
+    color: var(--text-3);
+    font-weight: 700;
+}
+
+.fx-chip-x {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--text-3);
+}
+
+.fx-chip-x:hover {
+    background: color-mix(in srgb, var(--tag) 20%, transparent);
+    color: var(--text);
+}
+
+.fx-chip-x .fx-svg {
+    width: 13px;
+    height: 13px;
+    stroke-width: 2.4;
+}
+
+@keyframes fx-chip-in {
+    from {
+        transform: scale(0.85);
+        opacity: 0;
+    }
+}
+
+.fx-tag-suggest {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    max-height: min(264px, 38dvh);
+    margin: -6px -6px 0;
+    padding: 2px 6px;
+    overflow-y: auto;
+}
+
+.fx-tag-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 40px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text);
+    font-size: 14px;
+    text-align: left;
+}
+
+.fx-tag-option:hover,
+.fx-tag-option.is-active {
+    background: var(--surface-2);
+}
+
+.fx-tag-option-lead {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    color: var(--accent-text);
+}
+
+.fx-tag-option-lead .fx-tag-dot {
+    width: 10px;
+    height: 10px;
+}
+
+.fx-tag-option-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.fx-tag-option.is-create .fx-tag-option-name {
+    color: var(--accent-text);
+    font-weight: 500;
+}
+
+.fx-tag-option-meta {
+    color: var(--text-3);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.fx-tag-option .fx-check {
+    opacity: 1;
+    flex: none;
+}
+
+.fx-tag-suggest-empty {
+    padding: 14px 10px;
+    color: var(--text-3);
+    font-size: 13px;
+    text-align: center;
+}
+
+.fx-tag-actions {
+    align-items: center;
+}
+
+.fx-tag-actions-spacer {
+    flex: 1;
+}
+
+.fx-tag-manage {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+}
+
+.fx-tag-manage .fx-svg {
+    width: 15px;
+    height: 15px;
+}
+
+/* Manage tags */
+.fx-tagnew {
+    display: flex;
+    gap: 8px;
+}
+
+.fx-tagnew .fx-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.fx-tagnew .fx-btn .fx-svg {
+    width: 16px;
+    height: 16px;
+}
+
+.fx-tagman {
+    display: flex;
+    flex-direction: column;
+    max-height: min(340px, 44dvh);
+    margin: -4px -8px;
+    padding: 0 8px;
+    overflow-y: auto;
+}
+
+.fx-tagman-row + .fx-tagman-row {
+    border-top: 1px solid var(--border);
+}
+
+.fx-tagman-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 50px;
+}
+
+.fx-tagman-swatch {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--tag) 14%, transparent);
+    transition: transform 120ms var(--ease), background-color 120ms ease;
+}
+
+.fx-tagman-swatch:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--tag) 24%, transparent);
+    transform: scale(1.06);
+}
+
+.fx-tagman-swatch .fx-tag-dot {
+    width: 13px;
+    height: 13px;
+}
+
+.fx-tagman-text {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+}
+
+.fx-tagman-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.fx-tagman-count {
+    flex: none;
+    color: var(--text-3);
+    font-size: 12px;
+}
+
+.fx-tagman-delete:hover:not(:disabled) {
+    color: var(--danger);
+    background: var(--danger-soft);
+}
+
+.fx-tagman-rename {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+}
+
+.fx-tagman-rename .fx-input {
+    height: 36px;
+}
+
+.fx-tagman-row.is-rename .fx-tagman-text {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+    padding: 6px 0;
+}
+
+.fx-tagman-error {
+    color: var(--danger);
+    font-size: 12px;
+}
+
+.fx-swatches {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 2px 0 14px 42px;
+}
+
+.fx-swatch {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--tag);
+    color: #fff;
+    transition: transform 120ms var(--ease), box-shadow 120ms ease;
+}
+
+.fx-swatch:hover {
+    transform: scale(1.1);
+}
+
+.fx-swatch.is-selected {
+    box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--tag);
+}
+
+.fx-swatch .fx-tag-dot {
+    display: none;
+}
+
+.fx-swatch .fx-svg {
+    width: 15px;
+    height: 15px;
+    stroke-width: 3;
+}
+
+.fx-tagman-confirm {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 12px;
+    margin: 0 0 12px 42px;
+    padding: 10px 10px 10px 12px;
+    border-radius: var(--radius);
+    background: var(--danger-soft);
+    font-size: 13px;
+}
+
+.fx-tagman-confirm-actions {
+    display: flex;
+    gap: 6px;
+    margin-left: auto;
+}
+
+.fx-tagman-confirm .fx-btn {
+    height: 32px;
+    padding: 0 12px;
+}
+
+.fx-tagman-empty {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 18px 4px;
+    color: var(--text-3);
+    font-size: 13px;
+}
+
+.fx-labels-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    color: var(--text-2);
+    font-size: 12.5px;
+    line-height: 1.5;
+}
+
+.fx-labels-note .fx-svg {
+    width: 14px;
+    height: 14px;
+    margin-top: 2px;
+    color: var(--text-3);
+}
+
+.fx-labels-note .fx-link {
+    padding: 0;
+    font-size: inherit;
+}
+
+@media (max-width: 640px) {
+    .fx-label-slot--inline .fx-chips {
+        display: none;
+    }
+
+    .fx-label-slot--sub:not(:empty) {
+        display: inline-flex;
+        flex: 0 1 auto;
+        min-width: 0;
+    }
+
+    .fx-sub,
+    .fx-sub.is-path {
+        display: flex;
+    }
+
+    .fx-sub .fx-chip {
+        height: 18px;
+        font-size: 11px;
+    }
+
+    .fx-star .fx-svg {
+        width: 16px;
+        height: 16px;
+    }
+
+    .fx-label-slot--tile-star:not(:empty) {
+        right: 6px;
+        bottom: 6px;
+        width: 24px;
+        height: 24px;
+    }
+
+    .fx-tile .fx-chip {
+        max-width: 84px;
+    }
+
+    .fx-tag-nav .fx-tag-dot {
+        margin: 0 5px;
+    }
+
+    .fx-labels-backdrop.is-sheet .fx-dialog-actions .fx-btn {
+        flex: 1;
+        height: 44px;
+    }
+
+    .fx-tag-actions {
+        flex-wrap: wrap;
+    }
+
+    .fx-tag-actions-spacer {
+        display: none;
+    }
+
+    .fx-tag-manage {
+        order: 3;
+        width: 100%;
+        justify-content: center;
+        padding: 8px 0 0;
+    }
+
+    .fx-tag-option {
+        min-height: 46px;
+        font-size: 15px;
+    }
+
+    .fx-tagman-main {
+        min-height: 56px;
+    }
+
+    .fx-tagman .fx-icon-btn {
+        width: 40px;
+        height: 40px;
+    }
+
+    .fx-swatches {
+        gap: 7px;
+        padding-left: 0;
+    }
+
+    .fx-swatch {
+        width: 33px;
+        height: 33px;
+    }
+
+    .fx-tagman-confirm {
+        margin-left: 0;
     }
 }
