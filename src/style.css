@@ -53,38 +53,37 @@
     color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-    :root {
-        --bg: #0e1116;
-        --bg-sidebar: #11151b;
-        --surface: #151a21;
-        --surface-2: #1c222b;
-        --surface-3: #262d38;
-        --border: #232a34;
-        --border-strong: #333b48;
-        --text: #e8ebf0;
-        --text-2: #a6afbd;
-        --text-3: #6c7584;
-        --accent: #3aa3ea;
-        --accent-hover: #59b3f0;
-        --accent-text: #63b7f1;
-        --accent-soft: rgba(58, 163, 234, 0.13);
-        --accent-soft-2: rgba(58, 163, 234, 0.2);
-        --accent-ring: rgba(58, 163, 234, 0.4);
-        --danger: #f2555a;
-        --danger-soft: rgba(242, 85, 90, 0.14);
-        --success: #3fbf7a;
-        --warning: #e5a443;
-        --warning-soft: rgba(229, 164, 67, 0.14);
-        --selbar-bg: #252c37;
-        --selbar-text: #eef1f5;
-        --selbar-hover: rgba(255, 255, 255, 0.08);
-        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-        --shadow-md: 0 4px 14px -2px rgba(0, 0, 0, 0.45);
-        --shadow-lg: 0 18px 44px -8px rgba(0, 0, 0, 0.6), 0 4px 10px -4px rgba(0, 0, 0, 0.4);
-        --scrim: rgba(0, 0, 0, 0.55);
-        color-scheme: dark;
-    }
+/* Dark theme is opt-in (sidebar toggle); light is the default. */
+:root[data-theme="dark"] {
+    --bg: #0e1116;
+    --bg-sidebar: #11151b;
+    --surface: #151a21;
+    --surface-2: #1c222b;
+    --surface-3: #262d38;
+    --border: #232a34;
+    --border-strong: #333b48;
+    --text: #e8ebf0;
+    --text-2: #a6afbd;
+    --text-3: #6c7584;
+    --accent: #3aa3ea;
+    --accent-hover: #59b3f0;
+    --accent-text: #63b7f1;
+    --accent-soft: rgba(58, 163, 234, 0.13);
+    --accent-soft-2: rgba(58, 163, 234, 0.2);
+    --accent-ring: rgba(58, 163, 234, 0.4);
+    --danger: #f2555a;
+    --danger-soft: rgba(242, 85, 90, 0.14);
+    --success: #3fbf7a;
+    --warning: #e5a443;
+    --warning-soft: rgba(229, 164, 67, 0.14);
+    --selbar-bg: #252c37;
+    --selbar-text: #eef1f5;
+    --selbar-hover: rgba(255, 255, 255, 0.08);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 14px -2px rgba(0, 0, 0, 0.45);
+    --shadow-lg: 0 18px 44px -8px rgba(0, 0, 0, 0.6), 0 4px 10px -4px rgba(0, 0, 0, 0.4);
+    --scrim: rgba(0, 0, 0, 0.55);
+    color-scheme: dark;
 }
 
 /* ---------------------------------------------------------------- Base */

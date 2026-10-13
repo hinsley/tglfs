@@ -102,6 +102,38 @@ async function openFileBrowser() {
     fileBrowserInitialized = true
 }
 
+const THEME_STORAGE_KEY = "tglfs.theme"
+
+function applyTheme(theme: "light" | "dark") {
+    if (theme === "dark") {
+        document.documentElement.dataset.theme = "dark"
+    } else {
+        delete document.documentElement.dataset.theme
+    }
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#0e1116" : "#f7f8fa")
+    document.querySelector('meta[name="color-scheme"]')?.setAttribute("content", theme)
+    const toggle = document.getElementById("themeToggle")
+    if (toggle) {
+        toggle.innerHTML = `${icon(theme === "dark" ? "sun" : "moon")}${theme === "dark" ? "Light mode" : "Dark mode"}`
+        toggle.setAttribute("aria-pressed", String(theme === "dark"))
+    }
+}
+
+function wireThemeToggle() {
+    let saved: string | null = null
+    try {
+        saved = localStorage.getItem(THEME_STORAGE_KEY)
+    } catch {}
+    applyTheme(saved === "dark" ? "dark" : "light")
+    document.getElementById("themeToggle")?.addEventListener("click", () => {
+        const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark"
+        applyTheme(next)
+        try {
+            localStorage.setItem(THEME_STORAGE_KEY, next)
+        } catch {}
+    })
+}
+
 function syncProgressDecorations() {
     const progressBar = document.getElementById("progress")
     const percent = document.getElementById("progressPercent")
@@ -977,6 +1009,7 @@ function wireLoginHandlers() {
 }
 
 hydrateIcons()
+wireThemeToggle()
 syncProgressDecorations()
 wireLoginHandlers()
 
