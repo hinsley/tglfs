@@ -3583,3 +3583,11 @@ kbd {
         font-size: 10px;
     }
 }
+
+/* Desktop: while the transfer tray card is docked bottom-right, centre toasts in the space left of it. */
+@media (min-width: 641px) {
+    body.fx-tray-visible:has(#fileBrowser:not([hidden])) .fx-toast,
+    body.fx-tray-visible:has(#fileBrowser:not([hidden])) .fx-atoast {
+        left: calc(var(--sidebar-w) + (100vw - var(--sidebar-w) - 400px) / 2);
+    }
+}
