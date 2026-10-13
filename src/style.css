@@ -7319,3 +7319,14 @@ body.file-browser-active {
         margin: 0 20px;
     }
 }
+
+/* While the selection bar is showing, leave room under the last row so it can be scrolled clear of the bar. */
+.fx-selecting .fx-content {
+    padding-bottom: calc(96px + var(--safe-b));
+}
+
+@media (max-width: 640px) {
+    .fx-selecting .fx-content {
+        padding-bottom: calc(150px + var(--safe-b));
+    }
+}
