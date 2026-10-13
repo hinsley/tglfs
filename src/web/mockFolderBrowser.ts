@@ -11,6 +11,7 @@ import {
 } from "../../packages/tglfs-cli/src/folders"
 import { FILE_CARD_PREFIX } from "../../packages/tglfs-cli/src/shared/file-cards"
 import { TGLFS_ROOT_PARENT_ID } from "../../packages/tglfs-cli/src/shared/constants"
+import { createMockPreviewFixtures } from "./mockPreviewFixtures"
 
 const TELEGRAM_TEXT_MESSAGE_LIMIT = 4096
 
@@ -543,7 +544,9 @@ export function createMockFolderBrowserSession() {
             message: serializeTglfsFolderManifestMessage(toLegacyTglfsFolderManifest(sinkManifest)),
         })
     }
+    // New messages start above every fixture id, including the seeded preview chunks (15xx).
     let nextMessageId = Math.max(
+        3001,
         ...mutableFileCards.map((record) => record.id),
         ...mutableFolderRecords.map((record) => record.id),
         ...mutableFolderManifestRecords.map((record) => record.id),
@@ -565,6 +568,26 @@ export function createMockFolderBrowserSession() {
     const uploadParts = new Map<string, Map<number, Uint8Array>>()
     const chunkRecords: MockRecord[] = []
     const chunkBytes = new Map<number, Uint8Array>()
+    // Real encrypted (empty password) blobs for the text/Markdown/CSV/JSON/PDF fixtures so previews decrypt for real.
+    const ready = (async () => {
+        const seeded: Array<{ id: number; date: number; message: string; bytes: Uint8Array }> = []
+        await createMockPreviewFixtures({ fileCards: mutableFileCards, chunkRecords: seeded })
+        for (const chunk of seeded) {
+            chunkRecords.push({
+                id: chunk.id,
+                date: chunk.date,
+                message: chunk.message,
+                media: {
+                    SUBCLASS_OF_ID: INPUT_FILE_LOCATION_SUBCLASS_ID,
+                    __mockChunkId: chunk.id,
+                    document: { size: chunk.bytes.length, attributes: [{ fileName: `chunk-${chunk.id}` }] },
+                },
+            })
+            chunkBytes.set(chunk.id, chunk.bytes)
+        }
+    })().catch((error) => {
+        console.warn("Mock preview fixtures unavailable", error)
+    })
     const findMessage = (id: number) =>
         allRecords().find((record) => record.id === id) ?? chunkRecords.find((record) => record.id === id)
     const assembleBigFile = (file: { id: unknown; parts: number }) => {
@@ -605,6 +628,7 @@ export function createMockFolderBrowserSession() {
 
     const client = {
         async getMessages(_peer: string, options: { ids?: number[]; search?: string; limit?: number; maxId?: number; offsetId?: number }) {
+            await ready
             if (Array.isArray(options.ids)) {
                 // Like GramJS: one entry per requested id, in order, `undefined` for missing messages.
                 return options.ids.map((id) => findMessage(id))
@@ -711,6 +735,7 @@ export function createMockFolderBrowserSession() {
             return typeof record?.media === "string" ? record.media : ""
         },
         async invoke(request: any) {
+            await ready
             if (typeof request?.filePart === "number") {
                 // upload.SaveBigFilePart
                 await sleep(transferDelayMs)

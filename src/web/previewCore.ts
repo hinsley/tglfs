@@ -3,6 +3,14 @@ import * as Encryption from "./encryption"
 import { getGramJs } from "../gramjs"
 import { FileCardData } from "../types/models"
 import { requestText, showToast } from "./dialogs"
+import {
+    detectPreviewType,
+    isPreviewTooLarge,
+    isTextPreviewType,
+    previewSizeLimit,
+    type PreviewFileType,
+} from "./previewTypes"
+import { renderPdfDocument, renderTextDocument, renderTooLarge } from "./previewDocument"
 
 let Api!: typeof import("telegram")["Api"]
 let getFileInfo!: typeof import("telegram/Utils")["getFileInfo"]
@@ -13,13 +21,8 @@ const gramJsReady = getGramJs().then((modules) => {
 })
 
 export type PreviewEntry = { msgId: number; date: number; data: FileCardData }
-type PreviewFileType = "image" | "video" | "audio" | "unsupported"
 
 const DOWNLOAD_PART_SIZE = 1024 * 1024
-
-const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"])
-const VIDEO_EXTS = new Set(["mp4", "webm", "mov", "avi", "mkv", "m4v"])
-const AUDIO_EXTS = new Set(["mp3", "wav", "ogg", "flac", "m4a", "aac"])
 
 function humanReadableSize(size: number): string {
     if (size <= 0 || !isFinite(size)) return "0 B"
@@ -42,11 +45,7 @@ function getExtension(name: string): string {
 }
 
 function detectFileType(name: string): PreviewFileType {
-    const ext = getExtension(name)
-    if (IMAGE_EXTS.has(ext)) return "image"
-    if (VIDEO_EXTS.has(ext)) return "video"
-    if (AUDIO_EXTS.has(ext)) return "audio"
-    return "unsupported"
+    return detectPreviewType(name)
 }
 
 function getMimeType(name: string): string {
@@ -88,6 +87,8 @@ function getMimeType(name: string): string {
             return "audio/mp4"
         case "aac":
             return "audio/aac"
+        case "pdf":
+            return "application/pdf"
         default:
             return "application/octet-stream"
     }
@@ -141,6 +142,9 @@ export class PreviewModal {
     private lastPassword: string | null = null
     private touchStartX: number | null = null
     private touchStartY: number | null = null
+    private docHost: HTMLElement | null = null
+    /** Blob URLs handed to another tab (e.g. "Open PDF"); revoking them right away would break that tab. */
+    private externalBlobUrls = new Set<string>()
 
     constructor(client: any) {
         this.client = client
@@ -200,7 +204,7 @@ export class PreviewModal {
         this.abortController?.abort()
         this.abortController = null
         if (this.blobUrl) {
-            URL.revokeObjectURL(this.blobUrl)
+            this.revokeBlobUrl(this.blobUrl)
             this.blobUrl = null
         }
         if (this.mediaSource?.readyState === "open") {
@@ -231,6 +235,30 @@ export class PreviewModal {
             showToast("Preview isn't available for this file type")
             return
         }
+        if (isPreviewTooLarge(type, entry.data.size)) {
+            // Nothing to decrypt: say so right away (no password prompt) and offer the download instead.
+            this.abortController?.abort()
+            this.abortController = null
+            if (this.blobUrl) {
+                this.revokeBlobUrl(this.blobUrl)
+                this.blobUrl = null
+            }
+            this.currentIndex = index
+            this.openState = true
+            this.modal.removeAttribute("hidden")
+            this.setFileInfo(entry)
+            this.modal.dispatchEvent(new CustomEvent("preview:change", {
+                detail: { index, total: this.currentItems.length },
+            }))
+            this.resetMedia()
+            this.showDocument((host) => renderTooLarge(host, {
+                name: entry.data.name,
+                size: entry.data.size,
+                limit: previewSizeLimit(type) ?? 0,
+                onDownload: () => this.requestDownload(entry),
+            }))
+            return
+        }
         const password = await this.requestPassword(entry)
         if (password === null) return
 
@@ -249,7 +277,7 @@ export class PreviewModal {
             this.showLoading()
         }
         if (this.blobUrl) {
-            URL.revokeObjectURL(this.blobUrl)
+            this.revokeBlobUrl(this.blobUrl)
             this.blobUrl = null
         }
         this.abortController?.abort()
@@ -261,6 +289,30 @@ export class PreviewModal {
                 await this.streamToMedia(entry.data, type, password, (progress) => {
                     this.updateProgress(progress)
                 }, controller.signal)
+            } else if (type === "pdf" || isTextPreviewType(type)) {
+                const blob = await this.downloadToMemory(entry.data, password, (progress) => {
+                    this.updateProgress(progress)
+                }, controller.signal)
+                if (controller.signal.aborted) return
+                if (type === "pdf") {
+                    const blobUrl = URL.createObjectURL(blob)
+                    this.blobUrl = blobUrl
+                    this.showDocument((host) => renderPdfDocument(host, {
+                        name: entry.data.name,
+                        size: entry.data.size,
+                        url: blobUrl,
+                        onOpenExternally: () => this.externalBlobUrls.add(blobUrl),
+                    }))
+                } else {
+                    const bytes = new Uint8Array(await blob.arrayBuffer())
+                    if (controller.signal.aborted) return
+                    this.showDocument((host) => renderTextDocument(host, {
+                        name: entry.data.name,
+                        type,
+                        bytes,
+                        onDownload: () => this.requestDownload(entry),
+                    }))
+                }
             } else {
                 const blob = await this.downloadToMemory(entry.data, password, (progress) => {
                     this.updateProgress(progress)
@@ -313,8 +365,47 @@ export class PreviewModal {
         if (this.loadingText) this.loadingText.textContent = text
     }
 
+    private revokeBlobUrl(url: string) {
+        if (this.externalBlobUrls.delete(url)) {
+            // Give the other tab time to load it first.
+            window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+            return
+        }
+        URL.revokeObjectURL(url)
+    }
+
+    private requestDownload(entry: PreviewEntry) {
+        this.modal?.dispatchEvent(new CustomEvent("preview:download", { detail: { msgId: entry.msgId } }))
+    }
+
+    /** Shows a document view (text, Markdown, CSV, PDF or a notice) rendered into the preview stage. */
+    private showDocument(render: (host: HTMLElement) => void) {
+        if (!this.mediaContainer) return
+        this.hideLoading()
+        this.mediaContainer.removeAttribute("hidden")
+        this.mediaContainer.classList.add("is-document")
+        this.previewImage?.setAttribute("hidden", "")
+        this.previewVideo?.setAttribute("hidden", "")
+        this.previewAudio?.setAttribute("hidden", "")
+        if (!this.docHost) {
+            this.docHost = document.createElement("div")
+            this.docHost.className = "preview-doc-host"
+            this.mediaContainer.appendChild(this.docHost)
+        }
+        this.docHost.removeAttribute("hidden")
+        render(this.docHost)
+    }
+
+    private clearDocument() {
+        this.mediaContainer?.classList.remove("is-document")
+        if (!this.docHost) return
+        this.docHost.innerHTML = ""
+        this.docHost.setAttribute("hidden", "")
+    }
+
     private showMedia(type: PreviewFileType, blobUrl: string, keepLoading = false) {
         if (!keepLoading && this.loading) this.loading.setAttribute("hidden", "")
+        this.clearDocument()
         if (this.mediaContainer) this.mediaContainer.removeAttribute("hidden")
         if (this.previewImage) this.previewImage.setAttribute("hidden", "")
         if (this.previewVideo) this.previewVideo.setAttribute("hidden", "")
@@ -334,6 +425,7 @@ export class PreviewModal {
     }
 
     private resetMedia() {
+        this.clearDocument()
         if (this.previewImage) {
             this.previewImage.src = ""
             this.previewImage.setAttribute("hidden", "")

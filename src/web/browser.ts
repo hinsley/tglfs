@@ -85,9 +85,12 @@ import { mountStorageSummary, STORAGE_CHANGED_EVENT } from "./storageSummary"
 import * as Labels from "./labelsUi"
 import type { VirtualView } from "./labelsUi"
 
-const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"])
-const VIDEO_EXTS = new Set(["mp4", "webm", "mov", "avi", "mkv", "m4v"])
-const AUDIO_EXTS = new Set(["mp3", "wav", "ogg", "flac", "m4a", "aac"])
+import { isPreviewableFileName } from "./previewTypes"
+import { DRAG_ROOT_TARGET, installDragMove, isDragMoveActive, type DragMoveTarget } from "./dragMove"
+import { installSlowClickRename, isInlineRenameActive, startInlineRename } from "./inlineRename"
+import { installRowSwipe } from "./rowSwipe"
+import { installPullToRefresh } from "./pullToRefresh"
+import { installContentReveal, navigationDirection, runFolderTransition } from "./folderTransitions"
 
 const VIEW_STORAGE_KEY = "tglfs.browser.view"
 const SORT_STORAGE_KEY = "tglfs.browser.sort"
@@ -292,15 +295,8 @@ function updateSearchScopeBar() {
 
 /* ------------------------------------------------------------- Helpers */
 
-function getExtension(name: string): string {
-    const parts = name.toLowerCase().split(".")
-    if (parts.length < 2) return ""
-    return parts.pop() ?? ""
-}
-
 function isPreviewableName(name: string): boolean {
-    const ext = getExtension(name)
-    return IMAGE_EXTS.has(ext) || VIDEO_EXTS.has(ext) || AUDIO_EXTS.has(ext)
+    return isPreviewableFileName(name)
 }
 
 function showUfidToast(message: string, options?: { durationMs?: number | null; tone?: "default" | "success" | "error" }) {
@@ -591,7 +587,23 @@ function resetSearchInput() {
     document.getElementById("browserSearchClear")?.setAttribute("hidden", "")
 }
 
-async function navigateTo(
+/** Navigates with a forward/back view transition (the skeleton render is the transition's new state). */
+function navigateTo(
+    target: FolderBrowserEntry | null,
+    options: { push?: boolean; trail?: FolderBrowserEntry[] } = {},
+) {
+    const from = currentTrailIds()
+    const to = !target
+        ? []
+        : options.trail
+            ? options.trail.map((folder) => folder.data.folderId)
+            : target.data.folderId === state.currentFolder?.data.parentFolderId
+                ? from.slice(0, -1)
+                : [...from, target.data.folderId]
+    return runFolderTransition(navigationDirection(from, to), () => navigateToNow(target, options))
+}
+
+async function navigateToNow(
     target: FolderBrowserEntry | null,
     options: { push?: boolean; trail?: FolderBrowserEntry[] } = {},
 ) {
@@ -746,10 +758,11 @@ function updateFolderLocation() {
         separator.innerHTML = icon("chevronRight")
         breadcrumb.appendChild(separator)
     }
-    const addCrumb = (label: string, isCurrent: boolean, onClick?: () => void) => {
+    const addCrumb = (label: string, isCurrent: boolean, crumbId: string, onClick?: () => void) => {
         const button = document.createElement("button")
         button.type = "button"
         button.className = `fx-crumb${isCurrent ? " is-current" : ""}`
+        button.dataset.crumbId = crumbId
         button.textContent = label
         button.title = label
         if (isCurrent) {
@@ -774,11 +787,11 @@ function updateFolderLocation() {
         title.title = virtual.kind === "starred" ? "Starred" : `Tag: ${name}`
         breadcrumb.appendChild(title)
     } else {
-        addCrumb("All files", trail.length === 0, () => void navigateTo(null))
+        addCrumb("All files", trail.length === 0, "root", () => void navigateTo(null))
         for (const [index, folder] of trail.entries()) {
             addSeparator()
             const isCurrent = index === trail.length - 1
-            addCrumb(folder.data.name, isCurrent, () => void navigateTo(folder, { trail: trail.slice(0, index + 1) }))
+            addCrumb(folder.data.name, isCurrent, folder.data.folderId, () => void navigateTo(folder, { trail: trail.slice(0, index + 1) }))
         }
     }
     requestAnimationFrame(() => {
@@ -2387,13 +2400,25 @@ async function moveEntriesToRootInSinglePass(client: any, entries: BrowserEntry[
 
 async function moveSelectedEntries(client: any) {
     if (blockedByHistory()) return
-    const selectedEntries = Array.from(state.selected.values())
-    const movableEntries = selectedEntries.filter((entry) => isFileEntry(entry) || isFolderEntry(entry))
-    if (selectedEntries.length === 0 || movableEntries.length !== selectedEntries.length) return
+    await moveEntriesViaPicker(client, Array.from(state.selected.values()))
+}
+
+/** Moves only make sense from a real folder listing: Starred/tag views and global search mix many folders. */
+function movesBlockedHere() {
+    if (!state.virtual && !isGlobalSearch()) return false
+    showUfidToast("Open the item's folder to move it — use “Show in folder”.")
+    return true
+}
+
+/** Asks for a destination folder, then moves `entries` there with Undo. */
+async function moveEntriesViaPicker(client: any, entries: BrowserEntry[]) {
+    if (blockedByHistory() || movesBlockedHere()) return
+    const movableEntries = entries.filter((entry) => isFileEntry(entry) || isFolderEntry(entry))
+    if (entries.length === 0 || movableEntries.length !== entries.length) return
 
     // A pending delete must land first so folders being deleted never show up as destinations.
     await flushPendingDelete()
-    const destination = await requestMoveDestination(client, selectedEntries)
+    const destination = await requestMoveDestination(client, entries)
     if (!destination) return
     await moveEntriesWithUndo(movableEntries, destination)
 }
@@ -3067,6 +3092,8 @@ async function downloadEntry(entry: FileBrowserEntry) {
 
 async function renameEntry(entry: BrowserEntry) {
     if (!activeBrowserClient || blockedByHistory()) return
+    // Desktop renames in place; phones keep the dialog (inline editing inside a scrolling list is fiddly on touch).
+    if (canRenameInline() && (isFileEntry(entry) || isFolderEntry(entry)) && startInlineRename(entry, inlineRenameHooks)) return
     if (isFolderEntry(entry)) {
         await renameFolderEntry(entry)
         return
@@ -3120,13 +3147,18 @@ async function copyEntryId(entry: BrowserEntry) {
 async function deleteSelectedEntries() {
     const client = activeBrowserClient
     if (!client || blockedByHistory()) return
-    const selectedEntries = Array.from(state.selected.values())
-    const files = selectedEntries.filter(isFileEntry)
-    const folders = selectedEntries.filter(isFolderEntry)
-    if (selectedEntries.length === 0 || files.length + folders.length !== selectedEntries.length) return
+    await deleteEntriesConfirmed(client, Array.from(state.selected.values()))
+}
 
-    if (folders.length > 0 && !await confirmCascadingFolderDelete(client, selectedEntries, folders)) return
-    deleteEntriesWithUndo(selectedEntries)
+/** Deletes `entries` with Undo (asking first when a folder delete would cascade). Resolves false if refused. */
+async function deleteEntriesConfirmed(client: any, entries: BrowserEntry[]) {
+    const files = entries.filter(isFileEntry)
+    const folders = entries.filter(isFolderEntry)
+    if (entries.length === 0 || files.length + folders.length !== entries.length) return false
+
+    if (folders.length > 0 && !await confirmCascadingFolderDelete(client, entries, folders)) return false
+    deleteEntriesWithUndo(entries)
+    return true
 }
 
 const MAX_FOLDERS_TO_PROBE = 8
@@ -4431,6 +4463,13 @@ function wirePreviewChrome() {
     const counter = document.getElementById("previewCounter")
     prev?.addEventListener("click", () => void previewModal?.showPrevious())
     next?.addEventListener("click", () => void previewModal?.showNext())
+    modal?.addEventListener("preview:download", (event) => {
+        const msgId = (event as CustomEvent<{ msgId: number }>).detail?.msgId
+        const entry = getVisibleItems().find((candidate): candidate is FileBrowserEntry => isFileEntry(candidate) && candidate.msgId === msgId)
+        if (!entry) return
+        previewModal?.close()
+        void downloadEntry(entry)
+    })
     modal?.addEventListener("preview:change", (event) => {
         const detail = (event as CustomEvent<{ index: number; total: number }>).detail
         prev?.toggleAttribute("hidden", detail.index <= 0)
@@ -4598,6 +4637,120 @@ function createBrowserHooks(): BrowserHooks {
             searchNow?.()
         },
         focusSearch: focusSearchInput,
+    }
+}
+
+/* ------------------------------------------- Gestures & inline editing */
+/*
+ * Glue for the interaction modules (dragMove, inlineRename, rowSwipe, pullToRefresh, folderTransitions). The
+ * modules own the pointer/touch mechanics; everything that touches browser state or Telegram stays here and goes
+ * through the existing mutation paths (moveEntriesWithUndo, renameEntryTo, deleteEntriesWithUndo).
+ */
+
+function findVisibleEntry(id: string | undefined | null): BrowserEntry | null {
+    if (!id) return null
+    return getVisibleItems().find((entry) => entry.id === id) ?? null
+}
+
+function entryForElement(element: HTMLElement) {
+    return findVisibleEntry(element.dataset.browserId)
+}
+
+function canRenameInline() {
+    return !isTouchInteraction() && !isCompactViewport()
+}
+
+function isBrowserInteractionBlocked() {
+    return !!document.querySelector(".fx-dialog-backdrop") || isMenuOpen() || !!previewModal?.isOpen() || isInlineRenameActive()
+}
+
+const inlineRenameHooks = {
+    idOf: (entry: BrowserEntry) => entry.id,
+    nameOf: (entry: BrowserEntry) => getEntryName(entry),
+    kindOf: (entry: BrowserEntry): "file" | "folder" => (isFolderEntry(entry) ? "folder" : "file"),
+    siblingNames: (entry: BrowserEntry) => getVisibleItems().filter((candidate) => candidate.id !== entry.id).map(getEntryName),
+    entryById: (id: string) => findVisibleEntry(id),
+    commit: (entry: BrowserEntry, newName: string) => renameEntryTo(entry, newName, { undoable: true }),
+    showError: (message: string) => showUfidToast(message, { tone: "error" }),
+}
+
+async function dropEntriesOnFolder(entries: BrowserEntry[], target: DragMoveTarget) {
+    const client = activeBrowserClient
+    if (!client) return
+    if (target.folderId === DRAG_ROOT_TARGET) {
+        await moveEntriesWithUndo(entries, { kind: "root", label: "All files" })
+        return
+    }
+    const known = getVisibleItems().find((entry): entry is FolderBrowserEntry => isFolderEntry(entry) && entry.data.folderId === target.folderId)
+        ?? state.currentFolderTrail.find((folder) => folder.data.folderId === target.folderId)
+        ?? folderCache.get(target.folderId)
+    const record = known
+        ? await resolveFolderRecordForMutation(client, known)
+        : await getFolderRecord(client, target.folderId)
+    if (!record || record.data.deleted) {
+        showUfidToast(`Couldn't find ${quoteName(target.label)}`, { tone: "error" })
+        return
+    }
+    await moveEntriesWithUndo(entries, { kind: "folder", record, label: record.data.name })
+}
+
+function installBrowserGestures() {
+    installDragMove<BrowserEntry>({
+        entryForElement,
+        idOf: (entry) => entry.id,
+        beginDrag: (entry) => {
+            if (!(isFileEntry(entry) || isFolderEntry(entry))) return []
+            if (!state.selected.has(entry.id)) {
+                const index = getVisibleItems().indexOf(entry)
+                selectOnly(entry, index)
+            }
+            return Array.from(state.selected.values()).filter((candidate) => isFileEntry(candidate) || isFolderEntry(candidate))
+        },
+        describe: (entries) => ({ iconHtml: fileKindIcon(getEntryKind(entries[0])), name: getEntryName(entries[0]) }),
+        folderIdOf: (entry) => (isFolderEntry(entry) ? entry.data.folderId : null),
+        folderNameOf: (entry) => getEntryName(entry),
+        currentFolderId: () => state.currentFolder?.data.folderId ?? DRAG_ROOT_TARGET,
+        currentTrailIds: () => currentTrailIds(),
+        drop: (entries, target) => dropEntriesOnFolder(entries, target),
+        // No drag-moves while viewing history (read-only) or in listings that mix folders (Starred, tags, global search).
+        isBlocked: () => isBrowserInteractionBlocked() || !activeBrowserClient || !!historyMode || !!state.virtual || isGlobalSearch(),
+    })
+
+    installSlowClickRename({
+        soleSelectedId: () => (state.selected.size === 1 ? Array.from(state.selected.keys())[0] : null),
+        rename: (id) => {
+            const entry = findVisibleEntry(id)
+            if (entry && canRenameInline()) void renameEntry(entry)
+        },
+        isBlocked: () => isBrowserInteractionBlocked() || isDragMoveActive() || !canRenameInline() || !!historyMode,
+    })
+
+    const rows = document.getElementById("browserRows")
+    if (rows) {
+        installRowSwipe<BrowserEntry>(rows, {
+            entryForElement,
+            canSwipe: (entry) => (isFileEntry(entry) || isFolderEntry(entry)) && !!activeBrowserClient && !historyMode,
+            isSelecting: () => state.selected.size > 0,
+            onDelete: async (entry) => (activeBrowserClient ? await deleteEntriesConfirmed(activeBrowserClient, [entry]) : false),
+            onMore: (entry) => {
+                const index = getVisibleItems().indexOf(entry)
+                openEntryMenu(entry, index)
+            },
+            onMove: (entry) => {
+                if (activeBrowserClient) void moveEntriesViaPicker(activeBrowserClient, [entry])
+            },
+        })
+    }
+
+    const content = document.getElementById("browserContent")
+    if (content) {
+        installContentReveal(content)
+        installPullToRefresh(content, {
+            canPull: () => state.selected.size === 0 && !isBrowserInteractionBlocked() && !historyMode,
+            refresh: async () => {
+                await refreshBrowser?.()
+            },
+        })
     }
 }
 
@@ -4890,6 +5043,8 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         }
         uploadFiles(files)
     })
+
+    installBrowserGestures()
 
     window.addEventListener("keydown", (event) => {
         void handleKeydown(event)
