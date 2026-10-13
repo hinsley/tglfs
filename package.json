@@ -1,6 +1,9 @@
 {
     "name": "tglfs-login-ux",
     "private": true,
+    "engines": {
+        "node": "24.x"
+    },
     "workspaces": ["packages/tglfs-cli"],
     "devDependencies": {
         "@types/wicg-file-system-access": "^2023.10.5",
