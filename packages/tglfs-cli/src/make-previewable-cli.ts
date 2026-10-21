@@ -16,9 +16,6 @@ type Options = {
     sourcePassword?: string
     sourcePasswordEnv?: string | boolean
     sourcePasswordStdin?: boolean
-    password?: string
-    passwordEnv?: string | boolean
-    passwordStdin?: boolean
     name?: string
     ffmpeg?: string
     ffprobe?: string
@@ -33,18 +30,15 @@ function fail(json: boolean | undefined, error: CliError) {
     process.exitCode = error.exitCode
 }
 
-function createProgram() {
+export function createMakePreviewableCommand() {
     const program = new Command()
     program
-        .name("tglfs make-previewable")
+        .name("make-previewable")
         .description("Create a new streamable/previewable MP4 copy without changing the original.")
         .argument("<ufid>", "UFID of an owned MP4 in Saved Messages")
         .option("--source-password <password>", "Source MP4 decryption password")
         .option("--source-password-env [name]", "Read the source password from an environment variable")
         .option("--source-password-stdin", "Read the source password from stdin")
-        .option("--password <password>", "Encryption password for the new MP4")
-        .option("--password-env [name]", "Read the new MP4 password from an environment variable")
-        .option("--password-stdin", "Read the new MP4 password from stdin")
         .option("--name <name>", "Name for the new file")
         .option("--ffmpeg <path>", "FFmpeg executable", process.env.TGLFS_FFMPEG || "ffmpeg")
         .option("--ffprobe <path>", "ffprobe executable", process.env.TGLFS_FFPROBE)
@@ -55,10 +49,10 @@ function createProgram() {
             "",
             "Front-loaded MP4s stream through FFmpeg directly into the encrypted Telegram upload.",
             "MP4s whose moov metadata follows mdat use a temporary source file for FFmpeg random access.",
-            "The original file card and chunks remain unchanged.",
+            "The original file card and chunks remain unchanged. The copy always uses the source password and adds encrypted seeking metadata.",
             "Indexed archive records are refused, even if renamed with an .mp4 extension.",
             "",
-            "Environment: TGLFS_MAKE_PREVIEWABLE_SOURCE_PASSWORD, TGLFS_MAKE_PREVIEWABLE_PASSWORD,",
+            "Environment: TGLFS_MAKE_PREVIEWABLE_SOURCE_PASSWORD,",
             "             TGLFS_FFMPEG, TGLFS_FFPROBE",
             "",
             "FFmpeg must be installed separately.",
@@ -67,15 +61,7 @@ function createProgram() {
         .showSuggestionAfterError()
 
     program.action(async (ufid: string, options: Options) => {
-        if (options.sourcePasswordStdin && options.passwordStdin) {
-            fail(options.json, new CliError(
-                "invalid_argument",
-                "--source-password-stdin and --password-stdin cannot be used together; use an environment variable for one password.",
-                EXIT_CODES.GENERAL_ERROR,
-            ))
-            return
-        }
-        const interactive = options.interactive !== false && !options.json && isInteractiveSession()
+        const interactive = options.interactive !== false && program.parent?.opts().interactive !== false && !options.json && isInteractiveSession()
         let progress: ReturnType<typeof createByteProgressReporter> | undefined
         let state: Awaited<ReturnType<typeof connectAuthorizedClient>> | undefined
         try {
@@ -89,16 +75,6 @@ function createProgram() {
                 fallbackValue: "",
                 promptOnInteractive: interactive,
             })) ?? ""
-            const uploadPassword = (await resolveOptionalPassword({
-                password: options.password,
-                passwordEnv: options.passwordEnv,
-                passwordStdin: options.passwordStdin,
-                defaultEnv: "TGLFS_MAKE_PREVIEWABLE_PASSWORD",
-                promptMessage: "New MP4 encryption password (leave empty if none)",
-                stdinMessage: "The new MP4 password is required on stdin.",
-                fallbackValue: "",
-                promptOnInteractive: false,
-            })) ?? ""
 
             state = await connectAuthorizedClient()
             const record = await getFileCardByUfid(state.client, ufid)
@@ -108,7 +84,6 @@ function createProgram() {
             }
             const result = await makeMp4Previewable(state.client, record, {
                 sourcePassword,
-                uploadPassword,
                 chunkSize: state.config.chunkSize,
                 outputName: options.name,
                 ffmpegPath: options.ffmpeg,
@@ -139,5 +114,5 @@ function createProgram() {
 }
 
 export async function runMakePreviewableCli(args: string[]) {
-    await createProgram().parseAsync(args, { from: "user" })
+    await createMakePreviewableCommand().parseAsync(args, { from: "user" })
 }

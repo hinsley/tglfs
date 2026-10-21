@@ -1,2 +1,2 @@
 tglfs:file
-{"type":"tglfs:file","version":5,"name":"future.tar","ufid":"fixture-future","size":3072,"uploadComplete":true,"chunks":[105],"IV":"","parentFolderId":"folder-fixture"}
+{"type":"tglfs:file","version":6,"name":"future.tar","ufid":"fixture-future","size":3072,"uploadComplete":true,"chunks":[105],"IV":"","parentFolderId":"folder-fixture"}

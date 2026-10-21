@@ -212,14 +212,14 @@ test("make-previewable refuses a v4 archive renamed with an MP4 extension before
     await assert.rejects(
         makeMp4Previewable(fixture.client as any, {
             msgId: 2, date: 1_700_000_000, data: { ...fixture.data, name: "renamed-archive.mp4" },
-        }, { sourcePassword: "secret", uploadPassword: "", chunkSize: 1024 * 1024 }),
+        }, { sourcePassword: "secret", chunkSize: 1024 * 1024 }),
         (error: unknown) => error instanceof CliError && error.code === "invalid_media" && /archive records/.test(error.message),
     )
     assert.equal(fixture.client.requests.length, 0)
     assert.equal(fixture.client.cards.length, 1)
 })
 
-test("CLI batches and direct tar uploads write browsable v4 cards", async () => {
+test("CLI batches and direct tar uploads write browsable resumable v5 cards", async () => {
     const { Api, getFileInfo } = getGramJs()
     const directory = await mkdtemp(join(tmpdir(), "tglfs-archive-upload-"))
     const first = join(directory, "one.txt")
@@ -234,7 +234,7 @@ test("CLI batches and direct tar uploads write browsable v4 cards", async () => 
             const client = new MemoryTelegram()
             const result = await uploadPaths(client as any, { paths, chunkSize: 1024 * 1024, password: "" })
             const data = parseFileCardMessage(client.cards[0].message)!
-            assert.equal(data.version, 4)
+            assert.equal(data.version, 5)
             const reader = await openRemoteArchive(client as any, { Api, getFileInfo, record: { msgId: result.msgId, date: result.date, data }, password: "" })
             assert.equal(reader.index.entries.length, paths.length === 1 ? 1 : 2)
             assert.equal(reader.index.ufid, result.ufid)

@@ -135,7 +135,7 @@ test("MP4 conversion selects storage-free streaming or OPFS staging and preserve
     assert.match(actionSource, /createFileCardPlaintextStream/)
     assert.match(actionSource, /probeMp4MetadataPlacement/)
     assert.match(actionSource, /runStreamingPath/)
-    assert.match(actionSource, /uploadGeneratedFileStream/)
+    assert.match(actionSource, /uploadSeekableMedia/)
     assert.match(actionSource, /runStagedPath/)
     assert.match(actionSource, /stagePlaintextStreamToTemporaryFile/)
     assert.match(actionSource, /allowMemoryFallback: false/)

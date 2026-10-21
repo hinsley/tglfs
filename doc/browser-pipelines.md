@@ -2,7 +2,7 @@
 
 This document explains how TGLFS processes files entirely in the browser: how compression, encryption, uploads, downloads, decryption, and decompression work, and where Service Workers and OPFS fit in.
 
-The AES-CTR pipelines below describe ordinary file-card v1–v3 content. New multi-file batches and plain `.tar` uploads use file-card v4: independent gzip/AES-GCM blocks, an encrypted directory index, and partial Telegram reads. See [the file storage protocol](file_storage.md) for the complete versioned format and upgrade/recovery contract. The shared implementation lives in `packages/tglfs-cli/src/shared/archive-format.ts` and `archive-transfer.ts`; the browser view is `src/web/archivePreview.ts`.
+The AES-CTR pipelines below describe ordinary file-card v1–v3 content. New direct uploads use file-card v5: independently compressed/authenticated AES-GCM blocks, encrypted transfer metadata, and resumable uploads/downloads. Batches and plain `.tar` uploads include an encrypted member directory; generated media previews include an encrypted time index. V4 indexed archives and v1–v3 files keep their existing readers. See [the file storage protocol](file_storage.md) for the complete versioned format and upgrade/recovery contract. The shared implementation lives in `packages/tglfs-cli/src/shared/archive-format.ts` and `archive-transfer.ts`; the browser view is `src/web/archivePreview.ts`.
 
 ## TL;DR
 - **Compression**: Browser-native `CompressionStream("gzip")`.
@@ -85,7 +85,7 @@ Relevant code: `fileDownload` in `src/telegram.ts` and `src/service-worker.js`.
 - `UFID` is computed by streaming the source file in 64 KiB pieces and iteratively hashing.
 
 ## Security notes
-- File-card v1–v3 AES-CTR content provides confidentiality but not authenticity. There is no MAC. Wrong passwords are generally detected only when gzip decompression fails. Indexed v4 archives authenticate the index and every compressed block with AES-GCM before decompression.
+- File-card v1–v3 AES-CTR content provides confidentiality but not authenticity. There is no MAC. Wrong passwords are generally detected only when gzip decompression fails. V5 files and indexed v4 archives authenticate the index and every compressed block with AES-GCM before decompression.
 - Blank passwords are the empty string, not a separate storage mode, and provide no password-based secrecy. Archive upgrades retain the original, verify the replacement before publication, and use bounded in-memory streams without OPFS staging.
 
 ## Where to look in the code

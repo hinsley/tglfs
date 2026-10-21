@@ -34,6 +34,17 @@ export async function createVerifiedFileCardPlaintextStream(
     onProgress?: (progress: DownloadProgress) => void,
 ): Promise<ReadableStream<Uint8Array>> {
     validateDownloadableFileCard(data)
+    if (data.version === 5) {
+        if (mode === "legacy") throw new Error("Version 5 files do not use legacy decryption.")
+        const { getGramJs } = await import("./gramjs.js")
+        const { openBlockFile } = await import("./shared/block-transfer.js")
+        const { Api, getFileInfo } = getGramJs()
+        const reader = await openBlockFile(client as any, { Api, getFileInfo, data, password })
+        let bytesWritten = 0
+        return reader.stream().pipeThrough(new TransformStream({ transform(bytes, controller) {
+            bytesWritten += bytes.length; onProgress?.({ bytesWritten, totalBytes: data.size }); controller.enqueue(bytes)
+        } }))
+    }
     if (data.version === 4) {
         if (mode === "legacy") {
             throw new CliError(

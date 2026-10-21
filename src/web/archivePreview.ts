@@ -32,7 +32,7 @@ function node<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string,
 
 type MemberUrl = { url: string; close(): void }
 
-async function createMemberUrl(reader: ArchiveReader, entry: ArchiveMember, signal: AbortSignal, callbacks?: { complete(): void; error(error: Error): void; progress(): void }, downloadOnly = false): Promise<MemberUrl> {
+export async function createMemberUrl(reader: ArchiveReader, entry: ArchiveMember, signal: AbortSignal, callbacks?: { complete(): void; error(error: Error): void; progress(): void }, downloadOnly = false): Promise<MemberUrl> {
     if (!("serviceWorker" in navigator)) throw new Error("Streaming member previews require browser service worker support.")
     const worker = navigator.serviceWorker.controller
     if (!worker) throw new Error("Reload TGLFS once to enable streaming member previews.")
@@ -110,7 +110,9 @@ export async function downloadArchiveFile(client: any, data: FileCardData, passw
     try {
         if (options.signal?.aborted) throw Transfers.abortError()
         const { Api, getFileInfo } = await getGramJs()
-        const reader = await openRemoteArchive(client, { Api, getFileInfo, record: { data, msgId: 0, date: 0 }, password, signal: controller.signal })
+        const reader = data.version === 5
+            ? (await import("../../packages/tglfs-cli/src/shared/block-format")).asFileReader(await (await import("../../packages/tglfs-cli/src/shared/block-transfer")).openBlockFile(client, { Api, getFileInfo, data, password, signal: controller.signal }), data.name)
+            : await openRemoteArchive(client, { Api, getFileInfo, record: { data, msgId: 0, date: 0 }, password, signal: controller.signal })
         const hash = new UfidAccumulator()
         let verifiedBytes = 0
         const downloadReader: ArchiveReader = {
@@ -120,7 +122,7 @@ export async function downloadArchiveFile(client: any, data: FileCardData, passw
                 const bytes = await reader.readRange(offset, length)
                 await hash.update(bytes)
                 verifiedBytes += bytes.length
-                if (verifiedBytes === data.size && await hash.digest() !== data.ufid) throw new Error("Archive content verification failed.")
+                if (verifiedBytes === data.size && await (await import("../../packages/tglfs-cli/src/shared/block-format")).finishUfid(hash, data.size) !== data.ufid) throw new Error("Archive content verification failed.")
                 options.onProgress?.(verifiedBytes, data.size)
                 return bytes
             },
@@ -375,7 +377,7 @@ export class ArchivePreviewModal {
         this.details.setAttribute("aria-label", "Selected archive member")
         columns.append(this.listing, this.details)
         this.body.append(this.breadcrumb, columns)
-        this.status!.textContent = `${this.reader.index.entries.length} entries. Only selected file contents are fetched.`
+        this.status!.textContent = `${this.reader.index.entries.length} entries`
         this.renderDirectory()
     }
 
@@ -461,7 +463,7 @@ export class ArchivePreviewModal {
                 this.details.append(image)
                 info.textContent = formatFileCardSize(entry.size)
             } else {
-                info.textContent = mime.startsWith("image/") ? "This image is too large for an in-memory preview. You can download this member separately." : "Only requested portions of this member are fetched."
+                info.textContent = mime.startsWith("image/") ? "This image is too large for an in-memory preview. You can download this member separately." : ""
             }
             const memberUrl = await createMemberUrl(reader, entry, signal, {
                 complete: () => {

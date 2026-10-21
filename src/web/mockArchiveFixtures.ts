@@ -13,7 +13,7 @@ export async function createMockArchiveFixtures(options: { fileCards: CardRecord
     const filler = new Uint8Array(3 * 1024 * 1024)
     for (let offset = 0; offset < filler.length; offset += 65536) crypto.getRandomValues(filler.subarray(offset, offset + 65536))
     const contents = [
-        { name: "readme.txt", bytes: new TextEncoder().encode("Archive preview fixture. Only selected contents should be fetched.\n") },
+        { name: "readme.txt", bytes: new TextEncoder().encode("Archive preview fixture.\n") },
         { name: "notes/settings.json", bytes: new TextEncoder().encode('{"private":true,"preview":"works"}\n') },
         { name: "notes/sample.png", bytes: Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1cAAAAASUVORK5CYII=", "base64")) },
         { name: "bulk/filler.bin", bytes: filler },

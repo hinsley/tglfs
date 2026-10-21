@@ -6,7 +6,8 @@ import { notifyBrowserActionsChanged, registerBrowserAction, type BrowserSelecti
 import { requestConfirm, requestText, showToast } from "./dialogs"
 import { enqueue } from "./transfers"
 import { createFileCardPlaintextStream } from "./tglfsDownloadSource"
-import { uploadGeneratedFileStream } from "./generatedUpload"
+import { uploadSeekableMedia } from "../../packages/tglfs-cli/src/shared/media-upload"
+import { getGramJs } from "../gramjs"
 
 let busy = false
 function selectedVideo(selection: BrowserSelectionItem[]) {
@@ -26,7 +27,7 @@ async function convertSelection(selection: BrowserSelectionItem[]) {
     try {
         if (!await requestConfirm({
             title: "Create WebM preview copy?", confirmLabel: "Continue", icon: "film",
-            message: "Keeps your original and uses its password for the new copy. Converts on this device without temporary video files. Checks short clips near the beginning, middle and end before saving the copy; these checks cannot guarantee every frame or audio quality. Conversion stops if safe streaming or quality checks fail. Some video types are unsupported, conversion may take time, and seeking in the preview may be limited.",
+            message: "Keeps your original and uses its password for the new copy. Converts on this device without temporary video files. Checks short clips near the beginning, middle and end before saving the copy; these checks cannot guarantee every frame or audio quality. Conversion stops if safe streaming or quality checks fail. Some video types are unsupported, conversion may take time, and encoding support depends on this browser. The new preview supports scrubbing with encrypted seek metadata.",
         })) return
         password = await requestText({ title: "Unlock video", label: "Password (leave empty if none)", inputType: "password", allowEmpty: true, confirmLabel: "Convert", icon: "key" })
         if (password === null) return
@@ -36,17 +37,20 @@ async function convertSelection(selection: BrowserSelectionItem[]) {
         transfer.setPhase("Checking streaming support", { span: [0, 0.05] })
         const messages = await client.getMessages("me", { ids: [selected.msgId] })
         const data = parseFileCardMessage(messages[0]?.message ?? "")
-        if (!data || ![1, 2, 3].includes(data.version) || !data.uploadComplete || !isWebmSourceName(data.name)) throw new Error("Select a complete supported video file. Archives and unknown file versions cannot be converted.")
+        if (!data || (![1, 2, 3, 5].includes(data.version) || (data.version === 5 && data.content.archive)) || !data.uploadComplete || !isWebmSourceName(data.name)) throw new Error("Select a complete supported video file. Archives and unknown file versions cannot be converted.")
         const parent = "parentFolderId" in data ? data.parentFolderId : undefined
         const source = await createFileCardPlaintextStream(client, data, sourcePassword, () => transfer.throwIfCancelled())
         const { createStreamingWebm } = await import("./streamingWebmConversion")
         const conversion = await createStreamingWebm(source, data.name, transfer.signal)
         try {
             transfer.setPhase("Converting, comparing and uploading", { span: [0.05, 1], total: data.size })
-            const record = await uploadGeneratedFileStream(client, config, {
+            const { Api, getFileInfo } = await getGramJs()
+            const record = await uploadSeekableMedia(client, {
+                Api, getFileInfo, container: "webm", duration: conversion.duration,
+                source: { type: "tglfs:media-source", version: 1, messageId: selected.msgId!, fileVersion: data.version, ufid: data.ufid },
                 name: webmCopyName(data.name), stream: conversion.stream, password: sourcePassword,
                 parentFolderId: parent, signal: transfer.signal,
-                onProgress: p => transfer.update({ bytes: Math.min(p.plaintextBytes, data.size) }),
+                onBytes: bytes => transfer.update({ bytes: Math.min(bytes, data.size) }),
             })
             const report = conversion.getQuality()
             const minimum = Math.min(...report.clips.map(c => c.ssim))

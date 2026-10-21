@@ -1,3 +1,4 @@
+import { blockMapUploadFile, loadFileBlockMap, storedFileMessageIds } from "./block-map.js"
 import { BATCH_DELAY_MS, BATCH_LIMIT } from "./constants.js"
 import {
     buildFileCardParentSearchQuery,
@@ -17,6 +18,8 @@ type ApiLike = {
 }
 
 type TelegramFileClient = {
+    downloadMedia?(message: any, options?: any): Promise<any>
+    sendFile?(peer: string, options: any): Promise<any>
     getMessages(peer: string, options: unknown): Promise<any[]>
     invoke(request: any): Promise<any>
     sendMessage(peer: string, options: { message: string }): Promise<any>
@@ -50,6 +53,7 @@ type WriteFileCardOptions = {
 }
 
 type DeleteFileCardOptions = {
+    peer?: string
     Api: ApiLike
     msgId: number
     data: FileCardData
@@ -231,11 +235,11 @@ export async function renameFileCardMessage(
 }
 
 export async function deleteFileCardMessages(client: TelegramFileClient, options: DeleteFileCardOptions) {
-    return client.invoke(
-        new options.Api.messages.DeleteMessages({
-            id: [...options.data.chunks, options.msgId],
-        }),
-    )
+    const ids = await storedFileMessageIds(client, options.data, resolvePeer(options.peer))
+    for (let start = 0; start < ids.length; start += 100) {
+        await client.invoke(new options.Api.messages.DeleteMessages({ id: ids.slice(start, start + 100) }))
+    }
+    return client.invoke(new options.Api.messages.DeleteMessages({ id: [options.msgId] }))
 }
 
 export async function forwardChunkMessages(
@@ -284,20 +288,29 @@ export async function transferFileCard(
     client: TelegramFileClient & { sendMessage(peer: string, options: { message: string }): Promise<any> },
     options: TransferFileCardOptions,
 ): Promise<FileCardRecord> {
+    const map = options.record.data.version === 5 ? await loadFileBlockMap(client, options.record.data, resolvePeer(options.sourcePeer)) : null
+    if (map && !client.sendFile) throw new Error("This client cannot forward version 5 files safely.")
     const updatedChunks = await forwardChunkMessages(client, {
         Api: options.Api,
         fromPeer: options.sourcePeer,
         toPeer: options.targetPeer,
-        chunkIds: options.record.data.chunks,
+        chunkIds: map ? map.messages : options.record.data.chunks,
         silent: options.silent,
         batchLimit: options.batchLimit,
         batchDelayMs: options.batchDelayMs,
         onChunkForwarded: options.onChunkForwarded,
     })
 
+    let targetChunks = updatedChunks
+    if (map) {
+        if (!client.sendFile) throw new Error("This client cannot forward version 5 files safely.")
+        const message = await client.sendFile(resolvePeer(options.targetPeer), { file: blockMapUploadFile({ ...map, messages: updatedChunks }), forceDocument: true })
+        if (!Number.isSafeInteger(message?.id) || message.id <= 0) throw new Error("The forwarded block map was not acknowledged.")
+        targetChunks = [message.id]
+    }
     const updatedData: FileCardData = {
         ...options.record.data,
-        chunks: updatedChunks,
+        chunks: targetChunks,
     }
     const message = await client.sendMessage(resolvePeer(options.targetPeer), {
         message: serializeFileCardMessage(updatedData),
@@ -315,14 +328,15 @@ export async function unsendFileCard(client: TelegramFileClient, options: Unsend
     const batchLimit = options.batchLimit ?? BATCH_LIMIT
     const batchDelayMs = options.batchDelayMs ?? BATCH_DELAY_MS
 
-    for (let index = 0; index < options.record.data.chunks.length; index += batchLimit) {
-        const batch = options.record.data.chunks.slice(index, index + batchLimit)
+    const chunkIds = await storedFileMessageIds(client, options.record.data, peer)
+    for (let index = 0; index < chunkIds.length; index += batchLimit) {
+        const batch = chunkIds.slice(index, index + batchLimit)
         await client.invoke(
             new options.Api.messages.DeleteMessages({
                 id: batch,
             }),
         )
-        if (index + batch.length < options.record.data.chunks.length) {
+        if (index + batch.length < chunkIds.length) {
             await sleep(batchDelayMs)
         }
     }

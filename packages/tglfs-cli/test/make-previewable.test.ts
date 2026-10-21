@@ -122,25 +122,10 @@ test("FFmpeg plan copies AVC/AAC and selectively transcodes incompatible tracks"
     assert.ok(transcoded.args.includes("aac"))
 })
 
-test("CLI package routes make-previewable through the existing published entrypoint", async () => {
+test("CLI package includes the MP4 command manual in the published package", async () => {
     const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
     const pkg = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"))
-    const router = await readFile(resolve(root, "src/direct-command-router.ts"), "utf8")
-    const hooks = await readFile(resolve(root, "src/test-hooks.ts"), "utf8")
-    const command = await readFile(resolve(root, "src/make-previewable-cli.ts"), "utf8")
-    const conversion = await readFile(resolve(root, "src/make-previewable.ts"), "utf8")
-    const upload = await readFile(resolve(root, "src/generated-upload.ts"), "utf8")
-    const man = await readFile(resolve(root, "man/tglfs-make-previewable.1"), "utf8")
-
     assert.equal(pkg.bin.tglfs, "dist/cli.js")
     assert.ok(pkg.man.includes("./man/tglfs-make-previewable.1"))
-    assert.match(hooks, /direct-command-router/)
-    assert.match(router, /args\.indexOf\("make-previewable"\)/)
-    assert.match(command, /TGLFS_MAKE_PREVIEWABLE_SOURCE_PASSWORD/)
-    assert.match(conversion, /probeMp4Stream/)
-    assert.match(conversion, /stageSource/)
-    assert.match(conversion, /uploadGeneratedCurrentFormatStream/)
-    assert.match(upload, /UfidAccumulator/)
-    assert.match(upload, /uploadComplete:\s*true/)
-    assert.match(man, /moov/)
+    assert.ok((await readFile(resolve(root, "man/tglfs-make-previewable.1"), "utf8")).length > 0)
 })

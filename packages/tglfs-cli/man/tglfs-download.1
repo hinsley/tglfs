@@ -5,11 +5,12 @@ tglfs-download \- download a TGLFS file or indexed archive by UFID
 .B tglfs download
 [\fIOPTIONS\fR] \fIufid\fR
 .SH DESCRIPTION
-Looks up a TGLFS file card in Telegram Saved Messages by UFID, downloads the encrypted chunks, decrypts and decompresses them, verifies the UFID, and writes the plaintext to disk. File-card versions 1 through 4 are supported. Version 4 archives are reconstructed as the exact original tar using bounded memory. Unsupported future protocol versions are refused.
+Looks up a TGLFS file card in Telegram Saved Messages by UFID, downloads the encrypted chunks, decrypts and decompresses them, verifies the UFID, and writes the plaintext to disk. File-card versions 1 through 5 are supported. Version 4 archives are reconstructed as the exact original tar using bounded memory. Unsupported future protocol versions are refused.
 .PP
 Use
 .B --legacy
-for files that still require the older counter-advance behavior. This option is refused for version 4 indexed archives.
+for files that still require the older counter-advance behavior. This option is refused for versions 4 and 5.
+Version 5 downloads keep an owned partial file and versioned checkpoint beside the destination. Repeat the same command with the same destination and password to resume. Completed local blocks are verified before fetching only remaining blocks, and the destination is published after full UFID verification. Checkpoints contain no password or encryption key. Earlier file versions keep their existing download behavior.
 .SH OPTIONS
 .TP
 .B --no-interactive

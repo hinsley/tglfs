@@ -136,6 +136,14 @@ export async function createFileCardPlaintextStream(
 ): Promise<ReadableStream<Uint8Array>> {
     await gramJsReady
     if (typeof DecompressionStream === "undefined") throw new Error("This browser does not support streaming gzip decompression.")
+    if (data.version === 5) {
+        const { openBlockFile } = await import("../../packages/tglfs-cli/src/shared/block-transfer")
+        const reader = await openBlockFile(client, { Api, getFileInfo, data, password })
+        let read = 0
+        return reader.stream().pipeThrough(new TransformStream({ transform(bytes, controller) {
+            read += bytes.length; onProgress?.(data.size ? read / data.size * 100 : 100); controller.enqueue(bytes)
+        } }))
+    }
     if (data.version === 4) {
         const archive = await openRemoteArchive(client, {
             Api, getFileInfo, record: { data, msgId: 0, date: 0 }, password,

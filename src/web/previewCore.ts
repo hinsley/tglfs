@@ -564,6 +564,32 @@ export class PreviewModal {
         onProgress: (pct: number) => void,
         signal: AbortSignal,
     ) {
+        if (data.version === 5) {
+            const { getGramJs } = await import("../gramjs")
+            const { openBlockFile } = await import("../../packages/tglfs-cli/src/shared/block-transfer")
+            const { asFileReader } = await import("../../packages/tglfs-cli/src/shared/block-format")
+            const { createMemberUrl } = await import("./archivePreview")
+            const { Api, getFileInfo } = await getGramJs()
+            const block = await openBlockFile(this.client, { Api, getFileInfo, data, password, signal })
+            if (data.mediaPreview) {
+                const { playSeekableMedia } = await import("./seekableMedia")
+                this.showMedia(type, "")
+                const media = type === "video" ? this.previewVideo! : this.previewAudio!
+                const onMediaError = (event: Event) => this.showError((event as CustomEvent<Error>).detail?.message || "Media preview failed.")
+                media.addEventListener("tglfs:media-error", onMediaError)
+                signal.addEventListener("abort", () => media.removeEventListener("tglfs:media-error", onMediaError), { once: true })
+                await playSeekableMedia(media, block, signal)
+                onProgress(100)
+                return
+            }
+            const reader = asFileReader(block, data.name)
+            const mounted = await createMemberUrl(reader, reader.index.entries[0], signal)
+            signal.addEventListener("abort", () => mounted.close(), { once: true })
+            if (signal.aborted) { mounted.close(); return }
+            this.showMedia(type, mounted.url)
+            onProgress(100)
+            return
+        }
         const mimeType = this.getStreamMimeType(data.name, type)
         if (!mimeType) {
             throw new Error("Streaming preview not supported for this file type.")
@@ -742,6 +768,19 @@ export class PreviewModal {
         onProgress: (pct: number) => void,
         signal: AbortSignal,
     ): Promise<Blob> {
+        if (data.version === 5) {
+            const { createFileCardPlaintextStream } = await import("./tglfsDownloadSource")
+            const stream = await createFileCardPlaintextStream(this.client, data, password, onProgress)
+            const reader = stream.getReader(); const chunks: Uint8Array[] = []
+            try {
+                while (true) {
+                    if (signal.aborted) throw new Error("Preview cancelled.")
+                    const { done, value } = await reader.read(); if (done) break
+                    chunks.push(value)
+                }
+                return new Blob(chunks)
+            } finally { await reader.cancel().catch(() => {}); reader.releaseLock() }
+        }
         const chunkMsgs: TelegramApi.messages.Messages = await this.client.getMessages("me", { ids: data.chunks })
         const IVBytes = base64ToBytes(data.IV)
         const salt = IVBytes.subarray(0, 16)

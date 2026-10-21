@@ -62,11 +62,11 @@ class MemoryTelegram {
     }
 }
 
-test("queued web uploads route batches to v4 and keep ordinary file uploads on v3", async () => {
+test("queued web uploads write v5 for both archives and ordinary files", async () => {
     const originalWindow = (globalThis as any).window
     const refreshedParents: string[] = []
     const { Api, getFileInfo } = getGramJs()
-    const { runFileUploadJob } = await import("../../../src/telegram.ts")
+    const { runFileUploadJob, updateFileCardParent } = await import("../../../src/telegram.ts")
     ;(globalThis as any).window = {
         crypto: globalThis.crypto,
         dispatchEvent(event: any) { refreshedParents.push(event.tglfsParentFolderId); return true },
@@ -82,9 +82,9 @@ test("queued web uploads route batches to v4 and keep ordinary file uploads on v
         const result = await runFileUploadJob(client as any, config, {
             files, password: "private", parentFolderId: "folder-42", archiveName: "batch.tar",
         }, transfer)
-        assert.equal(result.data.version, 4)
+        assert.equal(result.data.version, 5)
         assert.equal(result.parentFolderId, "folder-42")
-        assert.equal(parseFileCardMessage(client.cards.get(result.msgId)!)?.version, 4)
+        assert.equal(parseFileCardMessage(client.cards.get(result.msgId)!)?.version, 5)
         const archive = await openRemoteArchive(client, { Api, getFileInfo, record: {
             msgId: result.msgId, date: 0, data: result.data,
         }, password: "private" })
@@ -97,8 +97,13 @@ test("queued web uploads route batches to v4 and keep ordinary file uploads on v
         const ordinary = await runFileUploadJob(ordinaryClient as any, config, {
             files: [files[0]], password: "", parentFolderId: "folder-42",
         }, ordinaryTransfer)
-        assert.equal(ordinary.data.version, 3)
+        assert.equal(ordinary.data.version, 5)
         assert.equal(ordinary.data.uploadComplete, true)
+        const moved = await updateFileCardParent(ordinaryClient as any, ordinary.msgId, "me", ordinary.data, "another-folder")
+        assert.equal(moved.version, 5)
+        assert.deepEqual((moved as any).content, (ordinary.data as any).content)
+        assert.deepEqual(moved.chunks, ordinary.data.chunks)
+        assert.equal(parseFileCardMessage(ordinaryClient.cards.get(ordinary.msgId)!)?.version, 5)
         assert.deepEqual(refreshedParents, ["folder-42", "folder-42"])
     } finally {
         __resetTransfersForTests()

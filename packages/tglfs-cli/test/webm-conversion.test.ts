@@ -4,6 +4,7 @@ import { test } from "node:test"
 import { getGramJs } from "../src/gramjs.ts"
 import { convertWebm, buildWebmArgs, openSafeWebmSource, parseWebmQuality, validateWebmProbe, WEBM_INPUT_ARGS } from "../src/convert-webm.ts"
 import { collectMetadata, runMediaProcess } from "../src/webm-process.ts"
+import { upgradeMediaPreview } from "../src/media-upgrade.ts"
 import { uploadGeneratedCurrentFormatStream } from "../src/generated-upload.ts"
 import { createVerifiedFileCardPlaintextStream } from "../src/plaintext-stream.ts"
 import { patchMp4MovieDuration } from "../src/mp4-preview.ts"
@@ -121,7 +122,7 @@ for (const [format, password] of [["mp4", "private sample password"], ["mov", ""
         const result = await convertWebm(client as any, original, { sourcePassword: password, chunkSize: 512 * 1024, ffmpegPath: ffmpeg, ffprobePath: ffprobe })
         assert.equal(result.originalRetained, true)
         assert.equal(result.stagedSource, false)
-        assert.equal(result.data.version, 3)
+        assert.equal(result.data.version, 5)
         assert.equal(client.cards.get(original.msgId), originalText)
         assert.deepEqual(original.data.chunks.map(id => client.chunks.get(id)), originalChunks)
         assert.equal((result.data as any).parentFolderId, "folder-test")
@@ -138,7 +139,7 @@ for (const [format, password] of [["mp4", "private sample password"], ["mov", ""
         assert.equal(inspectWebmHeader(output)?.mimeType, 'video/webm; codecs="vp9, opus"')
         assert.equal(inspectWebmHeader(output.subarray(0, 12)), null)
         assert.deepEqual(client.deleted, [])
-        if (password) await assert.rejects(collect(await createVerifiedFileCardPlaintextStream(client as any, result.data, "wrong")))
+        if (password) await assert.rejects(async () => collect(await createVerifiedFileCardPlaintextStream(client as any, result.data, "wrong")))
     })
 }
 
@@ -219,4 +220,38 @@ test("an uncertain Telegram publication retains chunks so a possibly published c
     const data = parseFileCardMessage([...client.cards.values()][0])!
     assert.ok(data.chunks.every(id => client.chunks.has(id)))
     assert.equal(new TextDecoder().decode(await collect(await createVerifiedFileCardPlaintextStream(client as any, data, "p"))), "test")
+})
+
+for (const password of ["", "same source password"]) test(`existing preview media upgrades without changing bytes or ${password ? "its password" : "an empty password"}`, { skip: !hasFfmpeg, timeout: 30000 }, async () => {
+    const client = new MemoryTelegram(); const bytes = videoFixture("mp4")
+    const original = await uploadGeneratedCurrentFormatStream(client as any, { name: "old.preview.mp4", stream: stream(bytes), password, chunkSize: 512 * 1024 })
+    const originalText = client.cards.get(original.msgId); const originalChunks = original.data.chunks.map(id => client.chunks.get(id)!.slice())
+    const upgraded = await upgradeMediaPreview(client as any, original, { password })
+    assert.equal(upgraded.data.version, 5)
+    assert.equal(upgraded.data.ufid, original.data.ufid)
+    assert.notEqual(upgraded.msgId, original.msgId)
+    assert.equal(client.cards.get(original.msgId), originalText)
+    assert.deepEqual(original.data.chunks.map(id => client.chunks.get(id)), originalChunks)
+    assert.equal(upgraded.data.mediaPreview?.source?.messageId, original.msgId)
+    assert.deepEqual(await collect(await createVerifiedFileCardPlaintextStream(client as any, upgraded.data, password)), Uint8Array.from(bytes))
+    await assert.rejects(upgradeMediaPreview(client as any, upgraded, { password }), /already has/)
+    assert.deepEqual(client.deleted, [])
+})
+
+for (const password of ["", "protected MP4 source"]) test(`MP4 preview conversion keeps ${password ? "the source password" : "the empty source password"} despite obsolete output-password input`, { skip: !hasFfmpeg, timeout: 30000 }, async () => {
+    const { makeMp4Previewable } = await import("../src/make-previewable.ts")
+    const client = new MemoryTelegram()
+    const { Api } = getGramJs()
+    const original = await uploadGeneratedCurrentFormatStream(client as any, { Api, name: "original.mp4", password, stream: stream(videoFixture("mp4", false)), chunkSize: 512 * 1024 })
+    const originalCard = client.cards.get(original.msgId)
+    const originals = original.data.chunks.map(id => [id, client.chunks.get(id)!.slice()] as const)
+    const result = await makeMp4Previewable(client as any, original, { sourcePassword: password, uploadPassword: "must never be used", chunkSize: 512 * 1024, ffmpegPath: ffmpeg, ffprobePath: ffprobe } as any)
+    const data = parseFileCardMessage(client.cards.get(result.msgId)!)!
+    assert.equal(data.version, 5)
+    assert.ok((data as any).mediaPreview)
+    assert.ok((await collect(await createVerifiedFileCardPlaintextStream(client as any, data, password))).length > 0)
+    await assert.rejects(async () => collect(await createVerifiedFileCardPlaintextStream(client as any, data, "must never be used")), /password|corrupt/)
+    assert.equal(client.cards.get(original.msgId), originalCard)
+    for (const [id, bytes] of originals) assert.deepEqual(client.chunks.get(id), bytes)
+    assert.deepEqual(client.deleted, [])
 })

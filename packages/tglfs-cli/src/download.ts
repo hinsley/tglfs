@@ -20,7 +20,7 @@ import { UfidAccumulator } from "./ufid.js"
 
 export type DownloadMode = "current" | "legacy"
 
-type DownloadResult = {
+export type DownloadResult = {
     outputPath: string
     bytesWritten: number
     name: string
@@ -393,6 +393,11 @@ export async function downloadFileCard(
     mode: DownloadMode = "current",
 ): Promise<DownloadResult> {
     validateDownloadableFileCard(data)
+    if (data.version === 5) {
+        if (mode === "legacy") throw new Error("Version 5 files do not use legacy decryption. Remove --legacy.")
+        const { downloadResumableFile } = await import("./block-download.js")
+        return downloadResumableFile(client, data, password, outputPath, overwrite, onProgress)
+    }
     if (data.version === 4) {
         if (mode === "legacy") {
             throw new CliError(

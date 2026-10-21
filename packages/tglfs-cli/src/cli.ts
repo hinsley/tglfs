@@ -55,6 +55,8 @@ import {
 import { CLI_RUNTIME_OVERRIDE_SYMBOL } from "./test-hooks.js"
 import { uploadPaths } from "./upload.js"
 import { createConvertWebmCommand } from "./convert-webm-cli.js"
+import { createUpgradeMediaPreviewCommand } from "./media-upgrade-cli.js"
+import { createMakePreviewableCommand } from "./make-previewable-cli.js"
 
 type JsonFlag = {
     json?: boolean
@@ -277,7 +279,9 @@ function createProgram(runtime = getCliRuntime()) {
             `\nStorage paths:\n  config: ${storePaths.configFile}\n  session: ${storePaths.sessionFile}\n`,
         )
 
+    program.addCommand(createMakePreviewableCommand())
     program.addCommand(createConvertWebmCommand())
+    program.addCommand(createUpgradeMediaPreviewCommand())
     const withGlobalInteractive = <T extends InteractiveFlag>(options: T): T => ({
         ...options,
         interactive: options.interactive ?? (program.opts() as InteractiveFlag).interactive,
@@ -292,12 +296,13 @@ function createProgram(runtime = getCliRuntime()) {
         .option("--password <password>", "Encryption password")
         .option("--password-env [name]", "Read encryption password from an environment variable")
         .option("--password-stdin", "Read encryption password from stdin")
+        .option("--resume <id>", "Resume a specific interrupted transfer")
         .option("--json", "Output machine-readable JSON")
         .addHelpText(
             "after",
-            "\nUploading multiple paths produces a tar archive using the same naming convention as the web app. Batches and individual .tar files use indexed archive protocol v4; other files use v3.\nIf no password source is supplied, the password is the empty string, which provides no password-based confidentiality.\nTTY runs show UFID and upload progress bars. --json prints exactly one final JSON object to stdout and never prompts.\nEnvironment variable: TGLFS_UPLOAD_PASSWORD\n",
+            "\nUploading multiple paths produces a tar archive using the same naming convention as the web app. New uploads use resumable file protocol v5, including browsable tar archives. Repeat the same upload with the same password to resume, or use --resume <transfer-id>.\nIf no password source is supplied, the password is the empty string, which provides no password-based confidentiality.\nTTY runs show UFID and upload progress bars. --json prints exactly one final JSON object to stdout and never prompts.\nEnvironment variable: TGLFS_UPLOAD_PASSWORD\n",
         )
-        .action(async (paths: string[], options: InteractiveFlag & { password?: string; passwordEnv?: string | boolean; passwordStdin?: boolean }) => {
+        .action(async (paths: string[], options: InteractiveFlag & { password?: string; passwordEnv?: string | boolean; passwordStdin?: boolean; resume?: string }) => {
             const interactiveOptions = withGlobalInteractive(options)
             await runJsonAware(interactiveOptions, async () => {
                 const { client, config, session } = await connectAuthorizedClient()
@@ -315,6 +320,7 @@ function createProgram(runtime = getCliRuntime()) {
                         })) ?? ""
                     const result = await uploadPaths(client, {
                         paths,
+                        resumeId: options.resume,
                         chunkSize: config.chunkSize,
                         password,
                         onUfidProgress: ({ bytesProcessed, totalBytes }) => {
@@ -641,7 +647,7 @@ function createProgram(runtime = getCliRuntime()) {
         .option("--json", "Output machine-readable JSON")
         .addHelpText(
             "after",
-            "\nReads file-card protocols v1-v4. Indexed archives restore the exact original tar; --legacy is refused for v4.\nIf the file uses a decryption password, provide it with --password, --password-env, --password-stdin, or interactively on a TTY.\nUse --no-interactive or --json to fail instead of prompting for a password or overwrite confirmation.\nTTY runs show a progress bar. --json prints exactly one final JSON object to stdout and never prompts.\n",
+            "\nReads file-card protocols v1-v5. Version 5 downloads keep a partial file and checkpoint beside the destination; repeat the command with the same output and password to resume. Older records remain readable. --legacy is refused for v4 and v5.\nIf the file uses a decryption password, provide it with --password, --password-env, --password-stdin, or interactively on a TTY.\nUse --no-interactive or --json to fail instead of prompting for a password or overwrite confirmation.\nTTY runs show a progress bar. --json prints exactly one final JSON object to stdout and never prompts.\n",
         )
         .action(async (ufid: string, options: InteractiveFlag & { output?: string; force?: boolean; legacy?: boolean; password?: string; passwordEnv?: string | boolean; passwordStdin?: boolean }) => {
             const interactiveOptions = withGlobalInteractive(options)

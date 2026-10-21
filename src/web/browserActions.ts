@@ -6,6 +6,7 @@ export type BrowserSelectionItem = {
     id: string
     name: string
     msgId?: number
+    mediaPreviewCurrent?: boolean
 }
 
 export type ExtraBrowserAction = {

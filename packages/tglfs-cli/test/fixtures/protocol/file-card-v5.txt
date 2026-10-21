@@ -1,0 +1,2 @@
+tglfs:file
+{"type":"tglfs:file","version":5,"name":"fixture.bin","ufid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":131072,"uploadComplete":true,"chunks":[105],"IV":"","parentFolderId":"folder-fixture","content":{"type":"tglfs:block-content","version":1,"id":"0123456789abcdef0123456789abcdef","salt":"AAAAAAAAAAAAAAAAAAAAAA==","blockSize":65536,"archive":false,"fixtureStorageExtension":{"keep":true}},"fixtureExtension":{"keep":true}}

@@ -1,3 +1,7 @@
+import { storedFileMessageIds } from "./shared/block-map.js"
+import { openBlockFile } from "./shared/block-transfer.js"
+import { UfidAccumulator } from "./ufid.js"
+import { finishUfid } from "./shared/block-format.js"
 import type { TelegramClient } from "telegram/client/TelegramClient.js"
 
 import type { DownloadMode } from "./download.js"
@@ -33,10 +37,10 @@ export type FileInspectionResult = {
     date: number
     data: FileCardData
     chunks: ChunkInspection[]
-    format: DownloadMode | "indexed-archive" | "unknown"
+    format: DownloadMode | "indexed-archive" | "block-file" | "unknown"
     probe?:
         | {
-              mode: DownloadMode | "indexed-archive"
+              mode: DownloadMode | "indexed-archive" | "block-file"
               bytesWritten: number
               computedUfid: string
           }
@@ -185,7 +189,8 @@ export async function unsendFiles(client: TelegramClient, source: string, ufids:
 }
 
 async function inspectChunkMessages(client: TelegramClient, peer: string, data: FileCardData): Promise<ChunkInspection[]> {
-    const messages = await client.getMessages(peer, { ids: data.chunks, waitTime: 0 } as any)
+    const chunkIds = await storedFileMessageIds(client as any, data, peer)
+    const messages = await client.getMessages(peer, { ids: chunkIds, waitTime: 0 } as any)
     const byId = new Map<number, any>()
     for (const message of messages) {
         if (typeof message?.id === "number") {
@@ -193,7 +198,7 @@ async function inspectChunkMessages(client: TelegramClient, peer: string, data: 
         }
     }
 
-    return data.chunks.map((chunkId) => {
+    return chunkIds.map((chunkId) => {
         const message = byId.get(chunkId)
         if (!message) {
             return { msgId: chunkId, status: "missing" }
@@ -257,6 +262,13 @@ async function probeFileMode(
     data: FileCardData,
     password: string,
 ): Promise<FileModeDetectionResult> {
+    if (data.version === 5) {
+        const { Api, getFileInfo } = getGramJs()
+        const reader = await openBlockFile(client as any, { Api, getFileInfo, data, password, peer })
+        const accumulator = new UfidAccumulator(); let bytesWritten = 0
+        for await (const bytes of reader.stream() as any) { await accumulator.update(bytes); bytesWritten += bytes.length }
+        return { probe: { mode: "block-file", bytesWritten, computedUfid: await finishUfid(accumulator, bytesWritten) } }
+    }
     if (data.version === 4) {
         const result = await inspectRemoteArchive(client, data, password, peer)
         return { probe: { mode: "indexed-archive", ...result } }
@@ -283,7 +295,7 @@ export async function inspectFileCard(
     let probe: FileInspectionResult["probe"]
     let probeError: string | undefined
     if (!options.probe) {
-        probeError = record.data.version === 4
+        probeError = record.data.version === 4 || record.data.version === 5
             ? "Integrity probe skipped. Re-run with --probe to verify every archive block and the full UFID."
             : "Format probe skipped. Re-run with --probe to verify current vs legacy format."
     } else if (everyChunkReadable) {
@@ -310,7 +322,7 @@ export async function inspectFileCard(
         date: record.date,
         data: record.data,
         chunks,
-        format: record.data.version === 4 ? "indexed-archive" : probe?.mode ?? "unknown",
+        format: record.data.version === 5 ? "block-file" : record.data.version === 4 ? "indexed-archive" : probe?.mode ?? "unknown",
         probe,
         probeError,
     }

@@ -1,3 +1,4 @@
+import { isBrowsableArchive } from "../../packages/tglfs-cli/src/shared/block-format"
 import * as Config from "../config"
 import {
     formatFileCardDate,
@@ -491,7 +492,7 @@ function getEntrySizeText(entry: BrowserEntry) {
 
 function getEntryMetaText(entry: BrowserEntry) {
     const date = formatEntryDate(getEntryDate(entry))
-    const archive = entry.kind === "file" && (entry.data.version === 4 || getArchiveUpgradeCapability(entry.data).supported)
+    const archive = entry.kind === "file" && (isBrowsableArchive(entry.data) || getArchiveUpgradeCapability(entry.data).supported)
         ? `Message ${entry.msgId}${entry.data.version === 4 && entry.data.upgradedFrom ? ` · Original message ${entry.data.upgradedFrom.messageId}` : ""}` : ""
     return [getEntrySizeText(entry), date, archive].filter(Boolean).join(" · ")
 }
@@ -499,7 +500,7 @@ function getEntryMetaText(entry: BrowserEntry) {
 function getEntryBadge(entry: BrowserEntry) {
     if (entry.kind === "missing-file") return `<span class="fx-badge fx-badge--missing">Missing</span>`
     if (entry.kind === "file" && !entry.data.uploadComplete) return `<span class="fx-badge fx-badge--incomplete">Incomplete</span>`
-    if (entry.kind === "file" && entry.data.version === 4) return `<span class="fx-badge">Archive v4</span>`
+    if (entry.kind === "file" && isBrowsableArchive(entry.data)) return `<span class="fx-badge">Archive v${entry.data.version}</span>`
     if (entry.kind === "file" && getArchiveUpgradeCapability(entry.data).supported) return `<span class="fx-badge">Archive v${entry.data.version} · upgrade available</span>`
     return ""
 }
@@ -1120,6 +1121,7 @@ function toSelectionItems(entries: BrowserEntry[]): BrowserSelectionItem[] {
         id: entry.id,
         name: getEntryName(entry),
         msgId: isFileEntry(entry) ? entry.msgId : undefined,
+        mediaPreviewCurrent: isFileEntry(entry) && entry.data.version === 5 && !!entry.data.mediaPreview,
     }))
 }
 
@@ -1145,7 +1147,7 @@ function getAllSelectionActions(entries: BrowserEntry[]): SelectionAction[] {
     if (single && isFolderEntry(single)) {
         actions.push({ key: "open", id: "browserActionPreview", menuId: "actionPreviewItem", label: "Open", icon: "open", hint: "↵", run: () => runSingleOpenAction(single) })
         actions.push({ key: "history", id: "browserActionHistory", menuId: "actionHistoryItem", label: "History", icon: "history", hint: "H", menuOnly: true, run: () => openFolderHistory(single) })
-    } else if (single && isFileEntry(single) && (single.data.version === 4 || isPreviewableName(single.data.name))) {
+    } else if (single && isFileEntry(single) && (isBrowsableArchive(single.data) || isPreviewableName(single.data.name))) {
         actions.push({ key: "open", id: "browserActionPreview", menuId: "actionPreviewItem", label: "Preview", icon: "eye", hint: "↵", run: () => runSingleOpenAction(single) })
     }
     if (single && isFileEntry(single)) {
@@ -1439,7 +1441,7 @@ async function openEntry(entry: BrowserEntry, index: number) {
         await navigateTo(entry)
         return
     }
-    if (isFileEntry(entry) && (entry.data.version === 4 || isPreviewableName(entry.data.name))) {
+    if (isFileEntry(entry) && (isBrowsableArchive(entry.data) || isPreviewableName(entry.data.name))) {
         await runSingleOpenAction(entry)
         return
     }
@@ -3083,7 +3085,7 @@ async function runSingleOpenAction(selected: BrowserEntry | null) {
             parentFolderId: fileCardParentId(selected.data),
             at: Date.now(),
         })
-        if (selected.data.version === 4) {
+        if (isBrowsableArchive(selected.data)) {
             previewModal?.close()
             await archivePreviewModal?.open(selected)
             return
@@ -3885,7 +3887,7 @@ async function openHistoryRow(row: HistoryRow) {
         return
     }
     const file = historyLiveFile(row)
-    if (file?.data.version === 4) {
+    if (file && isBrowsableArchive(file.data)) {
         previewModal?.close()
         await archivePreviewModal?.open(file)
         return
@@ -3959,7 +3961,7 @@ function openHistoryItemMenu(row: HistoryRow, anchor?: HTMLElement | { x: number
         items.push({ label: historyMode?.at === null ? "Open" : "Open at this time", icon: "open", onSelect: () => openHistoryRow(row) })
     }
     if (file) {
-        if (file.data.version === 4 || isPreviewableName(file.data.name)) items.push({ label: "Preview", icon: "eye", onSelect: () => openHistoryRow(row) })
+        if (isBrowsableArchive(file.data) || isPreviewableName(file.data.name)) items.push({ label: "Preview", icon: "eye", onSelect: () => openHistoryRow(row) })
         items.push({ label: "Download", icon: "download", onSelect: () => downloadEntry(file) })
     }
     if (item.status === "moved-out" && item.movedToFolderId) {

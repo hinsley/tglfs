@@ -2,6 +2,7 @@ export type ArchiveEntry = {
     name: string
     size: number
     lastModified: number
+    range?(start: number, end: number): ReadableStream<Uint8Array> | Promise<ReadableStream<Uint8Array>>
     stream(): ReadableStream<Uint8Array> | Promise<ReadableStream<Uint8Array>>
 }
 
@@ -25,10 +26,18 @@ export function defaultArchiveName(now = new Date()): string {
     )}${pad2(now.getMinutes())}${pad2(now.getSeconds())}.tar`
 }
 
-export function createTarStream(files: ArchiveEntry[]): ReadableStream<Uint8Array> {
+export function createTarStream(files: ArchiveEntry[], start = 0, end = computeTarSize(files)): ReadableStream<Uint8Array> {
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || end > computeTarSize(files)) throw new Error("The requested tar source range is invalid.")
     let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null
     async function* generate(): AsyncGenerator<Uint8Array> {
         const block = 512
+        let position = 0
+        function* segment(bytes: Uint8Array) {
+            const from = Math.max(0, start - position)
+            const to = Math.min(bytes.length, end - position)
+            position += bytes.length
+            if (to > from) yield bytes.subarray(from, to)
+        }
         const textEncoder = new TextEncoder()
 
         const writeString = (buf: Uint8Array, offset: number, value: string, length: number) => {
@@ -82,43 +91,44 @@ export function createTarStream(files: ArchiveEntry[]): ReadableStream<Uint8Arra
             const nameBytes = textEncoder.encode(file.name)
             const modifiedTime = Math.floor(file.lastModified / 1000) || Math.floor(Date.now() / 1000)
             if (nameBytes.length > 100) {
-                yield createHeader("././@LongLink", nameBytes.length + 1, modifiedTime, "L")
+                yield* segment(createHeader("././@LongLink", nameBytes.length + 1, modifiedTime, "L"))
                 const longName = new Uint8Array(Math.ceil((nameBytes.length + 1) / block) * block)
                 longName.set(nameBytes)
-                yield longName
+                yield* segment(longName)
             }
-            yield createHeader(nameBytes.length > 100 ? "file" : file.name, file.size, modifiedTime, "0")
+            yield* segment(createHeader(nameBytes.length > 100 ? "file" : file.name, file.size, modifiedTime, "0"))
 
-            const reader = (await file.stream()).getReader()
-            activeReader = reader
-            let totalRead = 0
-            try {
-                while (true) {
-                    const { done, value } = await reader.read()
-                    if (done) {
-                        break
-                    }
-                    if (value && value.length > 0) {
-                        totalRead += value.length
-                        if (totalRead > file.size) throw new Error("An archive source changed size while being read.")
+            const from = Math.max(0, start - position)
+            const to = Math.min(file.size, end - position)
+            if (to > from) {
+                if (from > 0 && !file.range) throw new Error("This source cannot seek to a resumed archive member.")
+                const reader = (await (file.range ? file.range(from, to) : file.stream())).getReader()
+                activeReader = reader
+                let read = 0
+                try {
+                    while (true) {
+                        const { done, value } = await reader.read()
+                        if (done) break
+                        read += value.length
+                        if (read > to - from) throw new Error("An archive source changed size while being read.")
                         yield value
                     }
+                    if (read !== to - from) throw new Error("An archive source changed size while being read.")
+                } finally {
+                    await reader.cancel().catch(() => {})
+                    reader.releaseLock()
+                    activeReader = null
                 }
-                if (totalRead !== file.size) throw new Error("An archive source changed size while being read.")
-            } finally {
-                await reader.cancel().catch(() => {})
-                reader.releaseLock()
-                activeReader = null
             }
-
-            const padding = (block - (totalRead % block)) % block
+            position += file.size
+            const padding = (block - (file.size % block)) % block
             if (padding > 0) {
-                yield new Uint8Array(padding)
+                yield* segment(new Uint8Array(padding))
             }
         }
 
-        yield new Uint8Array(block)
-        yield new Uint8Array(block)
+        yield* segment(new Uint8Array(block))
+        yield* segment(new Uint8Array(block))
     }
 
     const iterator = generate()

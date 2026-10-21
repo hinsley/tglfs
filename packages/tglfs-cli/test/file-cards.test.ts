@@ -195,7 +195,7 @@ function protocolFixture(name: string) {
 }
 
 test("serialized fixtures retain each supported version and unknown fields during metadata edits", () => {
-    for (const version of [1, 2, 3, 4]) {
+    for (const version of [1, 2, 3, 4, 5]) {
         const message = protocolFixture(`v${version}`)
         const parsed = parseFileCardMessage(message)
         assert.ok(parsed, `v${version} fixture must parse`)
@@ -236,8 +236,8 @@ test("v4 archive creation preserves the archive protocol while ordinary file cre
 test("future and malformed serialized archive fixtures fail closed", () => {
     assert.equal(parseFileCardMessage(protocolFixture("future")), null)
     assert.equal(parseFileCardMessage(protocolFixture("malformed")), null)
-    assert.throws(() => serializeFileCardMessage({ version: 5 } as any), /Unsupported/)
-    assert.throws(() => createFileCardData({ version: 5 } as any), /Unsupported/)
+    assert.throws(() => serializeFileCardMessage({ version: 6 } as any), /Unsupported/)
+    assert.throws(() => createFileCardData({ version: 6 } as any), /Unsupported/)
     const v4 = parseFileCardMessage(protocolFixture("v4"))
     assert.ok(v4 && v4.version === 4)
     assert.throws(() => createFileCardV4Data({ ...v4, version: 5 } as any), /Unsupported/)
@@ -325,7 +325,7 @@ test("archive metadata edits and transfers retain v4 encryption metadata and unk
     await assert.rejects(() => writeFileCardMessage(client, {
         Api,
         msgId: 104,
-        data: { ...data, version: 5 } as any,
+        data: { ...data, version: 6 } as any,
     }), /Unsupported/)
     assert.equal(requests.length + messages.length, callsBefore)
 })

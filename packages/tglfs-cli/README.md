@@ -87,7 +87,7 @@ Upload multiple files as a tar archive using the same archive naming convention 
 tglfs upload ./notes.txt ./diagram.png ./draft.md
 ```
 
-Batch uploads and individual `.tar` uploads use file-card protocol v4. Their tar bytes are stored in independently compressed, authenticated encrypted blocks with an encrypted directory index, so the web app can browse and preview members without downloading the complete archive. Ordinary files, including `.tar.gz`, `.tgz`, ZIP, and other compressed archives, continue to use file-card v3; those inner archive formats are not indexed by this release.
+New uploads use file-card protocol v5 with independently compressed and authenticated encrypted blocks. Batches and individual `.tar` files include an encrypted member directory. Other archive formats remain ordinary files. Repeat `tglfs upload` with the original paths and password to resume, or use `--resume <transfer-id>` to select a session explicitly. Completed blocks are reused without rereading or recompressing their local source bytes; unfinished blocks must match the encrypted source plan. Changed file metadata refuses reuse. Keep the source unchanged until the upload finishes.
 
 Optional upload password sources:
 
@@ -105,7 +105,7 @@ tglfs delete <ufid...> --yes
 tglfs send <ufid...> --to alice
 ```
 
-TTY uploads render UFID and upload progress bars. Indexed archives compute the UFID during a single streaming upload pass, then read back the uploaded blocks to verify the complete tar before publishing a file card. `--json` prints exactly one final JSON object to stdout, writes failures to stderr, and never prompts. An omitted password is the empty string and uses the same encryption process; it provides no password-based confidentiality.
+TTY uploads render preparation and upload progress. New uploads scan the source once to establish its UFID, per-block hashes, and optional tar directory, then upload blocks from the same source. The encrypted plan and checkpoints are retained in Telegram on interruption. Each block is authenticated and hash checked when read. `--json` prints exactly one final object and never prompts. An omitted password is the empty string and uses the same encryption process; it provides no password-based confidentiality.
 
 ## Download Flow
 
@@ -127,7 +127,7 @@ tglfs download <ufid> --legacy
 
 Interactive TTY downloads render a progress bar. `--json` prints exactly one final JSON object to stdout, writes failures to stderr, and never prompts.
 
-Downloads read file-card versions 1, 2, 3, and 4. A v4 archive is reconstructed as the exact original tar with bounded memory, and its full size and UFID are verified before replacing the destination file. `--legacy` applies only to the older counter-advance pipeline and is refused for v4 archives. Unknown future file-card or archive-content versions are refused.
+Downloads read file-card versions 1–5. V5 downloads retain an owned `.tglfs-<content-id>.part` file and versioned JSON checkpoint next to the output. Repeat the same command, destination, and password to verify the completed local blocks and fetch only unfinished blocks. The destination is published after full UFID verification; existing destinations require `--force`. A process lock prevents simultaneous writes; after an abnormal process exit, a stale lock can be recovered when its PID is no longer running. V1–V4 downloads retain their existing behavior. `--legacy` applies only to the old counter pipeline and is refused for v4/v5. Unknown future versions and mismatched checkpoints are refused without discarding the partial file.
 
 The web app offers an explicit **Upgrade archive** action for completed `.tar` records in versions 1–3. It streams the original through the new encoder without creating a local archive file, verifies the new remote copy, and retains the original message and all original chunks. The new card records its source message and protocol version. Both copies remain independently selectable in the web app; an upgrade never edits sync roots or folder entries.
 
@@ -209,7 +209,7 @@ tglfs inspect <ufid>
 tglfs inspect <ufid> --peer alice
 ```
 
-Run the expensive full integrity probe only when you want it (current/legacy detection for v1–3, or authenticated block and UFID verification for v4):
+Run the expensive full integrity probe only when you want it (current/legacy detection for v1–3, or authenticated block and UFID verification for v4/v5):
 
 ```sh
 tglfs inspect <ufid> --probe
@@ -224,7 +224,7 @@ Select a video in the app and choose **Create WebM preview copy** from its actio
 tglfs convert-webm <ufid> --source-password-env --json
 ```
 
-Set `TGLFS_WEBM_PASSWORD` to the source password. The new copy uses the same password, including an empty password, with fresh encryption randomness. The original remains untouched. Output is an ordinary file-card v3; current-cipher v1–v3 sources remain readable, while archive v4 and future versions are refused. This feature does not migrate any records.
+Set `TGLFS_WEBM_PASSWORD` to the source password. The new copy uses the same password, including an empty password, with fresh encryption randomness. The original remains untouched. Output uses file-card v5, `tglfs:media-preview` v1, and an encrypted `tglfs:media-index` v1 for indexed seeking. Supported file sources remain readable; archive and future protocols are refused. Each conversion creates a separate copy with the source password. Interrupted conversion restarts encoding.
 
 The CLI requires FFmpeg 8+ with libvpx-vp9, libopus, SSIM, loopback decoding and bounded filter buffers, plus matching ffprobe. It checks installed capabilities before reading source bytes, inspects a metadata prefix of at most 64 MiB, then streams from the start for encoding and complete UFID verification. The browser uses WebCodecs and a bundled, pinned Mediabunny release, with one conversion pass and the same 64 MiB cap on metadata inspection. Both paths encrypt/upload generated output as it arrives and gate final publication on successful source verification, conversion and quality checks. Neither path writes video or sample clips to temporary files or OPFS, or retains a whole video in memory.
 
@@ -292,3 +292,5 @@ tglfs send <ufid> --to alice --json
 tglfs inspect <ufid> --json
 printf '%s\n' "$TGLFS_DOWNLOAD_PASSWORD" | tglfs download <ufid> --password-stdin --json
 ```
+
+Use `tglfs upgrade-media-preview <ufid>` to create a separate seekable copy of fragmented MP4 or WebM without changing the encoded video bytes. It streams the original into v5 authenticated blocks with an encrypted time index, keeps the original and its password, and refuses layouts that cannot be indexed safely. Use `make-previewable` or `convert-webm` for those layouts. The browser provides **Upgrade media preview** in its file actions.

@@ -2,7 +2,8 @@ import type { TelegramClient } from "telegram/client/TelegramClient.js"
 import { dirname, basename, join } from "node:path"
 import { createVerifiedFileCardPlaintextStream } from "./plaintext-stream.js"
 import { probeMp4Stream } from "./mp4-preview.js"
-import { uploadGeneratedCurrentFormatStream } from "./generated-upload.js"
+import { uploadSeekableMedia } from "./shared/media-upload.js"
+import { getGramJs } from "./gramjs.js"
 import { collectMetadata, runMediaProcess } from "./webm-process.js"
 import { isWebmSourceName, qualityReport, sampleWindows, validateWebmDimensions, webmCopyName } from "./shared/webm-policy.js"
 import type { FileCardRecord } from "./types.js"
@@ -93,7 +94,7 @@ export function parseWebmQuality(log: string, duration: number) {
     return qualityReport(clips)
 }
 
-export async function openSafeWebmSource(source: ReadableStream<Uint8Array>) {
+export async function openSafeWebmSource(source: ReadableStream<Uint8Array>, onDuration?: (duration: number) => void) {
     const identified = await identifyVideoStream(source)
     if (identified.container === "mp4") {
         const probe = await probeMp4Stream(identified.stream)
@@ -101,13 +102,14 @@ export async function openSafeWebmSource(source: ReadableStream<Uint8Array>) {
             await probe.stream.cancel().catch(() => {})
             throw new Error("MP4/MOV metadata must precede media data. This file requires seeking, so strict streaming conversion is refused.")
         }
+        if (probe.metadata?.durationSeconds && probe.metadata.durationSeconds > 0) onDuration?.(probe.metadata.durationSeconds)
         return probe.stream
     }
     return identified.stream
 }
 
 export async function convertWebm(client: TelegramClient, source: FileCardRecord, options: WebmOptions) {
-    if (![1, 2, 3].includes(source.data.version) || !source.data.uploadComplete || !isWebmSourceName(source.data.name)) {
+    if ((![1, 2, 3, 5].includes(source.data.version) || (source.data.version === 5 && source.data.content.archive)) || !source.data.uploadComplete || !isWebmSourceName(source.data.name)) {
         throw new Error("Select a complete supported video file; archives and unknown file protocols cannot be converted.")
     }
     const name = options.outputName?.trim() || webmCopyName(source.data.name)
@@ -115,12 +117,13 @@ export async function convertWebm(client: TelegramClient, source: FileCardRecord
     const ffmpeg = options.ffmpegPath || process.env.TGLFS_FFMPEG || "ffmpeg"
     const ffprobe = options.ffprobePath || process.env.TGLFS_FFPROBE || join(dirname(ffmpeg), basename(ffmpeg).replace(/^ffmpeg/, "ffprobe"))
     await checkWebmCapabilities(ffmpeg, options.signal)
+    let sourceDuration: number | undefined
     const open = async (phase: string) => {
         options.signal?.throwIfAborted()
         return openSafeWebmSource(await createVerifiedFileCardPlaintextStream(client, source.data, options.sourcePassword, "current", p => {
             options.signal?.throwIfAborted()
             options.onProgress?.(phase, p.bytesWritten)
-        }))
+        }), duration => { sourceDuration = duration })
     }
     let inspectedBytes = 0
     const metadataSource = (await open("Checking source")).pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
@@ -135,6 +138,7 @@ export async function convertWebm(client: TelegramClient, source: FileCardRecord
     try {
         const [json] = await Promise.all([collectMetadata(probe.stream), probe.completion])
         metadata = validateWebmProbe(JSON.parse(json))
+        if (sourceDuration) metadata = { ...metadata, duration: sourceDuration }
     } catch (error) { await probe.cancel(); throw error }
     const conversion = runMediaProcess(ffmpeg, buildWebmArgs(metadata), await open("Converting and comparing"), options.signal)
     const quality = conversion.completion.then(log => parseWebmQuality(log, metadata.duration))
@@ -144,7 +148,10 @@ export async function convertWebm(client: TelegramClient, source: FileCardRecord
         async flush() { await quality },
     }))
     try {
-        const record = await uploadGeneratedCurrentFormatStream(client, {
+        const { Api, getFileInfo } = getGramJs()
+        const record = await uploadSeekableMedia(client as any, {
+            Api, getFileInfo, container: "webm", duration: metadata.duration,
+            source: { type: "tglfs:media-source", version: 1, messageId: source.msgId, fileVersion: source.data.version, ufid: source.data.ufid },
             name, stream: checked, password: options.sourcePassword, chunkSize: options.chunkSize,
             parentFolderId: "parentFolderId" in source.data ? source.data.parentFolderId : undefined, signal: options.signal,
         })

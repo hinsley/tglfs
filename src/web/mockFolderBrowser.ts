@@ -703,7 +703,7 @@ export function createMockFolderBrowserSession() {
                 const record: MockRecord = {
                     id,
                     date: Math.floor(Date.now() / 1000),
-                    message: "",
+                    message: options.caption ?? options.message ?? "",
                     media: {
                         SUBCLASS_OF_ID: INPUT_FILE_LOCATION_SUBCLASS_ID,
                         __mockChunkId: id,
@@ -735,6 +735,7 @@ export function createMockFolderBrowserSession() {
             }
         },
         async downloadMedia(message: MockRecord) {
+            if (chunkBytes.has(message.id)) return chunkBytes.get(message.id)!.slice()
             const record = allRecords().find((candidate) => candidate.id === message.id)
             return typeof record?.media === "string" ? record.media : ""
         },

@@ -7,9 +7,9 @@ tglfs-upload \- upload one file, or archive multiple files, into Telegram Saved 
 .SH DESCRIPTION
 Uploads one file directly into Saved Messages, or packages multiple files into a tar archive using the same naming convention as the web app before uploading.
 .PP
-Batch uploads and individual .tar files use file-card protocol v4 with an encrypted directory index and independently compressed, authenticated encrypted blocks. The original tar bytes and content UFID are preserved. Uploaded blocks are read back and verified before a completed card is published.
+New uploads use file-card protocol v5 with independently compressed and authenticated encrypted blocks. Multi-file batches and individual .tar files include an encrypted member directory. Other archive formats remain ordinary files.
 .PP
-Other files, including .tar.gz, .tgz, and ZIP archives, continue to use file-card v3 and are not indexed for member browsing.
+Repeat the command with the original files and password to resume completed blocks without rereading or recompressing them. The initial source scan records hashes and UFID in an encrypted upload plan. Keep input files unchanged until completion. Interrupted transfer records remain in Telegram; passwords and keys are not stored in checkpoints.
 .SH OPTIONS
 .TP
 .B --no-interactive
@@ -24,6 +24,9 @@ Read the encryption password from an environment variable. If no name is provide
 .TP
 .B --password-stdin
 Read the encryption password from standard input.
+.TP
+.B --resume <id>
+Resume one specific upload session. A mismatched source or password is refused.
 .TP
 .B --json
 Emit machine-readable JSON.

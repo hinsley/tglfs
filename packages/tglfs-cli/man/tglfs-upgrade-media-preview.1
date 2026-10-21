@@ -1,0 +1,38 @@
+.TH TGLFS-UPGRADE-MEDIA-PREVIEW 1 "October 2026" "tglfs 0.1.2" "User Commands"
+.SH NAME
+tglfs-upgrade-media-preview \- create an indexed encrypted preview copy while retaining the original
+.SH SYNOPSIS
+.B tglfs upgrade-media-preview
+[\fIOPTIONS\fR] \fIufid\fR
+.SH DESCRIPTION
+Streams a supported stored fragmented MP4 or WebM into a new file-card v5 storage instance with media-preview v1 and an encrypted media-index v1. TGLFS Preview can fetch fragments around the requested playback position without downloading preceding media. The exact source bytes and UFID, source card, source chunks, video quality, and password are preserved. The new copy has fresh encryption randomness and a separate message ID and content ID.
+.PP
+No temporary video files are written. Index metadata is bounded to 100000 fragments, with a maximum 32 MiB container header or cluster. Nonfragmented MP4, malformed or oversized WebM clusters, missing sample timing, malformed metadata, unsupported protocols and unindexable layouts are refused. Use make-previewable or convert-webm to produce a new indexed copy when the current layout cannot be indexed.
+.PP
+This command never deletes, replaces, or hides the original. A future upgrade creates another separate storage instance. Rollback consists of using the retained original. Passwords and keys are never saved in transfer state.
+.SH OPTIONS
+.TP
+.B --password <password>
+Source and new-copy encryption password, including an empty password.
+.TP
+.B --password-env [name]
+Read the password from the named environment variable, defaulting to TGLFS_MEDIA_PASSWORD.
+.TP
+.B --password-stdin
+Read the password from standard input.
+.TP
+.B --no-interactive
+Disable password prompts.
+.TP
+.B --json
+Print machine-readable JSON without prompting.
+.SH RECOVERY
+Interrupted generated-media upgrades must restart. Newly created unpublished chunks are removed where their IDs are known. If publication may have succeeded but its acknowledgement was lost, the new chunks are kept so that a possibly published copy remains readable. The original is always kept.
+.SH EXAMPLES
+.nf
+tglfs upgrade-media-preview <ufid> --password-env
+tglfs upgrade-media-preview <ufid> --password-env TGLFS_VIDEO_PASSWORD --json
+.fi
+.SH SEE ALSO
+.BR tglfs-make-previewable (1),
+.BR tglfs-convert-webm (1)

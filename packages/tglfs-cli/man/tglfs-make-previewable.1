@@ -7,7 +7,7 @@ tglfs-make-previewable \- create a new streaming-previewable MP4 copy of a store
 .SH DESCRIPTION
 Downloads, decrypts, and decompresses the selected owned MP4, converts its primary video and optional primary audio track into a fragmented MP4 suitable for TGLFS Preview, and uploads a new compressed and encrypted TGLFS file. The original file card and chunks are not changed or deleted.
 .PP
-Indexed archive records are refused even if their filename ends in .mp4. Use the archive preview to view individual members. Generated MP4 copies remain ordinary file-card v3 records.
+Indexed archive records are refused even if their filename ends in .mp4. Use the archive preview to view individual members. Generated MP4 copies use file-card v5, media-preview v1, and an encrypted media-index v1 for seeking. The copy always uses the source password, including an empty password.
 .PP
 When the MP4 has a complete
 .B moov
@@ -27,17 +27,6 @@ Read the source password from an environment variable. The default variable is
 .TP
 .B --source-password-stdin
 Read the source password from standard input.
-.TP
-.B --password <password>
-Encryption password for the new MP4.
-.TP
-.B --password-env [name]
-Read the new MP4 password from an environment variable. The default variable is
-.BR TGLFS_MAKE_PREVIEWABLE_PASSWORD .
-.TP
-.B --password-stdin
-Read the new MP4 password from standard input. This cannot be combined with
-.BR --source-password-stdin .
 .TP
 .B --name <name>
 Name for the new MP4. The default appends
@@ -68,9 +57,6 @@ Emit one machine-readable JSON result and never prompt.
 .B TGLFS_MAKE_PREVIEWABLE_SOURCE_PASSWORD
 Default source decryption password.
 .TP
-.B TGLFS_MAKE_PREVIEWABLE_PASSWORD
-Default encryption password for the generated copy.
-.TP
 .B TGLFS_FFMPEG
 FFmpeg executable path.
 .TP
@@ -79,7 +65,7 @@ ffprobe executable path.
 .SH EXAMPLES
 .nf
 tglfs make-previewable <ufid>
-tglfs make-previewable <ufid> --source-password-env --password-env
+tglfs make-previewable <ufid> --source-password-env
 tglfs make-previewable <ufid> --name lecture.previewable.mp4 --json
 .fi
 .SH EXIT STATUS

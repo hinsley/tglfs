@@ -78,6 +78,7 @@ export type ArchiveUpgradeCapability = {
 
 export function getArchiveUpgradeCapability(data: FileCardData): ArchiveUpgradeCapability {
     const version = (data as { version?: unknown }).version
+    if (version === 5 && "content" in data && data.content.archive) return { supported: false, current: true, reason: "This archive already supports browsing and resumable transfers." }
     if (version === 4 && "archive" in data && isArchiveStorageDescriptor(data.archive)) {
         return { supported: false, current: true, reason: "This archive already supports browsing." }
     }
@@ -218,6 +219,11 @@ export async function openRemoteArchive(
     client: ArchiveTransferClient,
     options: ArchiveTransferOptions & { record: FileCardRecord; password: string },
 ) {
+    if (options.record.data.version === 5 && options.record.data.content.archive) {
+        const { openBlockFile } = await import("./block-transfer.js")
+        const { asArchiveReader } = await import("./block-format.js")
+        return asArchiveReader(await openBlockFile(client, { ...options, data: options.record.data }))
+    }
     if (options.record.data.version !== 4 || !("archive" in options.record.data) || !options.record.data.uploadComplete) {
         throw new Error("This archive does not support browsing or has an incomplete upload.")
     }

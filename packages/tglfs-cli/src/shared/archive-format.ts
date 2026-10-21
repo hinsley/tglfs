@@ -224,7 +224,7 @@ function paxFields(bytes: Uint8Array): Record<string, string> {
     return fields
 }
 
-class TarIndexBuilder {
+export class TarIndexBuilder {
     readonly entries: ArchiveMember[] = []
     indexSize = 0
     private header = new Uint8Array(512)

@@ -12,7 +12,9 @@ import {
 import { getPreviewableMp4Name, isMp4FileName } from "./mp4PreviewableName"
 import { probeMp4MetadataPlacement } from "./mp4MetadataPlacement"
 import { createStreamingPreviewableMp4 } from "./streamingMp4Conversion"
-import { uploadGeneratedFileStream } from "./generatedUpload"
+import { uploadSeekableMedia } from "../../packages/tglfs-cli/src/shared/media-upload"
+import { getGramJs } from "../gramjs"
+import "./mediaPreviewUpgrade"
 import { notifyBrowserActionsChanged, registerBrowserAction, type BrowserSelectionItem } from "./browserActions"
 import { requestConfirm, requestText, showToast } from "./dialogs"
 import { enqueue as enqueueTransfer, type TransferHandle } from "./transfers"
@@ -44,12 +46,12 @@ async function loadFileCard(client: any, selected: SelectedMp4): Promise<FileCar
     const text = messages[0]?.message
     const data = typeof text === "string" ? parseFileCardMessage(text) : null
     if (!data) throw new Error("The selected Telegram message is not a valid TGLFS file card.")
-    if (data.version === 4) throw new Error("This record contains a tar archive. Open its archive preview instead of converting it to MP4.")
+    if (data.version === 4 || (data.version === 5 && data.content.archive)) throw new Error("This record contains a tar archive. Open its archive preview instead of converting it to MP4.")
     if (!isMp4FileName(data.name)) throw new Error("The selected file is no longer an MP4.")
     return data
 }
 
-function reportGeneratedUploadComplete(record: Awaited<ReturnType<typeof uploadGeneratedFileStream>>, transfer: TransferHandle) {
+function reportGeneratedUploadComplete(record: Awaited<ReturnType<typeof uploadSeekableMedia>>, transfer: TransferHandle) {
     const event = new Event("tglfs:refresh-browser") as Event & { tglfsParentFolderId?: string }
     event.tglfsParentFolderId = parentFolderId(record.data) ?? TGLFS_ROOT_PARENT_ID
     window.dispatchEvent(event)
@@ -65,21 +67,23 @@ async function runStreamingPath(
     data: FileCardData,
     outputName: string,
     stream: ReadableStream<Uint8Array>,
-    uploadPassword: string,
+    sourcePassword: string,
     transfer: TransferHandle,
 ) {
     transfer.setPhase("Converting and uploading", { span: [0.02, 1], total: data.size })
     const conversion = await createStreamingPreviewableMp4(stream)
-    let uploadPromise: ReturnType<typeof uploadGeneratedFileStream> | null = null
+    let uploadPromise: ReturnType<typeof uploadSeekableMedia> | null = null
 
     try {
-        uploadPromise = uploadGeneratedFileStream(client, config, {
+        const { Api, getFileInfo } = await getGramJs()
+        uploadPromise = uploadSeekableMedia(client, {
+            Api, getFileInfo, container: "mp4", duration: conversion.durationSeconds,
             name: outputName,
             stream: conversion.stream,
-            password: uploadPassword,
+            password: sourcePassword,
             parentFolderId: parentFolderId(data),
             signal: transfer.signal,
-            onProgress: ({ plaintextBytes }) => {
+            onBytes: (plaintextBytes) => {
                 // The converted MP4 is roughly the size of the source; cap at the source size for the bar.
                 transfer.update({ bytes: Math.min(plaintextBytes, data.size) })
             },
@@ -99,7 +103,7 @@ async function runStagedPath(
     data: FileCardData,
     outputName: string,
     stream: ReadableStream<Uint8Array>,
-    uploadPassword: string,
+    sourcePassword: string,
     transfer: TransferHandle,
 ): Promise<DownloadedSource> {
     const remux = await import("./videoRemux")
@@ -127,15 +131,13 @@ async function runStagedPath(
         remux.markVideoPreviewReady(converted)
         transfer.throwIfCancelled()
 
-        const Telegram = await import("../telegram")
-        const uploaded = await Telegram.runFileUploadJob(
-            client,
-            config,
-            { files: [converted], password: uploadPassword, parentFolderId: parentFolderId(data) ?? TGLFS_ROOT_PARENT_ID, remux: null },
-            transfer,
-            { span: [0.6, 1] },
-        )
-        transfer.complete({ ufid: uploaded.data.ufid, message: `Created · ${formatFileCardSize(uploaded.data.size)}` })
+        const { Api, getFileInfo } = await getGramJs()
+        const uploaded = await uploadSeekableMedia(client, {
+            Api, getFileInfo, container: "mp4", name: outputName, stream: converted.stream(),
+            password: sourcePassword, parentFolderId: parentFolderId(data), signal: transfer.signal,
+            onBytes: bytes => transfer.update({ bytes }),
+        })
+        reportGeneratedUploadComplete(uploaded, transfer)
     } catch (error) {
         await downloaded.cleanup()
         throw error
@@ -157,11 +159,10 @@ async function makePreviewable(selection: BrowserSelectionItem[]) {
     busy = true
     notifyBrowserActionsChanged()
     let sourcePassword: string | null = null
-    let uploadPassword: string | null = null
     try {
         const confirmed = await requestConfirm({
             title: "Make MP4 previewable?",
-            message: `Creates a new streaming-friendly copy of "${selected.name}". The original remains unchanged. ` +
+            message: `Creates a new streaming-friendly copy of "${selected.name}". The original remains unchanged and the copy uses its password. Encrypted seek metadata allows scrubbing across the copy. ` +
                 "Front-loaded MP4s are converted and uploaded as one bounded stream; MP4s with trailing metadata are staged in temporary browser storage first.",
             confirmLabel: "Continue",
             icon: "film",
@@ -176,22 +177,12 @@ async function makePreviewable(selection: BrowserSelectionItem[]) {
             icon: "key",
         })
         if (sourcePassword === null) return
-        uploadPassword = await requestText({
-            title: "Encrypt previewable MP4",
-            label: "Encryption password (optional)",
-            inputType: "password",
-            allowEmpty: true,
-            confirmLabel: "Start",
-            icon: "lock",
-        })
-        if (uploadPassword === null) return
     } finally {
         busy = false
         notifyBrowserActionsChanged()
     }
 
     const decryptPassword = sourcePassword
-    const encryptPassword = uploadPassword
     void enqueueTransfer(
         { direction: "upload", name: getPreviewableMp4Name(selected.name), meta: { sourceMsgId: selected.msgId } },
         async (transfer) => {
@@ -206,10 +197,10 @@ async function makePreviewable(selection: BrowserSelectionItem[]) {
             transfer.throwIfCancelled()
 
             if (probed.placement === "front-loaded") {
-                await runStreamingPath(client, config, data, outputName, probed.stream, encryptPassword, transfer)
+                await runStreamingPath(client, config, data, outputName, probed.stream, decryptPassword, transfer)
                 return
             }
-            const downloaded = await runStagedPath(client, config, data, outputName, probed.stream, encryptPassword, transfer)
+            const downloaded = await runStagedPath(client, config, data, outputName, probed.stream, decryptPassword, transfer)
             await downloaded.cleanup()
         },
     ).catch((error) => {

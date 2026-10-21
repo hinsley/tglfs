@@ -8,9 +8,11 @@ import { CliError, EXIT_CODES } from "./errors.js"
 import { getGramJs } from "./gramjs.js"
 import { computeTarSize, createTarStream, defaultArchiveName } from "./shared/archive.js"
 import type { ArchiveEntry } from "./shared/archive.js"
-import { DuplicateUfidError, uploadCurrentFormatSource } from "./shared/upload.js"
-import type { UploadProgress, UploadSource } from "./shared/upload.js"
-import { uploadIndexedArchive } from "./shared/archive-transfer.js"
+import { DuplicateUfidError } from "./shared/upload.js"
+import type { UploadProgress } from "./shared/upload.js"
+import { uploadResumableFile } from "./shared/block-transfer.js"
+import type { SeekableSource } from "./shared/block-transfer.js"
+import { hashBytes, jsonBytes } from "./shared/block-format.js"
 
 type LocalArchiveEntry = ArchiveEntry & {
     path: string
@@ -56,7 +58,8 @@ async function resolveLocalArchiveEntry(inputPath: string): Promise<LocalArchive
         path: absolutePath,
         name: basename(absolutePath),
         size: stats.size,
-        lastModified: Math.floor(stats.mtimeMs),
+        lastModified: Math.floor(stats.mtimeMs) || 1000,
+        range(start, end) { return blob.slice(start, end).stream() as ReadableStream<Uint8Array> },
         stream() {
             return blob.stream() as ReadableStream<Uint8Array>
         },
@@ -64,7 +67,7 @@ async function resolveLocalArchiveEntry(inputPath: string): Promise<LocalArchive
 }
 
 async function resolveUploadSource(paths: string[]): Promise<{
-    source: UploadSource
+    source: SeekableSource
     sourcePaths: string[]
     archived: boolean
 }> {
@@ -79,9 +82,9 @@ async function resolveUploadSource(paths: string[]): Promise<{
             source: {
                 name: entry.name,
                 size: entry.size,
-                stream() {
-                    return entry.stream()
-                },
+                archive: /\.tar$/i.test(entry.name),
+                fingerprint: await hashBytes(jsonBytes([[entry.name, entry.size, entry.lastModified]])),
+                slice(start, end) { return entry.range!(start, end) },
             },
             sourcePaths: [entry.path],
             archived: false,
@@ -92,9 +95,9 @@ async function resolveUploadSource(paths: string[]): Promise<{
         source: {
             name: defaultArchiveName(),
             size: computeTarSize(entries),
-            stream() {
-                return createTarStream(entries)
-            },
+            archive: true,
+            fingerprint: await hashBytes(jsonBytes(entries.map(e => [e.name, e.size, e.lastModified]))),
+            slice(start, end) { return createTarStream(entries, start, end) },
         },
         sourcePaths: entries.map((entry) => entry.path),
         archived: true,
@@ -125,6 +128,7 @@ export async function uploadPaths(
         paths: string[]
         chunkSize: number
         password: string
+        resumeId?: string
         onUfidProgress?: (progress: UploadProgress) => void
         onUploadProgress?: (progress: UploadProgress) => void
     },
@@ -133,26 +137,13 @@ export async function uploadPaths(
     const resolved = await resolveUploadSource(options.paths)
 
     try {
-        const record = resolved.archived || /\.tar$/i.test(resolved.source.name)
-            ? await uploadIndexedArchive(client as any, {
-                Api,
-                getFileInfo,
-                chunkSize: options.chunkSize,
-                password: options.password,
-                source: resolved.source,
-                onProgress: (progress) => {
-                    const report = progress.phase === "reading" ? options.onUfidProgress : options.onUploadProgress
-                    report?.({ bytesProcessed: progress.bytesProcessed, totalBytes: progress.totalBytes })
-                },
-            })
-            : await uploadCurrentFormatSource(client, {
-                Api,
-                chunkSize: options.chunkSize,
-                password: options.password,
-                source: resolved.source,
-                onUfidProgress: options.onUfidProgress,
-                onUploadProgress: options.onUploadProgress,
-            })
+        const record = await uploadResumableFile(client as any, {
+            Api, getFileInfo, password: options.password, source: resolved.source, resumeId: options.resumeId,
+            onProgress(progress) {
+                const report = progress.phase === "reading" ? options.onUfidProgress : options.onUploadProgress
+                report?.({ bytesProcessed: progress.bytesProcessed, totalBytes: progress.totalBytes })
+            },
+        })
 
         return {
             name: record.data.name,

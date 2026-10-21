@@ -5,13 +5,14 @@ import {
     parseFileCardMessage,
 } from "./shared/file-cards.js"
 import { lookupFileCardByUfid } from "./shared/telegram-files.js"
+import { normalizeFileCardV5Data } from "./shared/protocol/file-card-v5.js"
 import { normalizeFileCardV4Data } from "./shared/protocol/file-card-v4.js"
 import type { FileCardData, FileCardRecord } from "./types.js"
 
 export { parseFileCardMessage } from "./shared/file-cards.js"
 
 export function validateDownloadableFileCard(data: FileCardData) {
-    if (data.version !== undefined && ![1, 2, 3, 4].includes(data.version)) {
+    if (data.version !== undefined && ![1, 2, 3, 4, 5].includes(data.version)) {
         throw new CliError("invalid_file_card", "The requested file-card protocol version is unsupported.", EXIT_CODES.INVALID_FILE_CARD)
     }
     if (!data.uploadComplete) {
@@ -22,7 +23,7 @@ export function validateDownloadableFileCard(data: FileCardData) {
         )
     }
 
-    if (data.ufid.trim() === "" || data.name.trim() === "" || (data.version !== 4 && data.IV.trim() === "")) {
+    if (data.ufid.trim() === "" || data.name.trim() === "" || (data.version !== 4 && data.version !== 5 && data.IV.trim() === "")) {
         throw new CliError(
             "invalid_file_card",
             "The requested file card is missing required metadata.",
@@ -30,7 +31,7 @@ export function validateDownloadableFileCard(data: FileCardData) {
         )
     }
 
-    if (data.size < 0 || !Number.isFinite(data.size) || data.chunks.length === 0 || (data.version === 4 && !normalizeFileCardV4Data(data))) {
+    if (data.size < 0 || !Number.isFinite(data.size) || data.chunks.length === 0 || (data.version === 5 && !normalizeFileCardV5Data(data)) || (data.version === 4 && !normalizeFileCardV4Data(data))) {
         throw new CliError(
             "invalid_file_card",
             "The requested file card is malformed or unsupported.",

@@ -1,3 +1,5 @@
+import { createFileCardV5Data, normalizeFileCardV5Data } from "./protocol/file-card-v5.js"
+import type { FileCardV5Data, FileCardV5Input } from "./protocol/file-card-v5.js"
 import { FILE_CARD_TYPE, normalizeFileCardV1Data } from "./protocol/file-card-v1.js"
 import type { NormalizedFileCardV1Data } from "./protocol/file-card-v1.js"
 import {
@@ -17,8 +19,9 @@ import {
 } from "./protocol/file-card-v4.js"
 import type { FileCardV4Data, FileCardV4Input } from "./protocol/file-card-v4.js"
 
-export type FileCardData = NormalizedFileCardV1Data | FileCardV2Data | FileCardV3Data | FileCardV4Data
-export type FileCardInput = FileCardData | FileCardV3Input | FileCardV2Input | FileCardV4Input
+export type FileCardData = NormalizedFileCardV1Data | FileCardV2Data | FileCardV3Data | FileCardV4Data | FileCardV5Data
+export type FileCardInput = FileCardData | FileCardV3Input | FileCardV2Input | FileCardV4Input | FileCardV5Input
+export type { FileCardV5Data, FileCardV5Input } from "./protocol/file-card-v5.js"
 export type { FileCardV4Data, FileCardV4Input, ArchiveUpgradeSource } from "./protocol/file-card-v4.js"
 export { createFileCardV4Data } from "./protocol/file-card-v4.js"
 
@@ -36,6 +39,7 @@ export type FileCardMessageLike = {
 
 export const FILE_CARD_PREFIX = FILE_CARD_TYPE
 export const FILE_CARD_CURRENT_VERSION = FILE_CARD_V3_VERSION
+export const FILE_CARD_RESUMABLE_VERSION = 5 as const
 export const FILE_CARD_ARCHIVE_VERSION = FILE_CARD_V4_VERSION
 
 export const FILE_CARD_SEARCH_SORT_VALUES = [
@@ -50,10 +54,11 @@ export const FILE_CARD_SEARCH_SORT_VALUES = [
 export type FileCardSearchSort = (typeof FILE_CARD_SEARCH_SORT_VALUES)[number]
 
 export function isFileCardData(value: unknown): value is FileCardData {
-    return normalizeFileCardV1Data(value) !== null || normalizeFileCardV2Data(value) !== null || normalizeFileCardV3Data(value) !== null || normalizeFileCardV4Data(value) !== null
+    return normalizeFileCardV5Data(value) !== null || normalizeFileCardV1Data(value) !== null || normalizeFileCardV2Data(value) !== null || normalizeFileCardV3Data(value) !== null || normalizeFileCardV4Data(value) !== null
 }
 
 export function createFileCardData(data: FileCardInput): FileCardData {
+    if ("version" in data && data.version === 5) return createFileCardV5Data(data)
     if ("version" in data && data.version === FILE_CARD_V4_VERSION) return createFileCardV4Data(data)
     if ("version" in data && data.version !== undefined && ![1, 2, 3].includes(data.version)) {
         throw new Error("Unsupported file-card protocol version.")
@@ -68,7 +73,7 @@ export function parseFileCardMessage(message: string): FileCardData | null {
 
     try {
         const payload = JSON.parse(message.substring(message.indexOf("{")))
-        return normalizeFileCardV4Data(payload) ?? normalizeFileCardV3Data(payload) ?? normalizeFileCardV2Data(payload) ?? normalizeFileCardV1Data(payload)
+        return normalizeFileCardV5Data(payload) ?? normalizeFileCardV4Data(payload) ?? normalizeFileCardV3Data(payload) ?? normalizeFileCardV2Data(payload) ?? normalizeFileCardV1Data(payload)
     } catch {
         return null
     }
@@ -81,8 +86,8 @@ export function serializeFileCardMessage(data: FileCardInput) {
         const { type: _type, version: _version, ...stored } = data as NormalizedFileCardV1Data
         if (_type !== FILE_CARD_TYPE || !normalizeFileCardV1Data(stored)) throw new Error("Malformed file-card protocol version 1.")
         payload = stored
-    } else if (version === 2 || version === 3 || version === 4) {
-        const normalized = version === 4 ? normalizeFileCardV4Data(data) :
+    } else if (version === 2 || version === 3 || version === 4 || version === 5) {
+        const normalized = version === 5 ? normalizeFileCardV5Data(data) : version === 4 ? normalizeFileCardV4Data(data) :
             version === 3 ? normalizeFileCardV3Data(data) : normalizeFileCardV2Data(data)
         if (!normalized) throw new Error(`Malformed file-card protocol version ${version}.`)
         payload = normalized

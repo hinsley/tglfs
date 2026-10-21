@@ -11,7 +11,8 @@ import type { TelegramClient } from "telegram/client/TelegramClient.js"
 import type { DownloadMode, DownloadProgress } from "./download.js"
 import { CliError, EXIT_CODES } from "./errors.js"
 import { buildPreviewableFfmpegPlan, type FfmpegPlan, type PreviewConversionMode } from "./ffmpeg-plan.js"
-import { uploadGeneratedCurrentFormatStream } from "./generated-upload.js"
+import { uploadSeekableMedia } from "./shared/media-upload.js"
+import { getGramJs } from "./gramjs.js"
 import {
     createMp4DurationPatchTransform,
     inspectMp4File,
@@ -30,7 +31,6 @@ export type MakePreviewableProgress = {
 }
 export type MakePreviewableOptions = {
     sourcePassword: string
-    uploadPassword: string
     chunkSize: number
     outputName?: string
     ffmpegPath?: string
@@ -215,7 +215,7 @@ export async function makeMp4Previewable(
     source: FileCardRecord,
     options: MakePreviewableOptions,
 ): Promise<MakePreviewableResult> {
-    if (source.data.version === 4) {
+    if (source.data.version === 4 || (source.data.version === 5 && source.data.content.archive)) {
         throw new CliError(
             "invalid_media",
             "Indexed archive records cannot be converted as MP4 files. Open the archive preview to view individual members.",
@@ -264,13 +264,16 @@ export async function makeMp4Previewable(
     const plan = buildPreviewableFfmpegPlan(input, metadata)
     const conversion = runFfmpeg(ffmpeg, plan, metadata.durationSeconds, inputStream)
     try {
-        const upload = uploadGeneratedCurrentFormatStream(client, {
+        const { Api, getFileInfo } = getGramJs()
+        const upload = uploadSeekableMedia(client as any, {
+            Api, getFileInfo, container: "mp4", duration: metadata.durationSeconds,
+            source: { type: "tglfs:media-source", version: 1, messageId: source.msgId, fileVersion: source.data.version, ufid: source.data.ufid },
             name: outputName,
             stream: conversion.stream,
             chunkSize: options.chunkSize,
-            password: options.uploadPassword,
+            password: options.sourcePassword,
             parentFolderId: parentFolderId(source.data),
-            onProgress: (bytesProcessed) => options.onProgress?.({ phase: "convert-upload", bytesProcessed }),
+            onBytes: (bytesProcessed) => options.onProgress?.({ phase: "convert-upload", bytesProcessed }),
         })
         const [record] = await Promise.all([upload, conversion.completion])
         return {

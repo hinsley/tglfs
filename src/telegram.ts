@@ -1,3 +1,5 @@
+import { uploadResumableFile } from "../packages/tglfs-cli/src/shared/block-transfer"
+import { hashBytes, jsonBytes } from "../packages/tglfs-cli/src/shared/block-format"
 /**
  * Telegram client methods.
  * @module Telegram
@@ -581,6 +583,18 @@ function enqueueFileCardDownload(
     password: string,
     options: { legacy?: boolean } = {},
 ) {
+    if (fileCardData.version === 5) {
+        if (options.legacy) { showToast("This file does not use legacy decryption."); return }
+        void import("./web/resumableDownload").then(async ({ prepareResumableDownload }) => {
+            const destination = await prepareResumableDownload(fileCardData)
+            if (!destination) showToast("This browser cannot save resumable downloads. Use Chrome, Edge, or the TGLFS command line to resume after interruption.", { durationMs: 8000 })
+            await Transfers.enqueue({ direction: "download", name: fileCardData.name, size: fileCardData.size, meta: { ufid: fileCardData.ufid } }, async transfer => {
+                if (destination) await destination(client, password, transfer.signal, bytes => transfer.update({ bytes }))
+                else await (await import("./web/archivePreview")).downloadArchiveFile(client, fileCardData, password, { signal: transfer.signal, onProgress: bytes => transfer.update({ bytes }) })
+            })
+        }).catch(error => { if (error?.name !== "AbortError") showToast(error instanceof Error ? error.message : String(error), { durationMs: 8000 }) })
+        return
+    }
     void Transfers.enqueue(
         {
             direction: "download",
@@ -1085,6 +1099,30 @@ export async function runFileUploadJob(
         prepareStart = 0.3
     }
     transfer.throwIfCancelled()
+
+    if (!job.resume) {
+        const entries = files.map(entry => ({ name: entry.name, size: entry.size, lastModified: entry.lastModified || 1000,
+            stream: () => entry.stream(), range: (start: number, end: number) => entry.slice(start, end).stream() }))
+        const size = single ? file.size : Archive.computeTarSize(entries)
+        const name = single ? file.name : job.archiveName || Archive.defaultArchiveName()
+        let phase = ""
+        const record = await uploadResumableFile(client as any, {
+            Api, getFileInfo, password: job.password, parentFolderId, signal: transfer.signal,
+            source: { name, size, archive: !single || /\.tar$/i.test(name),
+                fingerprint: await hashBytes(jsonBytes(entries.map(e => [e.name, e.size, e.lastModified]))),
+                slice: (start, end) => single ? file.slice(start, end).stream() : Archive.createTarStream(entries, start, end) },
+            onProgress(progress) {
+                if (progress.phase !== phase) {
+                    phase = progress.phase
+                    transfer.setPhase(phase === "reading" ? "Preparing" : "Uploading", { span: sub(phase === "reading" ? prepareStart : 0.15, phase === "reading" ? 0.15 : 1), total: size })
+                }
+                transfer.update({ name, size, bytes: progress.bytesProcessed })
+            },
+        })
+        transfer.update({ name: record.data.name, bytes: size, ufid: record.data.ufid })
+        restoreUploadUiAndMaybeRefreshBrowser(() => {}, true, parentFolderId)
+        return { msgId: record.msgId, data: record.data, parentFolderId }
+    }
 
     let displayName: string
     let totalBytes: number
@@ -2593,7 +2631,7 @@ export async function updateFileCardParent(
     parentFolderId: string,
 ): Promise<FileCardData> {
     await gramJsReady
-    const nextData = data.version === 4
+    const nextData = data.version === 4 || data.version === 5
         ? createFileCardData({ ...data, parentFolderId })
         : createFileCardData({ ...data, version: 3, parentFolderId })
     await client.invoke(
