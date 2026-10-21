@@ -19,7 +19,6 @@ tglfs help download
 tglfs help convert-webm
 tglfs help inspect
 tglfs help sync
-tglfs help helper
 tglfs upload ./file.bin
 tglfs upload ./a.txt ./b.txt
 tglfs login
@@ -59,7 +58,6 @@ man tglfs-receive
 man tglfs-unsend
 man tglfs-inspect
 man tglfs-sync
-man tglfs-helper
 ```
 
 ## Auth Flow
@@ -296,28 +294,3 @@ printf '%s\n' "$TGLFS_DOWNLOAD_PASSWORD" | tglfs download <ufid> --password-stdi
 ```
 
 Use `tglfs upgrade-media-preview <ufid>` to create a separate seekable copy of fragmented MP4 or WebM without changing the encoded video bytes. It streams the original into v5 authenticated blocks with an encrypted time index, keeps the original and its password, and refuses layouts that cannot be indexed safely. Use `make-previewable` or `convert-webm` for those layouts. The browser provides **Upgrade media preview** in its file actions.
-
-## Background helper
-
-Run `tglfs login`, then `tglfs helper start --upload-root "/path/to/files"`.
-In the web app, open **Tools → Background transfers** and paste the pairing code.
-The helper reads selected files from granted folders and saves downloads under
-`~/Downloads/TGLFS` (or `--download-dir`). Accepted transfers continue after the tab
-or browser closes. The computer and helper must stay running.
-
-Repeat `--upload-root` for additional read grants; no upload folders are granted
-by default. Use `--origin` for a different trusted app deployment (default
-`https://tglfs.vercel.app`), or an explicit loopback origin for development.
-`--foreground` keeps the helper in the current terminal instead of detaching it.
-Stop the helper before changing permissions. Restarting reuses omitted settings
-and rotates the pairing code.
-
-`tglfs helper pair` displays the running helper's pairing code. `helper status --json` lists recent jobs; `helper stop` stops it safely. File passwords stay in
-memory and must be entered again to resume after a restart. Existing files and
-passwords are preserved. New uploads use file-card v5; downloads read v1–v5. Local
-helper records and control messages use v1 and refuse unsupported versions.
-The helper does not install an OS startup service. Browser conversion and
-archive/media upgrades retain their existing workflows.
-
-See [the background helper guide](https://github.com/hinsley/tglfs/blob/main/doc/background_helper.md)
-for pairing, recovery, browser permissions and security details.

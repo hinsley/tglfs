@@ -1,9 +1,0 @@
-{
-    "type": "tglfs:helper-config",
-    "version": 1,
-    "port": 27386,
-    "token": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-    "origins": ["https://tglfs.vercel.app"],
-    "uploadRoots": ["/granted"],
-    "downloadDir": "/downloads"
-}

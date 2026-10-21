@@ -1,9 +1,3 @@
-import {
-    hasBackgroundHelper,
-    openBackgroundHelper,
-    queueBackgroundDownload,
-    queueBackgroundUpload,
-} from "./backgroundHelper"
 import { isBrowsableArchive } from "../../packages/tglfs-cli/src/shared/block-format"
 import * as Config from "../config"
 import {
@@ -3115,14 +3109,6 @@ async function downloadEntry(entry: FileBrowserEntry) {
         icon: "download",
     })
     if (password === null) return
-    if (hasBackgroundHelper(client)) {
-        try {
-            await queueBackgroundDownload(client, entry, password)
-        } catch (error) {
-            showToast(error instanceof Error ? error.message : "Background download failed.", "error")
-        }
-        return
-    }
     await downloadFileCard(client, config, entry.data, password)
 }
 
@@ -3231,11 +3217,6 @@ function uploadFiles(files?: File[]) {
     // Starred/tag views have no folder of their own: uploads go to All files, which we switch to.
     if (state.virtual) void navigateTo(null)
     setNextUploadParentFromBrowserState()
-    if (hasBackgroundHelper(client)) {
-        void queueBackgroundUpload(client, state.currentFolder?.data.folderId ?? TGLFS_ROOT_PARENT_ID, !!files?.length)
-            .catch(error => showToast(error instanceof Error ? error.message : "Background upload failed.", "error"))
-        return
-    }
     if (files && files.length > 0) {
         void import("../telegram").then((Telegram) => Telegram.fileUpload(client, config, files))
         return
@@ -5028,11 +5009,6 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         item.addEventListener("click", () => {
             if (item.id !== "navAllFiles") closeSidebar()
         })
-    })
-
-    document.getElementById("backgroundTransfersButton")?.addEventListener("click", () => {
-        void openBackgroundHelper(activeBrowserClient ?? client)
-            .catch(error => showToast(error instanceof Error ? error.message : "The helper could not connect.", "error"))
     })
 
     /* Create */

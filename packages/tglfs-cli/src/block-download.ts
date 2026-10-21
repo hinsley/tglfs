@@ -15,7 +15,6 @@ export async function downloadResumableFile(
     outputPath: string,
     overwrite: boolean,
     onProgress?: (p: DownloadProgress) => void,
-    signal?: AbortSignal,
 ): Promise<DownloadResult> {
     const target = resolve(outputPath)
     await mkdir(dirname(target), { recursive: true })
@@ -51,7 +50,7 @@ export async function downloadResumableFile(
     let file: Awaited<ReturnType<typeof open>> | undefined
     try {
         const { Api, getFileInfo } = getGramJs()
-        const reader = await openBlockFile(client as any, { Api, getFileInfo, data, password, signal })
+        const reader = await openBlockFile(client as any, { Api, getFileInfo, data, password })
         let saved: unknown | null = null
         try {
             saved = JSON.parse(await readFile(journal, "utf8"))
@@ -108,7 +107,7 @@ export async function downloadResumableFile(
                     await rename(temporary, journal)
                 },
             },
-            { signal, onProgress: (bytesWritten) => onProgress?.({ bytesWritten, totalBytes: data.size }) },
+            { onProgress: (bytesWritten) => onProgress?.({ bytesWritten, totalBytes: data.size }) },
         )
         await file.close()
         file = undefined
