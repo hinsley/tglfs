@@ -1,4 +1,5 @@
 import "./mp4Previewable"
+import "./webmPreviewable"
 import { PreviewModal as CorePreviewModal } from "./previewCore"
 import type { PreviewEntry } from "./previewCore"
 import {
@@ -10,6 +11,7 @@ import {
     MP4_QUOTA_BUFFER_BEHIND_SECONDS,
 } from "./mp4BufferPolicy"
 import { inspectMp4InitializationSegment } from "./mp4Fragment"
+import { inspectWebmHeader } from "./webmHeader"
 
 const LEGACY_FIXED_MP4_MIME = 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"'
 const MP4_INITIALIZATION_BUFFER_LIMIT = 8 * 1024 * 1024
@@ -24,6 +26,7 @@ type Mp4BufferState = {
     initializationComplete: boolean
     durationSeconds: number | null
     durationApplied: boolean
+    webm: boolean
 }
 
 const mp4BufferStates = new WeakMap<SourceBuffer, Mp4BufferState>()
@@ -224,11 +227,13 @@ export class PreviewModal extends CorePreviewModal {
         const originalCreateMediaSource = (this as any).createMediaSource?.bind(this)
         ;(this as any).createMediaSource = (mimeType: string, signal: AbortSignal) => {
             const result = originalCreateMediaSource(mimeType, signal)
-            if (!mimeType.toLowerCase().startsWith("video/mp4")) return result
+            const isMp4 = mimeType.toLowerCase().startsWith("video/mp4")
+            const isWebm = mimeType.toLowerCase().startsWith("video/webm")
+            if (!isMp4 && !isWebm) return result
             return {
                 ...result,
                 sourceBufferPromise: result.sourceBufferPromise.then((sourceBuffer: SourceBuffer) => {
-                    // Fragmented MP4 carries real decode timestamps; segments mode preserves them and seeking geometry.
+                    // MP4 and WebM carry decode timestamps; segments mode preserves their timing.
                     sourceBuffer.mode = "segments"
                     mp4SourceBuffers.add(sourceBuffer)
                     mp4BufferStates.set(sourceBuffer, {
@@ -240,6 +245,7 @@ export class PreviewModal extends CorePreviewModal {
                         initializationComplete: false,
                         durationSeconds: null,
                         durationApplied: false,
+                        webm: isWebm,
                     })
                     return sourceBuffer
                 }),
@@ -255,7 +261,21 @@ export class PreviewModal extends CorePreviewModal {
             const state = mp4BufferStates.get(sourceBuffer)
             if (!media || !state) return await originalAppendBuffer(sourceBuffer, chunk, signal)
 
-            const appendChunk = collectMp4Initialization(state, chunk)
+            let appendChunk: Uint8Array | null
+            if (state.webm && !state.initializationComplete) {
+                state.initializationChunks.push(chunk.slice())
+                state.initializationBytes += chunk.byteLength
+                if (state.initializationBytes > 1024 * 1024) throw new Error("The WebM preview initialization header exceeds 1 MiB.")
+                appendChunk = concatenateChunks(state.initializationChunks, state.initializationBytes)
+                const header = inspectWebmHeader(appendChunk)
+                if (!header) return
+                if (!MediaSource.isTypeSupported(header.mimeType) || typeof sourceBuffer.changeType !== "function") throw new Error("This browser cannot preview the WebM's actual codecs.")
+                sourceBuffer.changeType(header.mimeType)
+                sourceBuffer.mode = "segments"
+                state.initializationComplete = true
+                state.initializationChunks = []
+                state.initializationBytes = 0
+            } else appendChunk = collectMp4Initialization(state, chunk)
             if (!appendChunk) return
             applyMp4Duration(sourceBuffer, state)
 

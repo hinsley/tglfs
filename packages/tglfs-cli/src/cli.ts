@@ -54,6 +54,7 @@ import {
 } from "./sync.js"
 import { CLI_RUNTIME_OVERRIDE_SYMBOL } from "./test-hooks.js"
 import { uploadPaths } from "./upload.js"
+import { createConvertWebmCommand } from "./convert-webm-cli.js"
 
 type JsonFlag = {
     json?: boolean
@@ -276,6 +277,7 @@ function createProgram(runtime = getCliRuntime()) {
             `\nStorage paths:\n  config: ${storePaths.configFile}\n  session: ${storePaths.sessionFile}\n`,
         )
 
+    program.addCommand(createConvertWebmCommand())
     const withGlobalInteractive = <T extends InteractiveFlag>(options: T): T => ({
         ...options,
         interactive: options.interactive ?? (program.opts() as InteractiveFlag).interactive,

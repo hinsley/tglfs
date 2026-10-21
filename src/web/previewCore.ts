@@ -711,11 +711,27 @@ export class PreviewModal {
             } catch {}
         }
         if (!ready) {
-            await new Promise((resolve) => setTimeout(resolve, 0))
-            if (!ready) {
-                this.showError("This file cannot be streamed in the preview.")
-                return
-            }
+            await new Promise<void>((resolve, reject) => {
+                let timer: ReturnType<typeof setTimeout>
+                const cleanup = () => {
+                    clearTimeout(timer)
+                    mediaEl?.removeEventListener("loadedmetadata", loaded)
+                    mediaEl?.removeEventListener("canplay", loaded)
+                    mediaEl?.removeEventListener("error", failed)
+                    signal.removeEventListener("abort", cancelled)
+                }
+                const loaded = () => { cleanup(); resolve() }
+                const failed = () => { cleanup(); reject(new Error("This file cannot be streamed in the preview.")) }
+                const cancelled = () => { cleanup(); reject(new Error("Preview cancelled.")) }
+                if (signal.aborted) return cancelled()
+                if (mediaEl?.error) return failed()
+                if (ready || (mediaEl && mediaEl.readyState >= 1)) return loaded()
+                mediaEl?.addEventListener("loadedmetadata", loaded, { once: true })
+                mediaEl?.addEventListener("canplay", loaded, { once: true })
+                mediaEl?.addEventListener("error", failed, { once: true })
+                signal.addEventListener("abort", cancelled, { once: true })
+                timer = setTimeout(failed, 10000)
+            })
         }
         onProgress(100)
     }

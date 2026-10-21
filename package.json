@@ -26,6 +26,7 @@
         "@ffmpeg/core": "^0.12.10",
         "@ffmpeg/ffmpeg": "^0.12.15",
         "buffer": "^6.0.3",
+        "mediabunny": "1.50.9",
         "qrcode-generator": "^2.0.4",
         "telegram": "^2.21.2"
     },

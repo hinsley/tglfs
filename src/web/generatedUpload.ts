@@ -22,8 +22,8 @@ export type GeneratedUploadOptions = {
     parentFolderId?: string
     onProgress?: (progress: GeneratedUploadProgress) => void
     /**
-     * Cancels the upload between reads. Cancelling behaves exactly like a failure: the temporary chunk messages
-     * are removed and no file card is published.
+     * Cancels the upload between reads. Unpublished chunks are removed; chunks are
+     * retained if Telegram may already have accepted the final card.
      */
     signal?: AbortSignal
 }
@@ -68,6 +68,7 @@ export async function uploadGeneratedFileStream(
     const uploadedChunkMessageIds: number[] = []
     const ufidAccumulator = new UfidAccumulator()
     let plaintextBytes = 0
+    let publicationStarted = false
 
     const accountedStream = options.stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
         async transform(chunk, controller) {
@@ -212,6 +213,8 @@ export async function uploadGeneratedFileStream(
             IV: iv,
             parentFolderId: options.parentFolderId?.trim() || TGLFS_ROOT_PARENT_ID,
         })
+        options.signal?.throwIfAborted()
+        publicationStarted = true
         const fileCardMessage = await client.sendMessage("me", {
             message: serializeFileCardMessage(fileCardData),
         })
@@ -224,7 +227,8 @@ export async function uploadGeneratedFileStream(
         }
     } catch (error) {
         try { await reader.cancel(error) } catch {}
-        await deleteUploadedChunks()
+        // Telegram may have accepted the card even when its response was lost.
+        if (!publicationStarted) await deleteUploadedChunks()
         throw error
     } finally {
         try { reader.releaseLock() } catch {}

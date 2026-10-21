@@ -16,6 +16,7 @@ export type GeneratedUploadOptions = {
     password: string
     parentFolderId?: string
     onProgress?: (bytesProcessed: number) => void
+    signal?: AbortSignal
 }
 
 const DELETE_BATCH = 50
@@ -51,6 +52,7 @@ export async function uploadGeneratedCurrentFormatStream(
     const chunkMessageIds: number[] = []
     const ufid = new UfidAccumulator()
     let plaintextBytes = 0
+    let publicationStarted = false
 
     const reader = options.stream
         .pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
@@ -138,6 +140,7 @@ export async function uploadGeneratedCurrentFormatStream(
 
     try {
         while (true) {
+            options.signal?.throwIfAborted()
             const { value, done } = await reader.read()
             if (done) break
             if (!value?.byteLength) continue
@@ -153,7 +156,7 @@ export async function uploadGeneratedCurrentFormatStream(
         if (encryptionLength) await encryptBuffered(encryptionLength)
         if (partLength) await uploadPart(partIndex + 1)
         await finalizeChunk()
-        if (!chunkMessageIds.length) throw new Error("The generated MP4 produced no Telegram chunks.")
+        if (!chunkMessageIds.length) throw new Error("The generated upload produced no Telegram chunks.")
 
         const computedUfid = await ufid.digest()
         const duplicate = await lookupFileCardByUfid(client as any, computedUfid, { peer: "me" })
@@ -170,11 +173,14 @@ export async function uploadGeneratedCurrentFormatStream(
             IV: iv,
             parentFolderId: options.parentFolderId?.trim() || TGLFS_ROOT_PARENT_ID,
         })
+        options.signal?.throwIfAborted()
+        publicationStarted = true
         const card = await client.sendMessage("me", { message: serializeFileCardMessage(data) })
         return { msgId: card.id, date: card.date, data }
     } catch (error) {
         try { await reader.cancel(error) } catch {}
-        await cleanupChunks()
+        // Telegram may have accepted the card even when its response was lost.
+        if (!publicationStarted) await cleanupChunks()
         throw error
     } finally {
         try { reader.releaseLock() } catch {}

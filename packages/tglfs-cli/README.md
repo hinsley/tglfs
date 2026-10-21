@@ -16,6 +16,7 @@ tglfs help upload
 tglfs help login
 tglfs help search
 tglfs help download
+tglfs help convert-webm
 tglfs help inspect
 tglfs help sync
 tglfs upload ./file.bin
@@ -38,6 +39,7 @@ tglfs sync list
 tglfs logout
 tglfs download <ufid>
 tglfs download <ufid> --legacy
+tglfs convert-webm <ufid> --source-password-env --json
 ```
 
 On Unix-like systems, installed manpages are also available:
@@ -48,6 +50,7 @@ man tglfs-login
 man tglfs-upload
 man tglfs-search
 man tglfs-download
+man tglfs-convert-webm
 man tglfs-rename
 man tglfs-delete
 man tglfs-send
@@ -213,6 +216,26 @@ tglfs inspect <ufid> --probe
 tglfs inspect <ufid> --password 'secret'
 ```
 
+## WebM preview copies
+
+Select a video in the app and choose **Create WebM preview copy** from its actions, or run:
+
+```sh
+tglfs convert-webm <ufid> --source-password-env --json
+```
+
+Set `TGLFS_WEBM_PASSWORD` to the source password. The new copy uses the same password, including an empty password, with fresh encryption randomness. The original remains untouched. Output is an ordinary file-card v3; current-cipher v1–v3 sources remain readable, while archive v4 and future versions are refused. This feature does not migrate any records.
+
+The CLI requires FFmpeg 8+ with libvpx-vp9, libopus, SSIM, loopback decoding and bounded filter buffers, plus matching ffprobe. It checks installed capabilities before reading source bytes, inspects a metadata prefix of at most 64 MiB, then streams from the start for encoding and complete UFID verification. The browser uses WebCodecs and a bundled, pinned Mediabunny release, with one conversion pass and the same 64 MiB cap on metadata inspection. Both paths encrypt/upload generated output as it arrives and gate final publication on successful source verification, conversion and quality checks. Neither path writes video or sample clips to temporary files or OPFS, or retains a whole video in memory.
+
+Beginning, middle and end clips of up to one second are compared against decoded frames of the actual output at full resolution. Every clip must reach luma SSIM 0.98. The browser compares up to about eight frames per second within those clips; the CLI compares all their frames. The report is sampled evidence, not a guarantee for every frame or audio quality, and the scores are not an interchangeable perceptual-quality percentage. Failed checks publish no new file card. An uncertain final Telegram response retains new chunks so a possibly published copy remains readable.
+
+Supported containers are MP4, MOV, M4V, MKV and WebM, subject to decoder/encoder availability. MP4/MOV metadata must precede media data. Layouts requiring backward seeks or excessive buffers fail without a disk fallback. To avoid silently losing presentation or tracks, conversion refuses HDR, high bit depth, alpha, interlacing, rotation, non-square pixels, extra tracks, unsupported timing and unsupported audio. Browser decoding is conservatively limited to supported 8-bit AVC/VP8/VP9, including AVC sequence-header checks and rejection of custom AVC scaling matrices. The browser checks the actual decoded pixel format; CLI inspection checks interlacing metadata. Resolution and variable frame timing are kept, up to 4096 pixels per side and 4096 × 2304 pixels per frame. Audio becomes mono/stereo Opus at 48 kHz (44.1 kHz sources are resampled). Append-only WebM can have limited duration/seeking information.
+
+Browser conversion uses two 32 MiB stream caches and a 64 MiB limit for pending quality-reference pixels, plus bounded metadata buffers and codec/frame memory. The CLI uses two encoding threads, no lookahead, a 16-frame filter-buffer limit and bounded metadata/log capture. High-resolution or poorly interleaved files can be refused when these limits are reached. No conversion service receives plaintext: processing stays on the device running TGLFS.
+
+For browser smoke testing, `http://localhost:5173/?mock=folder-browser&run=webm` seeds small synthetic fixtures in a fake Telegram session. Its protected sample password is `webm-test`. No real Telegram data is accessed.
+
 ## Environment Variables
 
 Login:
@@ -233,6 +256,12 @@ Download:
 
 - `TGLFS_DOWNLOAD_PASSWORD`
 
+WebM conversion:
+
+- `TGLFS_WEBM_PASSWORD`
+- `TGLFS_FFMPEG`
+- `TGLFS_FFPROBE`
+
 Inspect:
 
 - `TGLFS_INSPECT_PASSWORD`
@@ -246,7 +275,7 @@ Sync:
 The CLI is designed to work with interactive agents and terminal tools:
 
 - Prefer direct subcommands instead of menus when automating.
-- Use `--json` for machine-readable `status`, `search`, `upload`, `rename`, `delete`, `send`, `receive`, `unsend`, `inspect`, and `download` output. In JSON mode, the CLI prints one success object to stdout, prints failures to stderr, and disables prompts.
+- Use `--json` for machine-readable `status`, `search`, `upload`, `rename`, `delete`, `send`, `receive`, `unsend`, `inspect`, `download`, and `convert-webm` output. In JSON mode, the CLI prints one success object to stdout, prints failures to stderr, and disables prompts.
 - Use `--json` for sync commands when automating folder backup/restore.
 - Use `--no-interactive` on TTY runs when you want prompt-free behavior without JSON output.
 - Use stdin or env vars for secrets in non-interactive runs.

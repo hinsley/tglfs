@@ -35,6 +35,7 @@
         "./man/tglfs-search.1",
         "./man/tglfs-download.1",
         "./man/tglfs-make-previewable.1",
+        "./man/tglfs-convert-webm.1",
         "./man/tglfs-rename.1",
         "./man/tglfs-delete.1",
         "./man/tglfs-send.1",

@@ -1,6 +1,6 @@
 .TH TGLFS 1 "July 2026" "tglfs 0.1.2" "User Commands"
 .SH NAME
-tglfs \- authenticate with Telegram, manage TGLFS files, transfer files, and create previewable MP4 copies
+tglfs \- authenticate with Telegram, manage TGLFS files, transfer files, and create preview copies
 .SH SYNOPSIS
 .B tglfs
 [\fIOPTIONS\fR] [\fICOMMAND\fR]
@@ -10,7 +10,7 @@ tglfs \- authenticate with Telegram, manage TGLFS files, transfer files, and cre
 Disable interactive prompts and fail instead of prompting.
 .SH DESCRIPTION
 .B tglfs
-is a global command-line client for authenticating with Telegram, uploading files, managing TGLFS file cards, transferring files between peers, searching mailboxes, converting stored MP4 files for streaming Preview, and downloading current-format or legacy TGLFS files by UFID.
+is a global command-line client for authenticating with Telegram, uploading files, managing TGLFS file cards, transferring files between peers, searching mailboxes, creating streamable MP4 and WebM copies, and downloading current-format or legacy TGLFS files by UFID.
 .PP
 Run
 .B tglfs help <command>
@@ -37,6 +37,9 @@ Download a current-format or legacy TGLFS file by UFID.
 .TP
 .B make-previewable <ufid>
 Create a new fragmented MP4 copy suitable for streaming Preview. Front-loaded MP4s are converted and uploaded as one bounded stream; trailing-metadata MP4s use a temporary source file. The original remains unchanged.
+.TP
+.B convert-webm <ufid>
+Create a separate VP9/Opus WebM copy with the original password, bounded streaming and sampled SSIM comparisons. No temporary video files are created; unsuitable inputs are refused. Requires FFmpeg 8+ and ffprobe.
 .TP
 .B rename <ufid> <new-name>
 Rename an owned TGLFS file card.
@@ -75,6 +78,7 @@ metadata follows media data and are removed after conversion.
 .BR tglfs-search (1),
 .BR tglfs-download (1),
 .BR tglfs-make-previewable (1),
+.BR tglfs-convert-webm (1),
 .BR tglfs-rename (1),
 .BR tglfs-delete (1),
 .BR tglfs-send (1),

@@ -2,6 +2,7 @@ import * as Encryption from "./encryption"
 import { getGramJs } from "../gramjs"
 import type { FileCardData } from "../../packages/tglfs-cli/src/shared/file-cards"
 import { openRemoteArchive } from "../../packages/tglfs-cli/src/shared/archive-transfer"
+import { UfidAccumulator } from "../../packages/tglfs-cli/src/ufid"
 
 const DOWNLOAD_PART_SIZE = 1024 * 1024
 let Api!: typeof import("telegram")["Api"]
@@ -163,16 +164,20 @@ export async function createFileCardPlaintextStream(
     const decompression = new DecompressionStream("gzip")
     const writer = decompression.writable.getWriter()
     let plaintextBytes = 0
+    const ufid = new UfidAccumulator()
     const validatedPlaintext = decompression.readable.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
-        transform(chunk, controller) {
+        async transform(chunk, controller) {
             plaintextBytes += chunk.byteLength
+            if (plaintextBytes > data.size) throw new Error("The source exceeds its declared size.")
+            await ufid.update(chunk)
             onProgress?.(data.size ? Math.min(100, Math.round(plaintextBytes / data.size * 100)) : 100)
             controller.enqueue(chunk)
         },
-        flush() {
+        async flush() {
             if (plaintextBytes !== data.size) {
                 throw new Error(`The downloaded source size was ${plaintextBytes} bytes; the file card expected ${data.size} bytes.`)
             }
+            if (await ufid.digest() !== data.ufid) throw new Error("The source does not match its expected UFID.")
             onProgress?.(100)
         },
     }))
