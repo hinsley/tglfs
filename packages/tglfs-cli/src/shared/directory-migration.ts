@@ -66,7 +66,7 @@ export function planDirectoryParentMigration(
     for (const record of fileRecords) {
         if (fileParentConflicts.has(record.data.ufid)) continue
         const desiredParent = fileParents.get(record.data.ufid) || fileParentFolderId(record) || TGLFS_ROOT_PARENT_ID
-        if (fileParentFolderId(record) !== desiredParent || record.data.version !== FILE_CARD_CURRENT_VERSION) {
+        if (fileParentFolderId(record) !== desiredParent || record.data.version < FILE_CARD_CURRENT_VERSION) {
             fileUpdates.push({ record, parentFolderId: desiredParent })
         }
     }

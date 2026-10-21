@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { serializeFileCardMessage } from "../src/shared/file-cards.js"
-import { countFileCards, listFileCards, transferFileCard, unsendFileCard } from "../src/shared/telegram-files.js"
+import { countFileCards, listFileCards, lookupFileCardByUfid, transferFileCard, unsendFileCard } from "../src/shared/telegram-files.js"
 
 const FakeApi = {
     messages: {
@@ -17,6 +17,24 @@ const FakeApi = {
         },
     },
 }
+
+test("UFID lookup chooses the newest completed copy while keeping original messages separate", async () => {
+    const message = (id: number, uploadComplete: boolean, ufid = "same-content") => ({
+        id,
+        date: id,
+        message: serializeFileCardMessage({
+            name: "archive.tar", ufid, size: 1024, chunks: [id + 100], IV: "iv", uploadComplete,
+        }),
+    })
+    const client = {
+        async getMessages() {
+            return [message(40, false), message(10, true), message(30, true, "other-content"), message(20, true)]
+        },
+    }
+    const record = await lookupFileCardByUfid(client as any, "same-content")
+    assert.equal(record?.msgId, 20)
+    assert.deepEqual(record?.data.chunks, [120])
+})
 
 test("listFileCards can scope a page to a parent folder", async () => {
     const calls: unknown[] = []

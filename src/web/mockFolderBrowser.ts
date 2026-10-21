@@ -12,6 +12,7 @@ import {
 import { FILE_CARD_PREFIX } from "../../packages/tglfs-cli/src/shared/file-cards"
 import { TGLFS_ROOT_PARENT_ID } from "../../packages/tglfs-cli/src/shared/constants"
 import { createMockPreviewFixtures } from "./mockPreviewFixtures"
+import { createMockArchiveFixtures } from "./mockArchiveFixtures"
 
 const TELEGRAM_TEXT_MESSAGE_LIMIT = 4096
 
@@ -572,6 +573,9 @@ export function createMockFolderBrowserSession() {
     const ready = (async () => {
         const seeded: Array<{ id: number; date: number; message: string; bytes: Uint8Array }> = []
         await createMockPreviewFixtures({ fileCards: mutableFileCards, chunkRecords: seeded })
+        if (new URL(window.location.href).searchParams.get("run") === "archive") {
+            await createMockArchiveFixtures({ fileCards: mutableFileCards, chunkRecords: seeded })
+        }
         for (const chunk of seeded) {
             chunkRecords.push({
                 id: chunk.id,

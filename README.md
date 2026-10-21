@@ -8,15 +8,19 @@
 
 Telegram permits 2 GiB file storage for free users and 4 GiB for premium subscribers; however, they have no overall limit on the total amount of data stored on their servers.
 TGLFS is a web app that allows you to upload, download, and send files to other people on Telegram, without a file size limit.
-All files are `gzip`-compressed (for fast upload/download speeds) and AES-256-CTR encrypted with optional passwords (to prevent Telegram from reading your files).
+Ordinary files use gzip compression and AES-256-CTR encryption. Multi-file batches and plain `.tar` uploads use independently compressed, authenticated AES-256-GCM blocks so their contents can be browsed without downloading the entire archive.
 
 TGLFS is live at https://tglfs.vercel.app.
 
 The TGLFS web app is a fully offline client; it's served as a static single-page web app and only makes requests to the Telegram API via the [`gram.js`](https://github.com/gram-js/gramjs) library.
-Your data is encrypted before it ever leaves your device, so nobody can read your files without the password (as long as the client you are using has not been tampered with).
+Your data is encrypted before it leaves your device. A nonempty password protects file contents; an omitted password is the empty string and provides no password-based secrecy. The outer file card still exposes its name, total size, and content UFID. Archive member names, paths, and contents are encrypted.
 Feel free to run your own copy of the software locally so that you can verify the client's integrity.
 
 ## Getting started
+
+Select an indexed tar archive and choose **Preview** to browse its folders and open individual members. For an older, completed `.tar`, choose **Upgrade archive** from the browser actions. An upgrade streams through memory, uploads a separate copy, reads it back to verify its size and UFID, and keeps the original card and data. It does not create a temporary local archive. Cancelling an upgrade preserves the original.
+
+Existing file-card versions 1–3 remain readable; indexed archives use v4. Unknown future file or archive-content versions are refused. Upgrading does not alter folder or sync protocols. Already-compressed archives such as `.tar.gz`, `.tgz`, ZIP, RAR, and 7z retain ordinary-file behavior. See [the storage protocol](doc/file_storage.md) for compatibility, resource limits, and recovery details.
 
 ## Dependencies
 

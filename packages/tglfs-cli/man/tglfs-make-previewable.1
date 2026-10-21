@@ -7,6 +7,8 @@ tglfs-make-previewable \- create a new streaming-previewable MP4 copy of a store
 .SH DESCRIPTION
 Downloads, decrypts, and decompresses the selected owned MP4, converts its primary video and optional primary audio track into a fragmented MP4 suitable for TGLFS Preview, and uploads a new compressed and encrypted TGLFS file. The original file card and chunks are not changed or deleted.
 .PP
+Indexed archive records are refused even if their filename ends in .mp4. Use the archive preview to view individual members. Generated MP4 copies remain ordinary file-card v3 records.
+.PP
 When the MP4 has a complete
 .B moov
 box before

@@ -37,6 +37,7 @@ export function normalizeFileCardV2Data(value: unknown): FileCardV2Data | null {
     }
 
     return {
+        ...value,
         type: FILE_CARD_TYPE,
         version: FILE_CARD_V2_VERSION,
         name: value.name,
@@ -50,6 +51,7 @@ export function normalizeFileCardV2Data(value: unknown): FileCardV2Data | null {
 
 export function createFileCardV2Data(data: FileCardV2Input): FileCardV2Data {
     return {
+        ...data,
         type: FILE_CARD_TYPE,
         version: FILE_CARD_V2_VERSION,
         name: data.name,

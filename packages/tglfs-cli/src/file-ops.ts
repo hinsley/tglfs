@@ -4,6 +4,7 @@ import type { DownloadMode } from "./download.js"
 import {
     coerceTelegramDocumentSize,
     inspectFileFromEncryptedParts,
+    inspectRemoteArchive,
     iterateEncryptedFile,
 } from "./download.js"
 import { CliError, EXIT_CODES } from "./errors.js"
@@ -32,10 +33,10 @@ export type FileInspectionResult = {
     date: number
     data: FileCardData
     chunks: ChunkInspection[]
-    format: DownloadMode | "unknown"
+    format: DownloadMode | "indexed-archive" | "unknown"
     probe?:
         | {
-              mode: DownloadMode
+              mode: DownloadMode | "indexed-archive"
               bytesWritten: number
               computedUfid: string
           }
@@ -256,6 +257,10 @@ async function probeFileMode(
     data: FileCardData,
     password: string,
 ): Promise<FileModeDetectionResult> {
+    if (data.version === 4) {
+        const result = await inspectRemoteArchive(client, data, password, peer)
+        return { probe: { mode: "indexed-archive", ...result } }
+    }
     return detectFileMode({ size: data.size, ufid: data.ufid }, (mode) =>
         inspectFileFromEncryptedParts(data, password, iterateEncryptedFile(client, data, peer), mode),
     )
@@ -278,7 +283,9 @@ export async function inspectFileCard(
     let probe: FileInspectionResult["probe"]
     let probeError: string | undefined
     if (!options.probe) {
-        probeError = "Format probe skipped. Re-run with --probe to verify current vs legacy format."
+        probeError = record.data.version === 4
+            ? "Integrity probe skipped. Re-run with --probe to verify every archive block and the full UFID."
+            : "Format probe skipped. Re-run with --probe to verify current vs legacy format."
     } else if (everyChunkReadable) {
         try {
             const detection = await probeFileMode(client, peer, record.data, options.password ?? "")
@@ -303,7 +310,7 @@ export async function inspectFileCard(
         date: record.date,
         data: record.data,
         chunks,
-        format: probe?.mode ?? "unknown",
+        format: record.data.version === 4 ? "indexed-archive" : probe?.mode ?? "unknown",
         probe,
         probeError,
     }

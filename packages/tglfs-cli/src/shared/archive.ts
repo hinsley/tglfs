@@ -11,6 +11,8 @@ export function computeTarSize(files: ArchiveEntry[]): number {
     for (const file of files) {
         const dataSize = Math.ceil(file.size / block) * block
         total += block + dataSize
+        const nameBytes = new TextEncoder().encode(file.name)
+        if (nameBytes.length > 100) total += block + Math.ceil((nameBytes.length + 1) / block) * block
     }
     total += block * 2
     return total
@@ -24,6 +26,7 @@ export function defaultArchiveName(now = new Date()): string {
 }
 
 export function createTarStream(files: ArchiveEntry[]): ReadableStream<Uint8Array> {
+    let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null
     async function* generate(): AsyncGenerator<Uint8Array> {
         const block = 512
         const textEncoder = new TextEncoder()
@@ -42,18 +45,18 @@ export function createTarStream(files: ArchiveEntry[]): ReadableStream<Uint8Arra
             writeString(buf, offset, octal.padStart(length - 1, "0") + "\0", length)
         }
 
-        for (const file of files) {
+        const createHeader = (name: string, size: number, modifiedTime: number, kind: string) => {
             const header = new Uint8Array(block)
-            writeString(header, 0, file.name.slice(0, 100), 100)
+            writeString(header, 0, name, 100)
             writeString(header, 100, "0000777\0", 8)
             writeString(header, 108, "0000000\0", 8)
             writeString(header, 116, "0000000\0", 8)
-            writeOctal(header, 124, file.size, 12)
-            writeOctal(header, 136, Math.floor(file.lastModified / 1000) || Math.floor(Date.now() / 1000), 12)
+            writeOctal(header, 124, size, 12)
+            writeOctal(header, 136, modifiedTime, 12)
             for (let index = 148; index < 156; index += 1) {
                 header[index] = 32
             }
-            header[156] = "0".charCodeAt(0)
+            header[156] = kind.charCodeAt(0)
             writeString(header, 257, "ustar\0", 6)
             writeString(header, 263, "00", 2)
             writeString(header, 265, "user", 32)
@@ -71,20 +74,41 @@ export function createTarStream(files: ArchiveEntry[]): ReadableStream<Uint8Arra
             }
             header[154] = 0
             header[155] = 32
+            return header
+        }
 
-            yield header
+        for (const file of files) {
+            if (!Number.isSafeInteger(file.size) || file.size < 0 || file.size > 0o77777777777) throw new Error("The archive source size cannot be represented safely in tar.")
+            const nameBytes = textEncoder.encode(file.name)
+            const modifiedTime = Math.floor(file.lastModified / 1000) || Math.floor(Date.now() / 1000)
+            if (nameBytes.length > 100) {
+                yield createHeader("././@LongLink", nameBytes.length + 1, modifiedTime, "L")
+                const longName = new Uint8Array(Math.ceil((nameBytes.length + 1) / block) * block)
+                longName.set(nameBytes)
+                yield longName
+            }
+            yield createHeader(nameBytes.length > 100 ? "file" : file.name, file.size, modifiedTime, "0")
 
             const reader = (await file.stream()).getReader()
+            activeReader = reader
             let totalRead = 0
-            while (true) {
-                const { done, value } = await reader.read()
-                if (done) {
-                    break
+            try {
+                while (true) {
+                    const { done, value } = await reader.read()
+                    if (done) {
+                        break
+                    }
+                    if (value && value.length > 0) {
+                        totalRead += value.length
+                        if (totalRead > file.size) throw new Error("An archive source changed size while being read.")
+                        yield value
+                    }
                 }
-                if (value && value.length > 0) {
-                    yield value
-                    totalRead += value.length
-                }
+                if (totalRead !== file.size) throw new Error("An archive source changed size while being read.")
+            } finally {
+                await reader.cancel().catch(() => {})
+                reader.releaseLock()
+                activeReader = null
             }
 
             const padding = (block - (totalRead % block)) % block
@@ -97,17 +121,20 @@ export function createTarStream(files: ArchiveEntry[]): ReadableStream<Uint8Arra
         yield new Uint8Array(block)
     }
 
+    const iterator = generate()
     return new ReadableStream<Uint8Array>({
-        async start(controller) {
+        async pull(controller) {
             try {
-                for await (const chunk of generate()) {
-                    controller.enqueue(chunk)
-                }
+                const { value, done } = await iterator.next()
+                if (done) controller.close()
+                else controller.enqueue(value)
             } catch (error) {
                 controller.error(error)
-                return
             }
-            controller.close()
         },
-    })
+        async cancel() {
+            await activeReader?.cancel().catch(() => {})
+            await iterator.return(undefined)
+        },
+    }, { highWaterMark: 0 })
 }

@@ -46,6 +46,7 @@ export function normalizeFileCardV3Data(value: unknown): FileCardV3Data | null {
     }
 
     return {
+        ...value,
         type: FILE_CARD_TYPE,
         version: FILE_CARD_V3_VERSION,
         name: value.name,
@@ -60,6 +61,7 @@ export function normalizeFileCardV3Data(value: unknown): FileCardV3Data | null {
 
 export function createFileCardV3Data(data: FileCardV3Input): FileCardV3Data {
     return {
+        ...data,
         type: FILE_CARD_TYPE,
         version: FILE_CARD_V3_VERSION,
         name: data.name,

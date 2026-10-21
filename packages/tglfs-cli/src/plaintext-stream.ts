@@ -7,8 +7,9 @@ import {
     incrementCounter,
     incrementCounter64By,
 } from "./crypto.js"
-import { iterateEncryptedFile, type DownloadMode, type DownloadProgress } from "./download.js"
+import { iterateEncryptedFile, openIndexedArchive, type DownloadMode, type DownloadProgress } from "./download.js"
 import { CliError, EXIT_CODES } from "./errors.js"
+import { validateDownloadableFileCard } from "./protocol.js"
 import type { FileCardData } from "./types.js"
 import { UfidAccumulator } from "./ufid.js"
 
@@ -24,7 +25,7 @@ function normalizeError(error: unknown): Error {
     return error instanceof Error ? error : new Error(String(error))
 }
 
-/** Download -> AES-CTR decrypt -> gzip decompress -> size/UFID verification. */
+/** Decrypt and decompress supported file protocols, then verify their size and UFID. */
 export async function createVerifiedFileCardPlaintextStream(
     client: TelegramClient,
     data: FileCardData,
@@ -32,6 +33,25 @@ export async function createVerifiedFileCardPlaintextStream(
     mode: DownloadMode = "current",
     onProgress?: (progress: DownloadProgress) => void,
 ): Promise<ReadableStream<Uint8Array>> {
+    validateDownloadableFileCard(data)
+    if (data.version === 4) {
+        if (mode === "legacy") {
+            throw new CliError(
+                "unsupported_file_protocol",
+                "Indexed archives do not use the legacy decryption pipeline.",
+                EXIT_CODES.INVALID_FILE_CARD,
+            )
+        }
+        const archive = await openIndexedArchive(client, data, password)
+        let bytesWritten = 0
+        return archive.stream().pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+            transform(chunk, controller) {
+                bytesWritten += chunk.length
+                onProgress?.({ bytesWritten, totalBytes: data.size })
+                controller.enqueue(chunk)
+            },
+        }))
+    }
     const { salt, counter } = decodeIv(data.IV)
     const key = await deriveAESKeyFromPassword(password, salt)
     let nextCounter = counter

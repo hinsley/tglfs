@@ -30,6 +30,8 @@ import {
 import type { TglfsFolder, TglfsFolderManifest, TglfsFolderManifestEntry, TglfsFolderManifestRecord, TglfsFolderRecord } from "../../packages/tglfs-cli/src/folders"
 import { TGLFS_ROOT_PARENT_ID } from "../../packages/tglfs-cli/src/shared/constants"
 import { PreviewModal, type PreviewEntry } from "./preview"
+import { ArchivePreviewModal } from "./archivePreview"
+import { getArchiveUpgradeCapability } from "../../packages/tglfs-cli/src/shared/archive-transfer"
 import { fileKindForName, fileKindIcon, icon, type FileKind, type IconName } from "./icons"
 import {
     closeActionToast,
@@ -182,6 +184,7 @@ const state: BrowserState = {
 }
 
 let previewModal: PreviewModal | null = null
+let archivePreviewModal: ArchivePreviewModal | null = null
 let activeBrowserClient: any = null
 let refreshBrowser: ((options?: BrowserRefreshOptions) => Promise<void>) | null = null
 let browserRefreshSequence = 0
@@ -488,12 +491,16 @@ function getEntrySizeText(entry: BrowserEntry) {
 
 function getEntryMetaText(entry: BrowserEntry) {
     const date = formatEntryDate(getEntryDate(entry))
-    return [getEntrySizeText(entry), date].filter(Boolean).join(" · ")
+    const archive = entry.kind === "file" && (entry.data.version === 4 || getArchiveUpgradeCapability(entry.data).supported)
+        ? `Message ${entry.msgId}${entry.data.version === 4 && entry.data.upgradedFrom ? ` · Original message ${entry.data.upgradedFrom.messageId}` : ""}` : ""
+    return [getEntrySizeText(entry), date, archive].filter(Boolean).join(" · ")
 }
 
 function getEntryBadge(entry: BrowserEntry) {
     if (entry.kind === "missing-file") return `<span class="fx-badge fx-badge--missing">Missing</span>`
     if (entry.kind === "file" && !entry.data.uploadComplete) return `<span class="fx-badge fx-badge--incomplete">Incomplete</span>`
+    if (entry.kind === "file" && entry.data.version === 4) return `<span class="fx-badge">Archive v4</span>`
+    if (entry.kind === "file" && getArchiveUpgradeCapability(entry.data).supported) return `<span class="fx-badge">Archive v${entry.data.version} · upgrade available</span>`
     return ""
 }
 
@@ -1138,11 +1145,18 @@ function getAllSelectionActions(entries: BrowserEntry[]): SelectionAction[] {
     if (single && isFolderEntry(single)) {
         actions.push({ key: "open", id: "browserActionPreview", menuId: "actionPreviewItem", label: "Open", icon: "open", hint: "↵", run: () => runSingleOpenAction(single) })
         actions.push({ key: "history", id: "browserActionHistory", menuId: "actionHistoryItem", label: "History", icon: "history", hint: "H", menuOnly: true, run: () => openFolderHistory(single) })
-    } else if (single && isFileEntry(single) && isPreviewableName(single.data.name)) {
+    } else if (single && isFileEntry(single) && (single.data.version === 4 || isPreviewableName(single.data.name))) {
         actions.push({ key: "open", id: "browserActionPreview", menuId: "actionPreviewItem", label: "Preview", icon: "eye", hint: "↵", run: () => runSingleOpenAction(single) })
     }
     if (single && isFileEntry(single)) {
         actions.push({ key: "download", id: "browserActionDownload", menuId: "actionDownloadItem", label: "Download", icon: "download", run: () => downloadEntry(single) })
+    }
+    if (single && isFileEntry(single) && getArchiveUpgradeCapability(single.data).supported) {
+        actions.push({ key: "upgrade-archive", id: "browserActionUpgradeArchive", menuId: "actionUpgradeArchiveItem", label: "Upgrade archive", shortLabel: "Upgrade", icon: "refresh", run: async () => {
+            if (blockedByHistory()) return
+            previewModal?.close()
+            await archivePreviewModal?.upgrade(single)
+        } })
     }
     // Global search results and Starred/tag views list items from many folders: offer "Show in folder", and
     // leave Move to the folder view (moves tombstone the source folder's manifest, which is the folder being viewed).
@@ -1425,7 +1439,7 @@ async function openEntry(entry: BrowserEntry, index: number) {
         await navigateTo(entry)
         return
     }
-    if (isFileEntry(entry) && isPreviewableName(entry.data.name)) {
+    if (isFileEntry(entry) && (entry.data.version === 4 || isPreviewableName(entry.data.name))) {
         await runSingleOpenAction(entry)
         return
     }
@@ -3069,6 +3083,12 @@ async function runSingleOpenAction(selected: BrowserEntry | null) {
             parentFolderId: fileCardParentId(selected.data),
             at: Date.now(),
         })
+        if (selected.data.version === 4) {
+            previewModal?.close()
+            await archivePreviewModal?.open(selected)
+            return
+        }
+        archivePreviewModal?.close()
         await previewModal?.open(selected, getVisiblePreviewEntries())
     }
 }
@@ -3865,6 +3885,11 @@ async function openHistoryRow(row: HistoryRow) {
         return
     }
     const file = historyLiveFile(row)
+    if (file?.data.version === 4) {
+        previewModal?.close()
+        await archivePreviewModal?.open(file)
+        return
+    }
     if (file && isPreviewableName(file.data.name)) {
         const previewable = historyMode?.rows
             .map((candidate) => historyLiveFile(candidate))
@@ -3934,7 +3959,7 @@ function openHistoryItemMenu(row: HistoryRow, anchor?: HTMLElement | { x: number
         items.push({ label: historyMode?.at === null ? "Open" : "Open at this time", icon: "open", onSelect: () => openHistoryRow(row) })
     }
     if (file) {
-        if (isPreviewableName(file.data.name)) items.push({ label: "Preview", icon: "eye", onSelect: () => openHistoryRow(row) })
+        if (file.data.version === 4 || isPreviewableName(file.data.name)) items.push({ label: "Preview", icon: "eye", onSelect: () => openHistoryRow(row) })
         items.push({ label: "Download", icon: "download", onSelect: () => downloadEntry(file) })
     }
     if (item.status === "moved-out" && item.movedToFolderId) {
@@ -4314,6 +4339,7 @@ function isEditableTarget(target: EventTarget | null) {
 }
 
 async function handleKeydown(event: KeyboardEvent) {
+    if (archivePreviewModal?.isOpen()) return
     const browserDiv = document.getElementById("fileBrowser")
     if (!browserDiv || browserDiv.hasAttribute("hidden")) return
     if (document.querySelector(".fx-dialog-backdrop") || isMenuOpen() || commandPalette?.isOpen()) return
@@ -4485,7 +4511,7 @@ function wirePreviewChrome() {
             try {
                 window.history.pushState({ tglfs: true, trail: currentTrailIds(), view: currentHistoryView(), preview: true }, "", window.location.href)
             } catch {}
-        } else if (!open && historyState?.preview) {
+        } else if (!open && historyState?.preview && !archivePreviewModal?.isOpen()) {
             window.history.back()
         }
     }).observe(modal, { attributes: true, attributeFilter: ["hidden"] })
@@ -4780,6 +4806,18 @@ export async function initFileBrowser(client: any, config: Config.Config) {
     void Labels.setLabelsAccount(client, config).catch((error) => console.warn("Unable to load stars and tags", error))
 
     previewModal = new PreviewModal(client)
+    archivePreviewModal = new ArchivePreviewModal(client, async () => {
+        await refreshBrowser?.({ showLoading: true, loadingMessage: "Loading upgraded archive and preserved original…" })
+    }, (open) => {
+        const historyState = window.history.state as BrowserHistoryState | null
+        if (open && !historyState?.preview) {
+            try {
+                window.history.pushState({ tglfs: true, trail: currentTrailIds(), view: currentHistoryView(), preview: true }, "", window.location.href)
+            } catch {}
+        } else if (!open && historyState?.preview) {
+            window.history.back()
+        }
+    })
     wirePreviewChrome()
 
     const savedView = readPreference(VIEW_STORAGE_KEY)
@@ -4842,6 +4880,10 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         resizeTimer = window.setTimeout(() => updateActionStates(), 120)
     })
     window.addEventListener("popstate", (event) => {
+        if (archivePreviewModal?.isOpen()) {
+            archivePreviewModal.close()
+            return
+        }
         const historyState = event.state as BrowserHistoryState | null
         if (previewModal?.isOpen()) {
             if (!historyState?.preview) previewModal.close()

@@ -109,6 +109,10 @@ function isLocalMockQrLoginUrl() {
 async function startMockFolderBrowser() {
     const { createMockFolderBrowserSession } = await import("./mockFolderBrowser")
     const { client, config } = createMockFolderBrowserSession()
+    if (new URL(window.location.href).searchParams.get("run") === "archive" && "serviceWorker" in navigator) {
+        await navigator.serviceWorker.register("/service-worker.js", { type: "module", updateViaCache: "none" })
+        await navigator.serviceWorker.ready
+    }
     await finalizeLogin(client, config, { phone: "mock-folder-browser" })
     expireCookie("phone")
 }

@@ -1,0 +1,2 @@
+tglfs:file
+{"type":"tglfs:file","version":4,"name":"malformed.tar","ufid":"fixture-malformed","size":3072,"uploadComplete":true,"chunks":[106],"IV":"","parentFolderId":"folder-fixture","archive":{"type":"tglfs:archive-content","version":1,"archiveId":"00000000000000000000000000000001","salt":"AAAAAAAAAAAAAAAAAAAAAA==","noncePrefix":"AAAAAAAAAAA=","blockSize":1048576,"indexOffset":128,"indexLength":256,"storedSize":127}}

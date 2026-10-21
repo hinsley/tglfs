@@ -10,6 +10,7 @@ import { computeTarSize, createTarStream, defaultArchiveName } from "./shared/ar
 import type { ArchiveEntry } from "./shared/archive.js"
 import { DuplicateUfidError, uploadCurrentFormatSource } from "./shared/upload.js"
 import type { UploadProgress, UploadSource } from "./shared/upload.js"
+import { uploadIndexedArchive } from "./shared/archive-transfer.js"
 
 type LocalArchiveEntry = ArchiveEntry & {
     path: string
@@ -128,18 +129,30 @@ export async function uploadPaths(
         onUploadProgress?: (progress: UploadProgress) => void
     },
 ): Promise<UploadPathsResult> {
-    const { Api } = getGramJs()
+    const { Api, getFileInfo } = getGramJs()
     const resolved = await resolveUploadSource(options.paths)
 
     try {
-        const record = await uploadCurrentFormatSource(client, {
-            Api,
-            chunkSize: options.chunkSize,
-            password: options.password,
-            source: resolved.source,
-            onUfidProgress: options.onUfidProgress,
-            onUploadProgress: options.onUploadProgress,
-        })
+        const record = resolved.archived || /\.tar$/i.test(resolved.source.name)
+            ? await uploadIndexedArchive(client as any, {
+                Api,
+                getFileInfo,
+                chunkSize: options.chunkSize,
+                password: options.password,
+                source: resolved.source,
+                onProgress: (progress) => {
+                    const report = progress.phase === "reading" ? options.onUfidProgress : options.onUploadProgress
+                    report?.({ bytesProcessed: progress.bytesProcessed, totalBytes: progress.totalBytes })
+                },
+            })
+            : await uploadCurrentFormatSource(client, {
+                Api,
+                chunkSize: options.chunkSize,
+                password: options.password,
+                source: resolved.source,
+                onUfidProgress: options.onUfidProgress,
+                onUploadProgress: options.onUploadProgress,
+            })
 
         return {
             name: record.data.name,

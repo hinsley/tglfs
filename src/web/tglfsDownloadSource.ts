@@ -1,6 +1,7 @@
 import * as Encryption from "./encryption"
 import { getGramJs } from "../gramjs"
 import type { FileCardData } from "../../packages/tglfs-cli/src/shared/file-cards"
+import { openRemoteArchive } from "../../packages/tglfs-cli/src/shared/archive-transfer"
 
 const DOWNLOAD_PART_SIZE = 1024 * 1024
 let Api!: typeof import("telegram")["Api"]
@@ -134,6 +135,22 @@ export async function createFileCardPlaintextStream(
 ): Promise<ReadableStream<Uint8Array>> {
     await gramJsReady
     if (typeof DecompressionStream === "undefined") throw new Error("This browser does not support streaming gzip decompression.")
+    if (data.version === 4) {
+        const archive = await openRemoteArchive(client, {
+            Api, getFileInfo, record: { data, msgId: 0, date: 0 }, password,
+        })
+        let bytes = 0
+        return archive.stream().pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+            transform(chunk, controller) {
+                bytes += chunk.length
+                onProgress?.(Math.round(bytes / data.size * 100))
+                controller.enqueue(chunk)
+            },
+        }))
+    }
+    if (data.version !== 1 && data.version !== 2 && data.version !== 3) {
+        throw new Error("This file protocol version is not supported.")
+    }
 
     const messages = await loadChunkMessages(client, data)
     const iv = base64ToBytes(data.IV)

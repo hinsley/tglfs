@@ -215,6 +215,13 @@ export async function makeMp4Previewable(
     source: FileCardRecord,
     options: MakePreviewableOptions,
 ): Promise<MakePreviewableResult> {
+    if (source.data.version === 4) {
+        throw new CliError(
+            "invalid_media",
+            "Indexed archive records cannot be converted as MP4 files. Open the archive preview to view individual members.",
+            EXIT_CODES.GENERAL_ERROR,
+        )
+    }
     if (!isMp4(source.data.name)) throw new CliError("invalid_media", `${source.data.name} is not an MP4 file.`, EXIT_CODES.GENERAL_ERROR)
     const outputName = options.outputName?.trim() || getPreviewableMp4Name(source.data.name)
     if (!isMp4(outputName)) throw new CliError("invalid_argument", "The output name must end in .mp4.", EXIT_CODES.GENERAL_ERROR)

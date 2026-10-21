@@ -84,6 +84,8 @@ Upload multiple files as a tar archive using the same archive naming convention 
 tglfs upload ./notes.txt ./diagram.png ./draft.md
 ```
 
+Batch uploads and individual `.tar` uploads use file-card protocol v4. Their tar bytes are stored in independently compressed, authenticated encrypted blocks with an encrypted directory index, so the web app can browse and preview members without downloading the complete archive. Ordinary files, including `.tar.gz`, `.tgz`, ZIP, and other compressed archives, continue to use file-card v3; those inner archive formats are not indexed by this release.
+
 Optional upload password sources:
 
 ```sh
@@ -100,7 +102,7 @@ tglfs delete <ufid...> --yes
 tglfs send <ufid...> --to alice
 ```
 
-TTY uploads render separate UFID and upload progress bars. `--json` prints exactly one final JSON object to stdout, writes failures to stderr, and never prompts. Uploads default to no encryption unless you explicitly provide a password source.
+TTY uploads render UFID and upload progress bars. Indexed archives compute the UFID during a single streaming upload pass, then read back the uploaded blocks to verify the complete tar before publishing a file card. `--json` prints exactly one final JSON object to stdout, writes failures to stderr, and never prompts. An omitted password is the empty string and uses the same encryption process; it provides no password-based confidentiality.
 
 ## Download Flow
 
@@ -121,6 +123,10 @@ tglfs download <ufid> --legacy
 ```
 
 Interactive TTY downloads render a progress bar. `--json` prints exactly one final JSON object to stdout, writes failures to stderr, and never prompts.
+
+Downloads read file-card versions 1, 2, 3, and 4. A v4 archive is reconstructed as the exact original tar with bounded memory, and its full size and UFID are verified before replacing the destination file. `--legacy` applies only to the older counter-advance pipeline and is refused for v4 archives. Unknown future file-card or archive-content versions are refused.
+
+The web app offers an explicit **Upgrade archive** action for completed `.tar` records in versions 1–3. It streams the original through the new encoder without creating a local archive file, verifies the new remote copy, and retains the original message and all original chunks. The new card records its source message and protocol version. Both copies remain independently selectable in the web app; an upgrade never edits sync roots or folder entries.
 
 ## Search Flow
 
@@ -200,7 +206,7 @@ tglfs inspect <ufid>
 tglfs inspect <ufid> --peer alice
 ```
 
-Run the expensive full current-vs-legacy integrity probe only when you want it:
+Run the expensive full integrity probe only when you want it (current/legacy detection for v1–3, or authenticated block and UFID verification for v4):
 
 ```sh
 tglfs inspect <ufid> --probe

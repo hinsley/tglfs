@@ -44,6 +44,7 @@ async function loadFileCard(client: any, selected: SelectedMp4): Promise<FileCar
     const text = messages[0]?.message
     const data = typeof text === "string" ? parseFileCardMessage(text) : null
     if (!data) throw new Error("The selected Telegram message is not a valid TGLFS file card.")
+    if (data.version === 4) throw new Error("This record contains a tar archive. Open its archive preview instead of converting it to MP4.")
     if (!isMp4FileName(data.name)) throw new Error("The selected file is no longer an MP4.")
     return data
 }

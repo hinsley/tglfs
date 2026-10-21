@@ -1,0 +1,2 @@
+tglfs:file
+{"type":"tglfs:file","version":2,"name":"archive-v2.tar","ufid":"fixture-archive","size":3072,"uploadComplete":true,"chunks":[102],"IV":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","fixtureExtension":{"keep":true}}

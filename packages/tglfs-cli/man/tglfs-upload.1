@@ -6,6 +6,10 @@ tglfs-upload \- upload one file, or archive multiple files, into Telegram Saved 
 [\fIOPTIONS\fR] \fIpaths...\fR
 .SH DESCRIPTION
 Uploads one file directly into Saved Messages, or packages multiple files into a tar archive using the same naming convention as the web app before uploading.
+.PP
+Batch uploads and individual .tar files use file-card protocol v4 with an encrypted directory index and independently compressed, authenticated encrypted blocks. The original tar bytes and content UFID are preserved. Uploaded blocks are read back and verified before a completed card is published.
+.PP
+Other files, including .tar.gz, .tgz, and ZIP archives, continue to use file-card v3 and are not indexed for member browsing.
 .SH OPTIONS
 .TP
 .B --no-interactive
@@ -30,4 +34,4 @@ Default environment variable for the upload encryption password.
 .SH AI AGENT NOTES
 TTY uploads render separate UFID and upload progress bars.
 .B --json
-prints exactly one final JSON object to standard output, writes failures to standard error, and never prompts. If no password flag, environment variable, or stdin source is supplied, uploads default to no encryption.
+prints exactly one final JSON object to standard output, writes failures to standard error, and never prompts. If no password source is supplied, the password is the empty string. The same encryption process is used, but an empty password provides no password-based confidentiality.

@@ -2,12 +2,14 @@
 
 This document explains how TGLFS processes files entirely in the browser: how compression, encryption, uploads, downloads, decryption, and decompression work, and where Service Workers and OPFS fit in.
 
+The AES-CTR pipelines below describe ordinary file-card v1–v3 content. New multi-file batches and plain `.tar` uploads use file-card v4: independent gzip/AES-GCM blocks, an encrypted directory index, and partial Telegram reads. See [the file storage protocol](file_storage.md) for the complete versioned format and upgrade/recovery contract. The shared implementation lives in `packages/tglfs-cli/src/shared/archive-format.ts` and `archive-transfer.ts`; the browser view is `src/web/archivePreview.ts`.
+
 ## TL;DR
 - **Compression**: Browser-native `CompressionStream("gzip")`.
 - **Encryption**: WebCrypto `AES-CTR` with a PBKDF2-derived 256-bit key (100k iterations, SHA-256), 16-byte salt, 16-byte initial counter.
 - **Upload**: Gzip-compress → buffer into 1 MiB blocks → encrypt each block with AES-CTR and increment the counter per block → send 512 KiB parts to Telegram via GramJS → finalize 2 GiB chunks as messages.
 - **Download**: Fetch encrypted parts from Telegram in 1 MiB slices → decrypt per 1 MiB block with AES-CTR and a rolling counter → stream through `DecompressionStream("gzip")` → pipe to a Service Worker `ReadableStream` that triggers the browser download with the correct filename.
-- **Service Workers**: Yes. Dedicated SW at `src/service-worker.js` for download streaming; an additional offline SW exists for fallback pages.
+- **Service Workers**: Yes. The active worker at `public/service-worker.js` handles downloads, temporary archive range routes, offline fallback, and share-target intake. Archive preview responses use `no-store`.
 - **OPFS**: Not used in the active upload/download pipelines (streaming avoids temporary files). Utilities remain for potential future use.
 
 ## Key source files
@@ -83,8 +85,8 @@ Relevant code: `fileDownload` in `src/telegram.ts` and `src/service-worker.js`.
 - `UFID` is computed by streaming the source file in 64 KiB pieces and iteratively hashing.
 
 ## Security notes
-- AES-CTR provides confidentiality but not authenticity. There is no MAC. Wrong passwords are generally detected only when gzip decompression fails.
-- The plan documented elsewhere mentions switching to `zstd` for compression and an authenticated streaming cipher (`crypto_secretstream_xchacha20poly1305`) via `libsodium`. Those are not in the current browser pipeline.
+- File-card v1–v3 AES-CTR content provides confidentiality but not authenticity. There is no MAC. Wrong passwords are generally detected only when gzip decompression fails. Indexed v4 archives authenticate the index and every compressed block with AES-GCM before decompression.
+- Blank passwords are the empty string, not a separate storage mode, and provide no password-based secrecy. Archive upgrades retain the original, verify the replacement before publication, and use bounded in-memory streams without OPFS staging.
 
 ## Where to look in the code
 - Upload: `src/telegram.ts` → `fileUpload`.

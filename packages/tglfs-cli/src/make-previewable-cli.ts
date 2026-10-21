@@ -56,6 +56,7 @@ function createProgram() {
             "Front-loaded MP4s stream through FFmpeg directly into the encrypted Telegram upload.",
             "MP4s whose moov metadata follows mdat use a temporary source file for FFmpeg random access.",
             "The original file card and chunks remain unchanged.",
+            "Indexed archive records are refused, even if renamed with an .mp4 extension.",
             "",
             "Environment: TGLFS_MAKE_PREVIEWABLE_SOURCE_PASSWORD, TGLFS_MAKE_PREVIEWABLE_PASSWORD,",
             "             TGLFS_FFMPEG, TGLFS_FFPROBE",

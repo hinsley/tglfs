@@ -293,7 +293,7 @@ function createProgram(runtime = getCliRuntime()) {
         .option("--json", "Output machine-readable JSON")
         .addHelpText(
             "after",
-            "\nUploading multiple paths produces a tar archive using the same naming convention as the web app.\nIf no password source is supplied, the upload is unencrypted.\nTTY runs show separate UFID and upload progress bars. --json prints exactly one final JSON object to stdout and never prompts.\nEnvironment variable: TGLFS_UPLOAD_PASSWORD\n",
+            "\nUploading multiple paths produces a tar archive using the same naming convention as the web app. Batches and individual .tar files use indexed archive protocol v4; other files use v3.\nIf no password source is supplied, the password is the empty string, which provides no password-based confidentiality.\nTTY runs show UFID and upload progress bars. --json prints exactly one final JSON object to stdout and never prompts.\nEnvironment variable: TGLFS_UPLOAD_PASSWORD\n",
         )
         .action(async (paths: string[], options: InteractiveFlag & { password?: string; passwordEnv?: string | boolean; passwordStdin?: boolean }) => {
             const interactiveOptions = withGlobalInteractive(options)
@@ -639,7 +639,7 @@ function createProgram(runtime = getCliRuntime()) {
         .option("--json", "Output machine-readable JSON")
         .addHelpText(
             "after",
-            "\nIf the file uses a decryption password, provide it with --password, --password-env, --password-stdin, or interactively on a TTY.\nUse --no-interactive or --json to fail instead of prompting for a password or overwrite confirmation.\nTTY runs show a progress bar. --json prints exactly one final JSON object to stdout and never prompts.\n",
+            "\nReads file-card protocols v1-v4. Indexed archives restore the exact original tar; --legacy is refused for v4.\nIf the file uses a decryption password, provide it with --password, --password-env, --password-stdin, or interactively on a TTY.\nUse --no-interactive or --json to fail instead of prompting for a password or overwrite confirmation.\nTTY runs show a progress bar. --json prints exactly one final JSON object to stdout and never prompts.\n",
         )
         .action(async (ufid: string, options: InteractiveFlag & { output?: string; force?: boolean; legacy?: boolean; password?: string; passwordEnv?: string | boolean; passwordStdin?: boolean }) => {
             const interactiveOptions = withGlobalInteractive(options)
@@ -844,12 +844,12 @@ function createProgram(runtime = getCliRuntime()) {
     addInteractiveOption(
         program
             .command("inspect")
-            .description("Inspect a file card and chunk references. Use --probe for a full current-vs-legacy integrity probe.")
+            .description("Inspect a file card and chunk references. Use --probe for a full integrity check.")
             .argument("<ufid>", "TGLFS file UFID"),
     )
         .option("--peer <peer>", "Peer to inspect instead of Saved Messages")
-        .option("--probe", "Run the full current-vs-legacy probe. This downloads, decrypts, and validates file data.")
-        .option("--password <password>", "Password to use for current-vs-legacy probing")
+        .option("--probe", "Download, decrypt, and validate all file data, including v4 archive blocks")
+        .option("--password <password>", "Password to use for the integrity probe")
         .option("--password-env [name]", "Read the probe password from an environment variable")
         .option("--password-stdin", "Read the probe password from stdin")
         .option("--json", "Output machine-readable JSON")

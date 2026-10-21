@@ -13,6 +13,8 @@ import {
 import { CliError, EXIT_CODES } from "./errors.js"
 import { getGramJs } from "./gramjs.js"
 import { DOWNLOAD_PART_SIZE } from "./shared/constants.js"
+import { openRemoteArchive } from "./shared/archive-transfer.js"
+import { validateDownloadableFileCard } from "./protocol.js"
 import type { FileCardData } from "./types.js"
 import { UfidAccumulator } from "./ufid.js"
 
@@ -248,6 +250,13 @@ async function withDecompressedReadable<T>(
     mode: DownloadMode,
     consumeReadable: (readable: ReadableStream<Uint8Array>) => Promise<T>,
 ): Promise<T> {
+    if (data.version !== undefined && ![1, 2, 3].includes(data.version)) {
+        throw new CliError(
+            "unsupported_file_protocol",
+            "Indexed archives require the remote archive reader; they cannot use the current or legacy encrypted-parts pipeline.",
+            EXIT_CODES.INVALID_FILE_CARD,
+        )
+    }
     const { salt, counter } = decodeIv(data.IV)
     const aesKey = await deriveAESKeyFromPassword(password, salt)
     let decryptionCounter = counter
@@ -383,6 +392,37 @@ export async function downloadFileCard(
     onProgress?: (progress: DownloadProgress) => void,
     mode: DownloadMode = "current",
 ): Promise<DownloadResult> {
+    validateDownloadableFileCard(data)
+    if (data.version === 4) {
+        if (mode === "legacy") {
+            throw new CliError(
+                "unsupported_file_protocol",
+                "Indexed archives do not use the legacy decryption pipeline. Remove --legacy.",
+                EXIT_CODES.INVALID_FILE_CARD,
+            )
+        }
+        await ensureOutputDirectory(outputPath)
+        const tempPath = join(dirname(outputPath), `.${data.ufid}.part`)
+        try {
+            const reader = await openIndexedArchive(client, data, password)
+            const { bytesWritten, computedUfid } = await consumeDecompressedStream(
+                reader.stream(), tempPath, data.size, onProgress,
+            )
+            if (bytesWritten !== data.size || computedUfid !== data.ufid) {
+                throw new CliError(
+                    "ufid_mismatch",
+                    "The downloaded archive did not match the expected size and UFID.",
+                    EXIT_CODES.UFID_MISMATCH,
+                )
+            }
+            if (overwrite) await rm(outputPath, { force: true })
+            await rename(tempPath, outputPath)
+            return { outputPath, bytesWritten, name: data.name, ufid: data.ufid }
+        } catch (error) {
+            await rm(tempPath, { force: true }).catch(() => {})
+            throw normalizeDownloadError(error)
+        }
+    }
     return restoreFileFromEncryptedParts(
         data,
         password,
@@ -392,4 +432,41 @@ export async function downloadFileCard(
         onProgress,
         mode,
     )
+}
+
+export async function openIndexedArchive(client: TelegramClient, data: FileCardData, password: string, peer = "me") {
+    const { Api, getFileInfo } = getGramJs()
+    const reader = await openRemoteArchive(client as any, {
+        Api,
+        getFileInfo,
+        record: { msgId: 0, date: 0, data },
+        password,
+        peer,
+    })
+    if (reader.index.size !== data.size || reader.index.ufid !== data.ufid) {
+        throw new CliError(
+            "invalid_file_card",
+            "The authenticated archive index does not match its file card.",
+            EXIT_CODES.INVALID_FILE_CARD,
+        )
+    }
+    return reader
+}
+
+export async function inspectRemoteArchive(
+    client: TelegramClient,
+    data: FileCardData,
+    password: string,
+    peer = "me",
+): Promise<DownloadInspectionResult> {
+    try {
+        const reader = await openIndexedArchive(client, data, password, peer)
+        const result = await consumeDecompressedMetadata(reader.stream(), data.size)
+        if (result.bytesWritten !== data.size || result.computedUfid !== data.ufid) {
+            throw new CliError("ufid_mismatch", "The archive did not match its expected size and UFID.", EXIT_CODES.UFID_MISMATCH)
+        }
+        return result
+    } catch (error) {
+        throw normalizeDownloadError(error)
+    }
 }

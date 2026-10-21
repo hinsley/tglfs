@@ -1,15 +1,15 @@
 .TH TGLFS-DOWNLOAD 1 "March 2026" "tglfs 0.1.2" "User Commands"
 .SH NAME
-tglfs-download \- download a current-format or legacy TGLFS file by UFID
+tglfs-download \- download a TGLFS file or indexed archive by UFID
 .SH SYNOPSIS
 .B tglfs download
 [\fIOPTIONS\fR] \fIufid\fR
 .SH DESCRIPTION
-Looks up a TGLFS file card in Telegram Saved Messages by UFID, downloads the encrypted chunks, decrypts and gunzips them, verifies the UFID, and writes the plaintext to disk.
+Looks up a TGLFS file card in Telegram Saved Messages by UFID, downloads the encrypted chunks, decrypts and decompresses them, verifies the UFID, and writes the plaintext to disk. File-card versions 1 through 4 are supported. Version 4 archives are reconstructed as the exact original tar using bounded memory. Unsupported future protocol versions are refused.
 .PP
 Use
 .B --legacy
-for files that still require the older counter-advance behavior.
+for files that still require the older counter-advance behavior. This option is refused for version 4 indexed archives.
 .SH OPTIONS
 .TP
 .B --no-interactive

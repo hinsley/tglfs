@@ -4,6 +4,8 @@ import test from "node:test"
 import { TGLFS_ROOT_PARENT_ID } from "../src/shared/constants.js"
 import { planDirectoryParentMigration } from "../src/shared/directory-migration.js"
 import type { TglfsFolderManifestRecord, TglfsFolderRecord } from "../src/folders.js"
+import { parseFileCardMessage } from "../src/shared/file-cards.js"
+import { readFileSync } from "node:fs"
 
 const now = "2026-05-13T12:00:00.000Z"
 
@@ -222,4 +224,12 @@ test("directory parent migration ignores and repairs self-parent folder refs", (
             ["folder-child", "folder-root"],
         ],
     )
+})
+
+test("directory parent migration never schedules a v4 archive for a v3 metadata downgrade", () => {
+    const fixture = readFileSync(new URL("./fixtures/protocol/file-card-v4.txt", import.meta.url), "utf8")
+    const data = parseFileCardMessage(fixture)
+    assert.ok(data && data.version === 4)
+    const plan = planDirectoryParentMigration([], [], [{ msgId: 104, date: 1, data }])
+    assert.deepEqual(plan.fileUpdates, [])
 })

@@ -1,0 +1,2 @@
+tglfs:file
+{"name":"archive-v1.tar","ufid":"fixture-archive","size":3072,"uploadComplete":true,"chunks":[101],"IV":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","fixtureExtension":{"keep":true}}

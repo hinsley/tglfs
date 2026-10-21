@@ -65,6 +65,7 @@ import * as FileProcessing from "./web/fileProcessing"
 import * as Archive from "../packages/tglfs-cli/src/shared/archive"
 import * as UploadResume from "../packages/tglfs-cli/src/shared/upload-resume"
 import * as UploadPipeline from "../packages/tglfs-cli/src/shared/upload-pipeline"
+import { uploadIndexedArchive } from "../packages/tglfs-cli/src/shared/archive-transfer"
 import { FileCardData } from "./types/models"
 
 let Api!: typeof import("telegram")["Api"]
@@ -372,6 +373,16 @@ async function runServiceWorkerDownload(
     await gramJsReady
     const legacy = options.legacy
     transfer.setPhase(null, { total: fileCardData.size })
+    if (fileCardData.version === 4) {
+        if (legacy) throw new Error("Indexed archives do not use the legacy download pipeline. Use the regular download action.")
+        const { downloadArchiveFile } = await import("./web/archivePreview")
+        await downloadArchiveFile(client, fileCardData, password, {
+            signal: transfer.signal,
+            onProgress: (bytes) => transfer.update({ bytes }),
+        })
+        transfer.complete({ ufid: fileCardData.ufid })
+        return
+    }
 
     // Request chunk messages by their IDs in the file card.
     const chunkMsgs: TelegramApi.messages.Messages = await client.getMessages("me", { ids: fileCardData.chunks })
@@ -1021,8 +1032,8 @@ export type UploadJobResult = {
 
 /**
  * Uploads `files` (one file, or several packed into a tar archive) inside a transfer-queue slot. Checks the
- * transfer's AbortSignal between upload parts; a cancelled upload stops exactly like a failed one, leaving the
- * incomplete file card as-is (no records are deleted or rewritten) — and resumable later.
+ * transfer's AbortSignal between upload parts. Ordinary v1–v3 uploads keep their incomplete card for resuming.
+ * New indexed archives publish their card after verification and clean up their own staging chunks on failure.
  *
  * Resuming: when the content's UFID matches an incomplete card (or `job.resume` names one), the upload continues
  * into that card from its last completed chunk instead of failing as a duplicate. See `prepareResume` and
@@ -1086,10 +1097,14 @@ export async function runFileUploadJob(
     } else {
         displayName = job.archiveName || Archive.defaultArchiveName()
         totalBytes = Archive.computeTarSize(files)
-        const tarStream = Archive.createTarStream(files)
-        const teed = tarStream.tee()
-        ufidStream = teed[0]
-        inputStream = teed[1]
+        const entries = files.map((entry) => ({
+            name: entry.name,
+            size: entry.size,
+            lastModified: entry.lastModified || Date.now(),
+            stream: () => entry.stream(),
+        }))
+        ufidStream = Archive.createTarStream(entries)
+        inputStream = Archive.createTarStream(entries)
     }
     if (job.resume?.name) displayName = job.resume.name
     transfer.update({ name: displayName, size: totalBytes })
@@ -1155,6 +1170,34 @@ export async function runFileUploadJob(
         }
     }
     transfer.throwIfCancelled()
+
+    if (!resumeTarget && (!single || /\.tar$/i.test(file.name))) {
+        let phase = ""
+        const record = await uploadIndexedArchive(client, {
+            Api,
+            getFileInfo,
+            source: { name: displayName, size: totalBytes, stream: () => inputStream },
+            expectedUfid: UFID,
+            password: job.password,
+            parentFolderId,
+            chunkSize: config.chunkSize,
+            signal: transfer.signal,
+            onProgress(progress) {
+                const nextPhase = progress.phase === "verifying" ? "verifying" : "uploading"
+                if (phase !== nextPhase) {
+                    phase = nextPhase
+                    transfer.setPhase(nextPhase === "verifying" ? "Verifying stored archive" : null, {
+                        span: nextPhase === "verifying" ? sub(0.75, 1) : sub(uploadStart, 0.75),
+                        total: totalBytes,
+                    })
+                }
+                transfer.update({ bytes: progress.bytesProcessed })
+            },
+        })
+        transfer.update({ bytes: totalBytes, ufid: record.data.ufid })
+        restoreUploadUiAndMaybeRefreshBrowser(() => {}, true, parentFolderId)
+        return { msgId: record.msgId, data: record.data, parentFolderId }
+    }
 
     // Progress reflects bytes actually stored in Telegram, not bytes read from disk: plaintext is read far ahead of
     // the upload (compression + the encryption buffer), so scale the plaintext read so far by the share of the
@@ -2550,10 +2593,9 @@ export async function updateFileCardParent(
     parentFolderId: string,
 ): Promise<FileCardData> {
     await gramJsReady
-    const nextData = createFileCardData({
-        ...data,
-        parentFolderId,
-    })
+    const nextData = data.version === 4
+        ? createFileCardData({ ...data, parentFolderId })
+        : createFileCardData({ ...data, version: 3, parentFolderId })
     await client.invoke(
         new Api.messages.EditMessage({
             peer,

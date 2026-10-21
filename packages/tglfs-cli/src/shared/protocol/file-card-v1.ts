@@ -45,6 +45,7 @@ export function normalizeFileCardV1Data(value: unknown): NormalizedFileCardV1Dat
     }
 
     return {
+        ...value,
         type: FILE_CARD_TYPE,
         version: FILE_CARD_V1_VERSION,
         name: value.name,

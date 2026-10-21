@@ -195,7 +195,9 @@ export async function lookupFileCardByUfid(
         waitTime: 0,
     } as any)
 
-    return extractFileCardRecords(messages).find((record) => record.data.ufid === trimmed) ?? null
+    const matches = extractFileCardRecords(messages).filter((record) => record.data.ufid === trimmed)
+    matches.sort((left, right) => Number(right.data.uploadComplete) - Number(left.data.uploadComplete) || right.msgId - left.msgId)
+    return matches[0] ?? null
 }
 
 export async function writeFileCardMessage(client: TelegramFileClient, options: WriteFileCardOptions) {
