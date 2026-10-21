@@ -631,6 +631,7 @@ export function createMockFolderBrowserSession() {
     }
 
     const client = {
+        async getMe() { return { id: 123, phone: "mock-folder-browser" } },
         async getMessages(_peer: string, options: { ids?: number[]; search?: string; limit?: number; maxId?: number; offsetId?: number }) {
             await ready
             if (Array.isArray(options.ids)) {

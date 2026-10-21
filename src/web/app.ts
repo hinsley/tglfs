@@ -1,4 +1,5 @@
 import "./polyfills"
+import { clearBackgroundHelper } from "./backgroundHelper"
 import { hydrateIcons, icon } from "./icons"
 import { isCompactViewport, requestConfirm, showToast } from "./dialogs"
 import { begin as beginTransfer, type TransferHandle } from "./transfers"
@@ -842,6 +843,7 @@ function clearStoredSession() {
 }
 
 async function logout() {
+    clearBackgroundHelper()
     if (browserModulePromise) {
         // Signing out is an explicit "I'm done": write a delete still inside its undo window and let
         // in-flight writes finish while the session is still valid.

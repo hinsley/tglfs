@@ -148,6 +148,7 @@ export async function uploadResumableFile(
         parentFolderId?: string
         resumeId?: string
         blockSize?: number
+        onSession?: (id: string) => void | Promise<void>
     },
 ): Promise<FileCardRecord> {
     check(options)
@@ -242,6 +243,7 @@ export async function uploadResumableFile(
             } satisfies Session),
         )
     }
+    await options.onSession?.(content!.id)
     const c = content!
     const p = plan
     const k = key!

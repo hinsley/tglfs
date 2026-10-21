@@ -56,6 +56,7 @@ import { CLI_RUNTIME_OVERRIDE_SYMBOL } from "./test-hooks.js"
 import { uploadPaths } from "./upload.js"
 import { createConvertWebmCommand } from "./convert-webm-cli.js"
 import { createUpgradeMediaPreviewCommand } from "./media-upgrade-cli.js"
+import { createHelperCommand } from "./helper/cli.js"
 import { createMakePreviewableCommand } from "./make-previewable-cli.js"
 
 type JsonFlag = {
@@ -279,6 +280,7 @@ function createProgram(runtime = getCliRuntime()) {
             `\nStorage paths:\n  config: ${storePaths.configFile}\n  session: ${storePaths.sessionFile}\n`,
         )
 
+    program.addCommand(createHelperCommand())
     program.addCommand(createMakePreviewableCommand())
     program.addCommand(createConvertWebmCommand())
     program.addCommand(createUpgradeMediaPreviewCommand())

@@ -1,0 +1,37 @@
+.TH TGLFS-HELPER 1 "October 2026" "tglfs 0.1.2" "User Commands"
+.SH NAME
+tglfs-helper \- transfer files independently of the browser tab
+.SH SYNOPSIS
+.B tglfs helper start
+[--upload-root DIRECTORY]... [--download-dir DIRECTORY] [--origin ORIGIN]... [--port PORT] [--foreground]
+.br
+.B tglfs helper pair
+.br
+.B tglfs helper status
+[--json]
+.br
+.B tglfs helper stop
+.SH DESCRIPTION
+Runs a detached process on IPv4 loopback. Run tglfs login first using the same Telegram account as the web app. Pair in Tools / Background transfers with the printed code. Accepted uploads and downloads continue when the browser closes. The helper and computer must remain running. This does not install an OS startup service.
+.SH OPTIONS
+.TP
+.B --upload-root DIRECTORY
+Grant read access to a folder and its regular files. Repeat for additional roots. No upload roots are granted by default. Symbolic links and paths leaving roots are refused. The web app selects files from these grants; dropped browser files must be selected again.
+.TP
+.B --download-dir DIRECTORY
+Destination root, default ~/Downloads/TGLFS. Each download uses its own job folder and refuses to overwrite existing files.
+.TP
+.B --origin ORIGIN
+Allow an exact trusted HTTPS app origin, repeatable. Defaults to https://tglfs.vercel.app. Explicit loopback HTTP origins are accepted for local development. No wildcard origins or remote helper endpoints are accepted. Browser local-network permission may be necessary.
+.TP
+.B --port PORT
+Loopback port, default 27386, allowed range 1024 through 65535.
+.TP
+.B --foreground
+Keep the helper in this terminal instead of detaching.
+.SH RECOVERY
+Stop before changing grants. Omitted start options reuse previous configuration; restarting rotates the pairing code. Use pair to display the current code. Disconnecting a tab leaves accepted jobs running. Stop preserves resumable checkpoints. After a restart, pair again and use Unlock and resume with the original password, including an empty password. V5 transfers reuse verified blocks. Interrupted older downloads restart their streams.
+.SH SECURITY
+Requests and responses are signed, timestamps/nonces prevent replay, file passwords are separately AES-GCM encrypted for handoff, and the Telegram account must match. Pairing grants access to configured roots and controls: keep the code private. File passwords/keys are held only in memory, never in the saved queue or checkpoints. The local pairing token and existing Telegram session remain private local credentials. Completed downloads are decrypted files at the selected destination.
+.SH COMPATIBILITY
+New uploads write file-card v5. Downloads read v1 through v5. Existing Telegram records and passwords are preserved without migration or deletion. Local helper config/job/process and control records use v1; unsupported versions and unknown durable fields are refused. Browser conversion, member downloads, share-target uploads and archive/media upgrades retain their existing workflows.

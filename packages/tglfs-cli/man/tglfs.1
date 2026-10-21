@@ -86,3 +86,10 @@ metadata follows media data and are removed after conversion.
 .BR tglfs-unsend (1),
 .BR tglfs-inspect (1),
 .BR tglfs-sync (1)
+
+.SH BACKGROUND TRANSFERS
+.B tglfs helper start --upload-root /path/to/files
+starts a detached local process. Pair it in the web app's Background transfers panel.
+Accepted transfers continue after the browser tab closes. File passwords stay in memory;
+a helper restart requires unlocking interrupted jobs with their original passwords.
+See tglfs-helper(1) for grants, destinations and recovery.

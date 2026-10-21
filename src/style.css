@@ -7484,3 +7484,20 @@ body.file-browser-active {
     .archive-preview-columns { grid-template-columns: 1fr; }
     .archive-entry-list { max-height: 30vh; }
 }
+
+/* The native helper owns transfers listed in this dialog. */
+.fx-helper-dialog {
+    opacity: 1;
+    transform: none;
+    margin: auto;
+    width: min(620px, calc(100vw - 32px));
+    max-height: calc(100dvh - 48px);
+    overflow: auto;
+    color: var(--text);
+}
+.fx-helper-content { display: grid; gap: 12px; margin-top: 16px; overflow-wrap: anywhere; }
+.fx-helper-content pre { white-space: pre-wrap; font-size: 12px; }
+.fx-helper-content p { margin: 0; }
+.fx-helper-files { display: grid; gap: 8px; max-height: 40dvh; overflow: auto; }
+.fx-helper-file { display: flex; align-items: center; gap: 12px; padding: 8px; }
+.fx-helper-job { border-top: 1px solid var(--border); padding-top: 12px; }
