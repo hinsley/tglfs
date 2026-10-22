@@ -1,3 +1,4 @@
+import { Buffer } from "buffer"
 import { UfidAccumulator } from "../ufid.js"
 import { TarIndexBuilder } from "./archive-format.js"
 import { createTelegramArchiveRangeReader } from "./archive-transfer.js"
@@ -82,7 +83,7 @@ export async function sendTransferDocument(
                 fileId: id,
                 filePart: i,
                 fileTotalParts: parts,
-                bytes: bytes.subarray(i * UPLOAD_PART_SIZE, (i + 1) * UPLOAD_PART_SIZE),
+                bytes: Buffer.from(bytes.subarray(i * UPLOAD_PART_SIZE, (i + 1) * UPLOAD_PART_SIZE)),
             }),
         )
         if (!ok) throw new Error("Telegram refused an upload part.")

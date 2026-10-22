@@ -4,6 +4,8 @@ import test from "node:test"
 import { getGramJs } from "../src/gramjs.js"
 import { parseFileCardMessage } from "../src/shared/file-cards.js"
 import { openRemoteArchive } from "../src/shared/archive-transfer.js"
+import { sendTransferDocument } from "../src/shared/block-transfer.js"
+import { UPLOAD_PART_SIZE } from "../src/shared/constants.js"
 import { begin, __resetTransfersForTests } from "../../../src/web/transfers.ts"
 
 class MemoryTelegram {
@@ -27,6 +29,7 @@ class MemoryTelegram {
 
     async invoke(request: any) {
         if (request.className === "upload.SaveBigFilePart") {
+            request.getBytes()
             const key = request.fileId.toString()
             const parts = this.parts.get(key) ?? []
             parts[request.filePart] = Uint8Array.from(request.bytes)
@@ -61,6 +64,18 @@ class MemoryTelegram {
         return { id, date: id, peerId: "me" }
     }
 }
+
+test("transfer documents serialize multipart byte slices with GramJS", async () => {
+    const { Api, getFileInfo } = getGramJs()
+    const client = new MemoryTelegram()
+    const padded = Uint8Array.from({ length: UPLOAD_PART_SIZE + 37 + 18 }, (_, index) => index % 251)
+    const bytes = padded.subarray(9, padded.length - 9)
+
+    const sent = await sendTransferDocument(client, { Api, getFileInfo }, bytes, "parts.bin")
+
+    assert.deepEqual(client.chunks.get(sent.id), bytes)
+    assert.deepEqual([...client.parts.values()][0].map((part) => part.length), [UPLOAD_PART_SIZE, 37])
+})
 
 test("queued web uploads write v5 for both archives and ordinary files", async () => {
     const originalWindow = (globalThis as any).window
