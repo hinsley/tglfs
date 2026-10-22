@@ -778,7 +778,7 @@ export class PreviewModal {
                     const { done, value } = await reader.read(); if (done) break
                     chunks.push(value)
                 }
-                return new Blob(chunks)
+                return new Blob(chunks, { type: getMimeType(data.name) })
             } finally { await reader.cancel().catch(() => {}); reader.releaseLock() }
         }
         const chunkMsgs: TelegramApi.messages.Messages = await this.client.getMessages("me", { ids: data.chunks })

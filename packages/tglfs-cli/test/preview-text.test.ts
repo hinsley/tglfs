@@ -56,6 +56,7 @@ test("detectPreviewType refuses binary and unknown formats", () => {
 test("text previews are capped by size while media is not", () => {
     assert.equal(isTextPreviewType("markdown"), true)
     assert.equal(isTextPreviewType("image"), false)
+    assert.equal(isTextPreviewType("pdf"), false)
     assert.equal(isPreviewTooLarge("text", TEXT_PREVIEW_MAX_BYTES), false)
     assert.equal(isPreviewTooLarge("text", TEXT_PREVIEW_MAX_BYTES + 1), true)
     assert.equal(isPreviewTooLarge("video", 10 * 1024 * 1024 * 1024), false)
