@@ -1,6 +1,19 @@
-import { basename } from "node:path"
+import { basename, join } from "node:path"
 
 import { CLI_FAIL_ON_PROMPT_SYMBOL, CLI_RUNTIME_OVERRIDE_SYMBOL } from "../../src/test-hooks.ts"
+import { storePaths } from "../../src/store.ts"
+
+// Missing-input tests must not inherit a real login from HOME or XDG settings.
+const testStoreRoot = process.env.TGLFS_TEST_STORE_ROOT
+if (testStoreRoot) {
+    const configDir = join(testStoreRoot, "config")
+    const dataDir = join(testStoreRoot, "data")
+    Object.assign(storePaths, {
+        configDir, dataDir,
+        configFile: join(configDir, "config.json"),
+        sessionFile: join(dataDir, "session.txt"),
+    })
+}
 
 globalThis[CLI_FAIL_ON_PROMPT_SYMBOL] = true
 globalThis[CLI_RUNTIME_OVERRIDE_SYMBOL] = {

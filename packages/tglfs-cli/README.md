@@ -5,8 +5,10 @@
 ## Install
 
 ```sh
-npm install -g tglfs
+npm install -g tglfs@latest
 ```
+
+Version 0.1.3 publishes the current resumable protocol-v5 uploader, including indexed, browsable tar archives. The older npm release 0.1.2 wrote unversioned v1 file cards, so its tar batches appeared as **upgradable** in the web app. Run `tglfs --version` to check the installed release. Updating the CLI does not change existing uploads; use the web app's explicit **Upgrade archive** action for those.
 
 ## Commands
 

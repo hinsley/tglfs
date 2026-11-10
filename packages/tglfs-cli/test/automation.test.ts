@@ -47,7 +47,7 @@ test("search --json prints an empty JSON result set instead of silence", () => {
     assert.deepEqual(payload.results, [])
 })
 
-test("upload --json defaults to an unencrypted upload and returns a verifiable success payload", async () => {
+test("upload --json defaults to an empty password and returns a verifiable success payload", async () => {
     const tempDir = await mkdtemp(resolve(tmpdir(), "tglfs-cli-upload-"))
     const inputPath = resolve(tempDir, "file.png")
     await writeFile(inputPath, "fixture")
@@ -67,9 +67,9 @@ test("upload --json defaults to an unencrypted upload and returns a verifiable s
 })
 
 test("login --json fails loudly with a nonzero exit code when required input is missing", async () => {
-    const tempHome = await mkdtemp(resolve(tmpdir(), "tglfs-cli-home-"))
+    const tempStore = await mkdtemp(resolve(tmpdir(), "tglfs-cli-login-store-"))
     const result = runCli(["login", "--json"], {
-        HOME: tempHome,
+        TGLFS_TEST_STORE_ROOT: tempStore,
         TGLFS_PHONE: "",
         TGLFS_LOGIN_CODE: "",
         TGLFS_2FA_PASSWORD: "",

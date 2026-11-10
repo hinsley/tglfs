@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { realpathSync } from "node:fs"
+import { readFileSync, realpathSync } from "node:fs"
 import { access } from "node:fs/promises"
 import process from "node:process"
 import { fileURLToPath } from "node:url"
@@ -57,6 +57,8 @@ import { uploadPaths } from "./upload.js"
 import { createConvertWebmCommand } from "./convert-webm-cli.js"
 import { createUpgradeMediaPreviewCommand } from "./media-upgrade-cli.js"
 import { createMakePreviewableCommand } from "./make-previewable-cli.js"
+
+const CLI_VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version
 
 type JsonFlag = {
     json?: boolean
@@ -267,6 +269,7 @@ function createProgram(runtime = getCliRuntime()) {
 
     program
         .name("tglfs")
+        .version(CLI_VERSION)
         .description(
             "Authenticate with Telegram, manage TGLFS file cards, transfer files between peers, and download current or legacy TGLFS files by UFID.",
         )
