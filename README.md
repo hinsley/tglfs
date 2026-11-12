@@ -22,6 +22,14 @@ Select an indexed tar archive and choose **Preview** to browse its folders and o
 
 Existing file-card versions 1–4 remain readable. New file uploads use v5; explicit upgrades of older tar archives retain their established v4 format and preserve the source. Unknown future protocol versions are refused. Upgrading does not alter folder or sync protocols. Already-compressed archives such as `.tar.gz`, `.tgz`, ZIP, RAR, and 7z retain ordinary-file behavior. See [the storage protocol](doc/file_storage.md) for compatibility, resource limits, and recovery details.
 
+## Operation queue
+
+Uploads and browser metadata actions share a serial queue. New actions can be staged while work runs; the tray shows progress, estimated remaining time when measurable, and Telegram cooldowns. Pause stops at an RPC boundary; cancelling queued items does not undo completed work. Stale staged edits are rejected instead of overwriting newer records.
+
+The client spaces mutations, persists cooldown deadlines, and honors Telegram FloodWait/SlowMode responses. Unknown failures stop mutation dispatch rather than replay an operation whose outcome is uncertain. Pending metadata jobs stay in memory and are not replayed after reload; interrupted uploads retain their existing explicit resume workflow. Only one web tab may connect to the stored session at once. CLI processes coordinate their own account session and pacing locks; separate devices and applications are not globally coordinated. Rate limiting reduces bursts but cannot guarantee Telegram account availability.
+
+This changes no Telegram file, folder, or sync record formats. Local pacing records are explicitly versioned and unknown versions fail closed.
+
 ## Dependencies
 
 - All dependencies are managed via NPM and installed automatically. You do not need to manually install `telethon` or any Python encryption packages. This project uses the JavaScript `telegram` package (GramJS) and browser WebCrypto for encryption.

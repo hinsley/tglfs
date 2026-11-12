@@ -1,3 +1,5 @@
+import { installBrowserOperationQueue, acquireBrowserSessionLease } from "./telegramOperationQueue"
+export { getTelegramOperationQueue } from "../packages/tglfs-cli/src/shared/telegram-operation-queue"
 import { uploadResumableFile } from "../packages/tglfs-cli/src/shared/block-transfer"
 import { hashBytes, jsonBytes } from "../packages/tglfs-cli/src/shared/block-format"
 /**
@@ -2783,11 +2785,13 @@ function configureTelegramSessionForWebDc(
 }
 
 function createBrowserTelegramClient(config: Config.Config, storeSession: MutableTelegramStoreSession): TelegramClient {
-    return new TelegramClientCtor(storeSession as any, config.apiId, config.apiHash, {
+    const client = new TelegramClientCtor(storeSession as any, config.apiId, config.apiHash, {
         connectionRetries: 5,
+        floodSleepThreshold: 0,
         useWSS: true,
         networkSocket: PromisedWebSocketsCtor as any,
     })
+    return client
 }
 
 async function connectTelegramClientWithTimeout(client: TelegramClient, host: string): Promise<void> {
@@ -2914,14 +2918,37 @@ async function connectWithStoredSession(
     // Load the previous session (persisted in localStorage under ./tglfs.session:*).
     const storeSession = new StoreSession("./tglfs.session")
     // GramJS types StoreSession's DC fields as accessors; the fallback only needs this structural subset.
-    const client = await startTelegramClientWithWebDcFallback(
-        config,
-        storeSession as unknown as MutableTelegramStoreSession,
-        authenticate,
-        signal,
-    )
-    console.log("You are now logged in!")
-    return client
+    const releaseSession = await acquireBrowserSessionLease()
+    try {
+        const client = await startTelegramClientWithWebDcFallback(
+            config,
+            storeSession as unknown as MutableTelegramStoreSession,
+            authenticate,
+            signal,
+        )
+        // Preserve GramJS login/DC migration retries until authentication completes.
+        installBrowserOperationQueue(client, config.phone)
+        const disconnect = client.disconnect.bind(client)
+        const connect = client.connect.bind(client)
+        let lease: (() => void) | null = releaseSession
+        let connecting: Promise<boolean> | null = null
+        client.disconnect = async () => {
+            await disconnect()
+            // Retain the lease if teardown fails: another tab must not reuse a live key.
+            lease?.(); lease = null
+        }
+        client.connect = () => {
+            if (connecting) return connecting
+            connecting = (async () => {
+                if (!lease) lease = await acquireBrowserSessionLease()
+                // On a failed connect keep ownership until confirmed disconnect or tab close.
+                return await connect()
+            })().finally(() => { connecting = null })
+            return connecting
+        }
+        console.log("You are now logged in!")
+        return client
+    } catch (error) { releaseSession(); throw error }
 }
 
 /**

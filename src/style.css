@@ -7484,3 +7484,9 @@ body.file-browser-active {
     .archive-preview-columns { grid-template-columns: 1fr; }
     .archive-entry-list { max-height: 30vh; }
 }
+
+/* Compact operation controls; queue work remains independent of browser navigation. */
+.fx-tray-queue-controls { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border, #d1d5db); font-size: 12px; }
+.fx-tray-queue-controls[hidden] { display: none; }
+.fx-tray-queue-status { margin-right: auto; color: var(--text-muted, #64748b); }
+.fx-tray-pause, .fx-tray-cancel-queued { white-space: nowrap; }

@@ -94,6 +94,7 @@ export function createQuietTelegramClient(session: StringSession, apiId: number,
     const logger = new Logger(LogLevel.NONE)
     return new TelegramClient(session, apiId, apiHash, {
         connectionRetries: 5,
+        floodSleepThreshold: 0,
         baseLogger: logger,
     })
 }

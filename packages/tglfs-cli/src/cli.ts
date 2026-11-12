@@ -279,7 +279,7 @@ function createProgram(runtime = getCliRuntime()) {
         .addHelpCommand("help [command]", "display help for command")
         .addHelpText(
             "after",
-            `\nStorage paths:\n  config: ${storePaths.configFile}\n  session: ${storePaths.sessionFile}\n`,
+            `\nMutations are queued; interactive progress is shown on stderr.\nStorage paths:\n  config: ${storePaths.configFile}\n  session: ${storePaths.sessionFile}\n`,
         )
 
     program.addCommand(createMakePreviewableCommand())

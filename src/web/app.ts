@@ -1,8 +1,8 @@
 import "./polyfills"
 import { hydrateIcons, icon } from "./icons"
 import { isCompactViewport, requestConfirm, showToast } from "./dialogs"
-import { begin as beginTransfer, type TransferHandle } from "./transfers"
-import { mountTransferTray } from "./transferTray"
+import { begin as beginTransfer, setQueuePaused, type TransferHandle } from "./transfers"
+import { mountTransferTray, bindTelegramOperationQueue } from "./transferTray"
 import { createQrLoginPanel } from "./qrLoginPanel"
 import { mountTransferAttention } from "./transferAttention"
 import { clearRecentItems } from "./recentItems"
@@ -842,6 +842,9 @@ function clearStoredSession() {
 }
 
 async function logout() {
+    // Finish already-authorized work before invalidating the session, even when paused.
+    setQueuePaused(false)
+    if (activeClient) (await getTelegramModule()).getTelegramOperationQueue(activeClient)?.resume()
     if (browserModulePromise) {
         // Signing out is an explicit "I'm done": write a delete still inside its undo window and let
         // in-flight writes finish while the session is still valid.
@@ -863,6 +866,7 @@ async function logout() {
         console.warn("Failed to disconnect Telegram client", error)
     }
 
+    bindTelegramOperationQueue(null)
     activeClient = null
     activeConfig = null
     pendingShareFiles = null
@@ -887,6 +891,7 @@ async function logout() {
 
 async function finalizeLogin(client: any, config: any, identity: LoginIdentity) {
     activeClient = client
+    bindTelegramOperationQueue((await getTelegramModule()).getTelegramOperationQueue(client) ?? null)
     activeConfig = config
     loginAbortController = null
     qrPanel.stop()

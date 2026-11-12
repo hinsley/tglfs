@@ -296,3 +296,13 @@ printf '%s\n' "$TGLFS_DOWNLOAD_PASSWORD" | tglfs download <ufid> --password-stdi
 ```
 
 Use `tglfs upgrade-media-preview <ufid>` to create a separate seekable copy of fragmented MP4 or WebM without changing the encoded video bytes. It streams the original into v5 authenticated blocks with an encrypted time index, keeps the original and its password, and refuses layouts that cannot be indexed safely. Use `make-previewable` or `convert-webm` for those layouts. The browser provides **Upgrade media preview** in its file actions.
+
+### Operation queue
+
+Authenticated CLI operations use one paced mutation lane per Telegram account. Bulk uploads, message edits, forwarding and deletions pass through the same lane, including sync commands. Telegram flood/slow-mode waits are honored before another mutation is attempted. The CLI shows a compact progress/countdown on interactive stderr; JSON stdout remains unchanged.
+
+Cooldown state is retained under the CLI data directory in `operation-queue/`; account names, file contents and queued request arguments are not stored there. Concurrent CLI processes using the same account share a lock and cooldown. This does not coordinate with another device or browser session. Keep one bulk writer active per account across devices.
+
+An interrupted process does not cause queued mutations to be replayed after restart. If the process dies while holding its lock, the next process stops and asks for the prior operation to be checked before the stale lock is removed. Reconcile potentially completed uploads or edits before rerunning them. A known Telegram rate-limit rejection can be retried after its wait; an uncertain network failure is not permission to repeat a send. Normal Ctrl-C exits the CLI, and no durable queued actions run in the background.
+
+No interval can guarantee that Telegram will never rate-limit an account. The queue uses server responses rather than trying to bypass restrictions. No Telegram file/folder protocol version is changed by this client-side scheduling layer.

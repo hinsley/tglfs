@@ -69,6 +69,7 @@ export type TransferSnapshot = {
 export type TransferEvent =
     | { type: "added" | "started" | "progress" | "finished" | "removed"; transfer: TransferSnapshot }
     | { type: "busy"; busy: boolean }
+    | { type: "queue"; paused: boolean }
 
 export type TransferListener = (event: TransferEvent) => void
 
@@ -127,6 +128,24 @@ export interface TransferHandle {
     fail(error: unknown): void
     /** Marks the transfer as cancelled (normally done automatically when the job throws after a cancel). */
     markCancelled(): void
+}
+
+let queuePaused = false
+
+/** Pause between high-level operations; the currently active operation may finish. */
+export function setQueuePaused(paused: boolean) {
+    queuePaused = paused
+    emit({ type: "queue", paused })
+    if (!paused) pump()
+}
+
+export function isQueuePaused() { return queuePaused }
+
+/** Cancel only work that has not started. Never interrupts a metadata transaction. */
+export function cancelQueued() {
+    for (const entry of [...entries]) {
+        if (entry.status === "queued") cancel(entry.id)
+    }
 }
 
 const MAX_FINISHED = 50
@@ -250,6 +269,7 @@ function syncBusy() {
 
 /** Starts the next queued transfer when the lane is free. */
 function pump() {
+    if (queuePaused) return
     if (entries.some((entry) => entry.queued && entry.status === "active")) return
     const next = entries.find((entry) => entry.queued && entry.status === "queued")
     if (!next) return
@@ -565,6 +585,7 @@ export function summarize(transfers: readonly TransferSnapshot[] = getTransfers(
 /** Test hook: resets all state and optionally swaps the clock. */
 export function __resetTransfersForTests(clock?: () => number) {
     entries.length = 0
+    queuePaused = false
     listeners.clear()
     idCounter = 0
     batchCounter = 0

@@ -69,6 +69,13 @@ Initialize, push, pull, list, and inspect folder sync roots backed by TGLFS sync
 .TP
 .B help [command]
 Display help for a command.
+.SH OPERATION QUEUE
+Mutations are serialized and paced per account. Interactive stderr shows pending
+request counts and server wait countdowns; JSON stdout is unchanged.
+Concurrent CLI processes share a local account lock and cooldown. Other devices
+and browser sessions are not coordinated. Queued requests are not replayed after
+a process exits. An interrupted lock requires checking the previous operation
+before removing the stale lock.
 .SH FILES
 The CLI stores config and session files in OS-standard per-user app directories. Temporary MP4 source files are created only for inputs whose
 .B moov

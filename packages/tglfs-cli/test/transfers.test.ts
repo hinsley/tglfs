@@ -193,3 +193,37 @@ test("ETA is derived from phase throughput once enough time has elapsed", () => 
     assert.equal(transfer.snapshot().etaSeconds, 3)
     transfer.complete()
 })
+
+test("paused lane accepts staged operations without starting them", async () => {
+    Transfers.setQueuePaused(true)
+    const calls: string[] = []
+    const a = Transfers.enqueue({ direction: "task", name: "Rename A", queue: true }, async () => { calls.push("a") })
+    const b = Transfers.enqueue({ direction: "upload", name: "B" }, async () => { calls.push("b") })
+    await tick()
+    assert.deepEqual(calls, [])
+    assert.equal(Transfers.summarize().queuedCount, 2)
+    Transfers.setQueuePaused(false)
+    await Promise.all([a, b])
+    assert.deepEqual(calls, ["a", "b"])
+})
+
+test("pause finishes active work, staged work can be cancelled, newer work stays ordered", async () => {
+    const gate = deferred()
+    const calls: string[] = []
+    const a = Transfers.enqueue({ direction: "task", name: "Delete A", queue: true }, async () => {
+        calls.push("a")
+        await gate.promise
+    })
+    await tick()
+    Transfers.setQueuePaused(true)
+    const b = Transfers.enqueue({ direction: "task", name: "Rename B", queue: true }, async () => { calls.push("b") })
+    Transfers.cancelQueued()
+    const c = Transfers.enqueue({ direction: "task", name: "Rename C", queue: true }, async () => { calls.push("c") })
+    gate.resolve()
+    await Promise.all([a, b])
+    assert.deepEqual(calls, ["a"])
+    assert.equal(Transfers.getTransfers().some(t => t.name === "Rename C" && t.status === "queued"), true)
+    Transfers.setQueuePaused(false)
+    await c
+    assert.deepEqual(calls, ["a", "c"])
+})

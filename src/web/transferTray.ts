@@ -4,6 +4,9 @@ import { isCompactViewport, showToast } from "./dialogs"
 import { fileKindForName, fileKindIcon, icon } from "./icons"
 import {
     cancel,
+    cancelQueued,
+    isQueuePaused,
+    setQueuePaused,
     clearFinished,
     getTransfers,
     hasPendingTransfers,
@@ -12,6 +15,39 @@ import {
     type TransferSnapshot,
     type TransferSummary,
 } from "./transfers"
+
+type OperationQueueSnapshot = {
+    pending: number
+    running: boolean | number
+    waitUntil: number
+    paused: boolean
+    completed: number
+    failed: number
+    activeLabel: string | null
+}
+type OperationQueueController = {
+    snapshot(): OperationQueueSnapshot
+    subscribe(listener: (snapshot: OperationQueueSnapshot) => void): () => void
+    pause(): void
+    resume(): void
+}
+let operationQueue: OperationQueueController | null = null
+let unsubscribeOperationQueue: (() => void) | null = null
+let queueTick: ReturnType<typeof setInterval> | null = null
+
+/** Bind only the signed-in account; does not expose file names/credentials in storage. */
+export function bindTelegramOperationQueue(queue: OperationQueueController | null) {
+    unsubscribeOperationQueue?.()
+    if (queueTick) clearInterval(queueTick)
+    operationQueue = queue
+    unsubscribeOperationQueue = queue?.subscribe(() => scheduleRender()) ?? null
+    queueTick = queue ? setInterval(() => {
+        const state = queue.snapshot()
+        if (state.running || state.pending || state.waitUntil > Date.now()) scheduleRender()
+    }, 1000) : null
+    setQueuePaused(false)
+    scheduleRender()
+}
 
 const RING_RADIUS = 15
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
@@ -34,6 +70,9 @@ type TrayElements = {
     foot: HTMLElement
     footInfo: HTMLElement
     clear: HTMLButtonElement
+    pause: HTMLButtonElement
+    cancelQueued: HTMLButtonElement
+    queueStatus: HTMLElement
     live: HTMLElement
     scrim: HTMLElement
 }
@@ -99,7 +138,7 @@ export function describeTransferStatus(transfer: TransferSnapshot): string {
             if (transfer.cancelRequested) return "Cancelling…"
             if (transfer.phase !== null) {
                 if (transfer.total <= 0) return transfer.phase
-                if (transfer.unit === "items") return `${transfer.phase} · ${transfer.bytes} of ${transfer.total}`
+                if (transfer.unit === "items") return `${transfer.phase} · ${transfer.bytes} of ${transfer.total}${transfer.etaSeconds !== null ? ` · ${formatTransferEta(transfer.etaSeconds)}` : ""}`
                 return `${transfer.phase} · ${percent(transfer.bytes / transfer.total)}`
             }
             if (transfer.total <= 0) return "Starting…"
@@ -176,7 +215,7 @@ function build(): TrayElements {
     root.hidden = true
     root.innerHTML = `
         <div class="fx-tray-scrim" data-tray-scrim></div>
-        <section class="fx-tray-panel" role="region" aria-label="Transfers">
+        <section class="fx-tray-panel" role="region" aria-label="Operations">
             <div class="fx-tray-grip" aria-hidden="true"></div>
             <header class="fx-tray-head">
                 <button type="button" class="fx-tray-summary" aria-expanded="false" aria-controls="transferTrayBody">
@@ -198,6 +237,11 @@ function build(): TrayElements {
                 <button type="button" class="fx-icon-btn fx-tray-close" aria-label="Close transfers" title="Close">${icon("close")}</button>
             </header>
             <div class="fx-tray-meter" aria-hidden="true"><div class="fx-tray-meter-fill"></div></div>
+            <div class="fx-tray-queue-controls">
+                <span class="fx-tray-queue-status" role="status"></span>
+                <button type="button" class="fx-link fx-tray-pause">Pause</button>
+                <button type="button" class="fx-link fx-tray-cancel-queued">Cancel queued</button>
+            </div>
             <div class="fx-tray-notices" data-tray-notices></div>
             <div class="fx-tray-body" id="transferTrayBody">
                 <div class="fx-tray-body-inner">
@@ -231,6 +275,9 @@ function build(): TrayElements {
         foot: q<HTMLElement>(".fx-tray-foot"),
         footInfo: q<HTMLElement>(".fx-tray-foot-info"),
         clear: q<HTMLButtonElement>(".fx-tray-clear"),
+        pause: q<HTMLButtonElement>(".fx-tray-pause"),
+        cancelQueued: q<HTMLButtonElement>(".fx-tray-cancel-queued"),
+        queueStatus: q<HTMLElement>(".fx-tray-queue-status"),
         live: q<HTMLElement>("[data-tray-live]"),
         scrim: q<HTMLElement>("[data-tray-scrim]"),
     }
@@ -349,7 +396,10 @@ function render() {
     if (!ui) return
     const transfers = getTransfers()
     const summary = summarize(transfers)
-    const visible = transfers.length > 0
+    const operation = operationQueue?.snapshot()
+    const operationBusy = !!operation && (!!operation.running || operation.pending > 0)
+    const paused = isQueuePaused() || !!operation?.paused
+    const visible = transfers.length > 0 || operationBusy
     ui.root.hidden = !visible
     document.body.classList.toggle("fx-tray-visible", visible)
     if (!visible) {
@@ -376,22 +426,41 @@ function render() {
 
     // Header.
     const header = describeHeader(summary, transfers)
+    const waitSeconds = operation ? Math.max(0, Math.ceil((operation.waitUntil - Date.now()) / 1000)) : 0
+    if (paused && (summary.busy || operationBusy)) {
+        header.title = "Paused"
+        header.sub = `${summary.queuedCount} queued`
+    } else if (waitSeconds > 0 && operationBusy) {
+        header.sub = `Waiting · ${formatTransferEta(waitSeconds)}`
+    } else if (operationBusy && !summary.busy) {
+        header.title = "Working"
+        header.sub = operation?.activeLabel || `${operation?.pending} queued`
+    }
+    setText(ui.pause, paused ? "Resume" : "Pause")
+    ui.pause.setAttribute("aria-pressed", String(paused))
+    ui.pause.hidden = !summary.busy && !operationBusy && !paused
+    ui.cancelQueued.hidden = summary.queuedCount === 0
+    setText(ui.queueStatus, waitSeconds > 0 && operationBusy
+        ? `Waiting · ${formatTransferEta(waitSeconds)}`
+        : paused ? "Paused" : summary.queuedCount > 0 ? `${summary.queuedCount} queued` : "")
+    ui.queueStatus.parentElement!.hidden = ui.pause.hidden && ui.cancelQueued.hidden && !ui.queueStatus.textContent
     setText(ui.title, header.title)
     setText(ui.sub, header.sub)
     ui.sub.hidden = !header.sub
+    if (operationBusy) header.tone = "busy"
     ui.root.dataset.tone = header.tone
     ui.ring.dataset.tone = header.tone
     const ringFraction = header.tone === "busy" ? summary.fraction : 1
     ui.ringArc.style.strokeDashoffset = String(RING_CIRCUMFERENCE * (1 - ringFraction))
     const ringIcon = header.tone === "busy"
-        ? summary.active?.direction === "download" ? "arrowDown" : summary.active?.direction === "upload" ? "arrowUp" : summary.tasks.length ? "wrench" : "arrowUp"
+        ? summary.active?.direction === "download" ? "arrowDown" : summary.active?.direction === "upload" ? "arrowUp" : transfers.some(transfer => transfer.direction === "task") ? "wrench" : "arrowUp"
         : header.tone === "error" || header.tone === "warning" ? "alert" : header.tone === "success" ? "check" : "ban"
     if (ringIcon !== lastRingIcon) {
         lastRingIcon = ringIcon
         ui.ringIcon.innerHTML = icon(ringIcon)
     }
     ui.meterFill.style.transform = `scaleX(${header.tone === "busy" ? summary.fraction : 1})`
-    ui.close.hidden = summary.busy
+    ui.close.hidden = summary.busy || operationBusy
 
     // Rows (keyed patching keeps focus/hover stable while progress streams in).
     const seen = new Set<string>()
@@ -479,6 +548,14 @@ export function mountTransferTray() {
         clearFinished()
     })
     ui.clear.addEventListener("click", () => clearFinished())
+    ui.pause.addEventListener("click", () => {
+        const paused = isQueuePaused() || !!operationQueue?.snapshot().paused
+        setQueuePaused(!paused)
+        if (paused) operationQueue?.resume()
+        else operationQueue?.pause()
+        scheduleRender()
+    })
+    ui.cancelQueued.addEventListener("click", () => cancelQueued())
     ui.list.addEventListener("click", async (event) => {
         const target = event.target as HTMLElement
         const row = target.closest<HTMLElement>(".fx-tray-row")

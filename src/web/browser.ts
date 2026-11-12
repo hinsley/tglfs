@@ -1,5 +1,7 @@
 import { isBrowsableArchive } from "../../packages/tglfs-cli/src/shared/block-format"
 import * as Config from "../config"
+import * as Transfers from "./transfers"
+import { assertQueuedRevision } from "./queuedRevision"
 import {
     formatFileCardDate,
     formatFileCardSize,
@@ -1912,19 +1914,19 @@ async function createFolderInCurrentLocation(client: any) {
     }))
     if (!name) return
     void flushPendingDelete()
-    await runExclusiveMutation(() => createFolderNamed(client, name))
+    const parent = state.currentFolder
+    await runExclusiveMutation(() => createFolderNamed(client, name, parent), `Create ${name}`)
 }
 
-async function createFolderNamed(client: any, name: string) {
+async function createFolderNamed(client: any, name: string, parent = state.currentFolder) {
     const now = new Date().toISOString()
-    const parent = state.currentFolder
     if (!parent && await topLevelFolderNameExists(client, name)) {
         showUfidToast(`"${name}" already exists here`)
         return
     }
 
     const parentManifestRecord = parent ? await getFolderManifest(client, parent.data.folderId) : null
-    const parentManifest = parent ? (parentManifestRecord?.data ?? currentFolderManifestFallback(now)) : null
+    const parentManifest = parent ? (parentManifestRecord?.data ?? createTglfsFolderManifest({ folderId: parent.data.folderId, rootId: parent.data.rootId ?? parent.data.folderId, path: parent.data.path, now })) : null
     if (parentManifest && !assertFolderNameAvailable(name, activeManifestEntryNames(parentManifest))) {
         return
     }
@@ -2466,8 +2468,35 @@ const IS_APPLE_PLATFORM = typeof navigator !== "undefined" && /Mac|iPhone|iPad|i
 const browserMutations = createMutationQueue()
 
 /** Serializes Telegram mutations started from the browser. Never nest calls (that would deadlock). */
-function runExclusiveMutation<T>(task: () => Promise<T>): Promise<T> {
-    return browserMutations.run(task)
+function runExclusiveMutation<T>(task: (progress: Transfers.TransferHandle) => Promise<T>, name = "Updating files", total = 1, targets: BrowserEntry[] = []): Promise<T> {
+    // Reserve the visible queue position immediately, before any async work. Staged actions
+    // retain the identities captured by their caller and never reread the current selection.
+    const revisions = targets.filter(entry => isFileEntry(entry) || isFolderEntry(entry)).map(entry => ({ entry, data: JSON.stringify(entry.data) }))
+    const progress = Transfers.begin({ direction: "task", name, queue: true, unit: "items" })
+    progress.update({ total })
+    return browserMutations.run(async () => {
+        try {
+            await progress.ready
+            progress.throwIfCancelled()
+            // A metadata transaction may span several RPCs. Allow queued cancellation,
+            // but don't present active cancellation as an atomic rollback.
+            progress.update({ cancellable: false })
+            for (const revision of revisions) {
+                const entry = revision.entry
+                const current = isFileEntry(entry)
+                    ? await getFileCardByUfid(activeBrowserClient, entry.data.ufid)
+                    : isFolderEntry(entry) ? await getFolderRecord(activeBrowserClient, entry.data.folderId) : null
+                assertQueuedRevision(revision.data, current?.data)
+            }
+            const result = await task(progress)
+            progress.update({ bytes: total })
+            progress.complete()
+            return result
+        } catch (error) {
+            progress.fail(error)
+            throw error
+        }
+    })
 }
 
 type UndoOffer = {
@@ -2643,22 +2672,25 @@ function commitPendingDelete(pending: PendingDelete): Promise<void> {
     if (pendingDelete === pending) pendingDelete = null
     const files = pending.entries.filter(isFileEntry)
     const folders = pending.entries.filter(isFolderEntry)
-    pending.commit = runExclusiveMutation(async () => {
+    pending.commit = runExclusiveMutation(async (progress) => {
+        let completed = 0
         const client = pending.client
         for (const file of files) {
             await deleteFileCard(client, file.msgId, file.data)
+            progress.update({ bytes: ++completed })
         }
         const now = new Date().toISOString()
         for (const folder of folders) {
             const record = await resolveFolderRecordForMutation(client, folder)
-            if (!record) continue
+            if (!record) { progress.update({ bytes: ++completed }); continue }
             await tombstoneFolderInParentManifest(client, record, now)
             await tombstoneFolderTree(client, record, now)
+            progress.update({ bytes: ++completed })
         }
         window.dispatchEvent(new Event(STORAGE_CHANGED_EVENT))
         // Only now (not during the undo window) do the deleted items' local stars and tags go away.
         Labels.forgetLabels(pending.entries.map(entryLabelKey).filter((key): key is string => !!key))
-    }).catch(async (error) => {
+    }, `Delete ${pending.entries.length} ${pending.entries.length === 1 ? "item" : "items"}`, pending.entries.length, pending.entries).catch(async (error) => {
         console.error("Deferred delete failed", error)
         for (const id of pending.entryIds) hiddenEntryIds.delete(id)
         showUfidToast(`Couldn't delete ${describeEntries(pending.entries)}: ${errorText(error)}`, { tone: "error", durationMs: 7000 })
@@ -2682,7 +2714,7 @@ function hasUnsavedBrowserWork() {
 /** Commits a pending delete and waits for queued browser writes (used before signing out). */
 export async function settleBrowserMutations() {
     await flushPendingDelete()
-    await runExclusiveMutation(async () => undefined)
+    await browserMutations.run(async () => undefined)
     closeActionToast("dismissed")
 }
 
@@ -2721,8 +2753,8 @@ async function moveEntriesWithUndo(entries: BrowserEntry[], destination: MoveDes
     let moved: MoveResult
     try {
         moved = await runExclusiveMutation(() => destination.kind === "root"
-            ? moveEntriesToRootInSinglePass(client, movableEntries, now)
-            : moveEntriesToFolderInSinglePass(client, movableEntries, destination.record, now))
+            ? moveEntriesToRootInSinglePass(client, movableEntries, now, { fileSourceFolderId: fromFolderId })
+            : moveEntriesToFolderInSinglePass(client, movableEntries, destination.record, now, { fileSourceFolderId: fromFolderId }), `Move ${movableEntries.length} ${movableEntries.length === 1 ? "item" : "items"}`, 1, movableEntries)
     } catch (error) {
         console.error(error)
         showUfidToast(`Move to ${destinationName} failed`, { tone: "error", durationMs: 5000 })
@@ -2844,7 +2876,7 @@ async function renameEntryTo(entry: BrowserEntry, requestedName: string, options
         void flushPendingDelete()
         let renamed = false
         try {
-            renamed = await runExclusiveMutation(() => renameFolderTo(client, entry, newName))
+            renamed = await runExclusiveMutation(() => renameFolderTo(client, entry, newName), `Rename ${oldName}`, 1, [entry])
         } catch (error) {
             console.error(error)
             showUfidToast(`Rename failed: ${errorText(error)}`, { tone: "error", durationMs: 5000 })
@@ -2862,7 +2894,7 @@ async function renameEntryTo(entry: BrowserEntry, requestedName: string, options
     if (!newName || newName === oldName) return false
     void flushPendingDelete()
     try {
-        await runExclusiveMutation(() => renameFileCard(client, entry.msgId, "me", entry.data, newName))
+        await runExclusiveMutation(() => renameFileCard(client, entry.msgId, "me", entry.data, newName), `Rename ${oldName}`, 1, [entry])
     } catch (error) {
         console.error(error)
         showUfidToast(`Rename failed: ${errorText(error)}`, { tone: "error", durationMs: 5000 })

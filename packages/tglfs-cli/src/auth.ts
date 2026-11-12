@@ -2,6 +2,7 @@ import type { TelegramClient } from "telegram/client/TelegramClient.js"
 import type { StringSession } from "telegram/sessions/StringSession.js"
 
 import { CliError, EXIT_CODES } from "./errors.js"
+import { installCliOperationQueue, disposeCliOperationQueue, acquireCliSessionLock } from "./operation-queue.js"
 import { createQuietTelegramClient, createStringSession } from "./gramjs.js"
 import { isInteractiveSession, promptPassword, promptText, readTrimmedStdin } from "./interactive.js"
 import { BUNDLED_CHUNK_SIZE } from "./shared/constants.js"
@@ -76,6 +77,8 @@ function summarizeMe(me: Awaited<ReturnType<TelegramClient["getMe"]>>): Telegram
     }
 }
 
+const sessionReleases = new WeakMap<TelegramClient, () => Promise<void>>()
+
 export async function connectAuthorizedClient() {
     const config = await loadConfig()
     if (!config) {
@@ -95,28 +98,41 @@ export async function connectAuthorizedClient() {
         )
     }
 
-    const session = createStringSession(sessionString)
-    const client = createQuietTelegramClient(session, config.apiId, config.apiHash)
-    await client.connect()
-    const authorized = await client.checkAuthorization()
-    if (!authorized) {
-        await client.disconnect().catch(() => {})
-        throw new CliError(
-            "missing_auth",
-            "The saved Telegram session is not authorized. Run `tglfs login` again.",
-            EXIT_CODES.MISSING_AUTH,
-        )
+    const release = await acquireCliSessionLock(config.phone)
+    let client: TelegramClient | undefined
+    try {
+        const session = createStringSession(sessionString)
+        client = createQuietTelegramClient(session, config.apiId, config.apiHash)
+        await client.connect()
+        const authorized = await client.checkAuthorization()
+        if (!authorized) {
+            throw new CliError(
+                "missing_auth",
+                "The saved Telegram session is not authorized. Run `tglfs login` again.",
+                EXIT_CODES.MISSING_AUTH,
+            )
+        }
+        installCliOperationQueue(client, config.phone)
+        sessionReleases.set(client, release)
+        return { client, config, session }
+    } catch (error) {
+        await client?.destroy().catch(() => {})
+        await release()
+        throw error
     }
-
-    return { client, config, session }
 }
 
 export async function persistAndDisconnectClient(client: TelegramClient, session: StringSession) {
-    const sessionString = session.save()
-    if (sessionString.trim() !== "") {
-        await saveSessionString(sessionString)
+    try {
+        const sessionString = session.save()
+        if (sessionString.trim() !== "") await saveSessionString(sessionString)
+    } finally {
+        try { await client.destroy() } finally {
+            disposeCliOperationQueue(client)
+            await sessionReleases.get(client)?.()
+            sessionReleases.delete(client)
+        }
     }
-    await client.destroy()
 }
 
 export async function login(options: LoginOptions) {
@@ -160,6 +176,7 @@ export async function login(options: LoginOptions) {
         return sharedStdinValue
     }
 
+    const release = await acquireCliSessionLock(phone)
     try {
         await client.start({
             phoneNumber: phone,
@@ -230,6 +247,7 @@ export async function login(options: LoginOptions) {
         }
     } finally {
         await client.destroy().catch(() => {})
+        await release()
     }
 }
 
@@ -264,6 +282,7 @@ export async function status() {
 
     const session = createStringSession(sessionString)
     const client = createQuietTelegramClient(session, config.apiId, config.apiHash)
+    const release = await acquireCliSessionLock(config.phone)
 
     try {
         await client.connect()
@@ -277,6 +296,7 @@ export async function status() {
         result.error = error instanceof Error ? error.message : String(error)
     } finally {
         await client.destroy().catch(() => {})
+        await release()
     }
 
     return result
