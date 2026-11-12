@@ -5,6 +5,7 @@ import { assertQueuedRevision } from "./queuedRevision"
 import {
     formatFileCardDate,
     formatFileCardSize,
+    type FileCardRecord,
 } from "../../packages/tglfs-cli/src/shared/file-cards"
 import {
     countDirectoryEntries,
@@ -473,7 +474,13 @@ function getEntrySize(entry: BrowserEntry) {
 }
 
 function getEntryDate(entry: BrowserEntry) {
-    return entry.date
+    // Folder records may be rewritten/imported by any client. Creation metadata
+    // identifies the folder's arrival, not the replacement Telegram message.
+    if (entry.kind === "folder") {
+        const created = Date.parse(entry.data.createdAt)
+        if (Number.isFinite(created)) return created / 1000
+    }
+    return Number.isFinite(entry.date) ? entry.date : 0
 }
 
 function getEntryPath(entry: BrowserEntry) {
@@ -523,13 +530,13 @@ function entryLabelKey(entry: BrowserEntry): string | null {
 
 function applySort(items: BrowserEntry[]) {
     items.sort((a, b) => {
-        // Folders always come first, like every desktop file manager.
-        if (isFolderEntry(a) !== isFolderEntry(b)) return isFolderEntry(a) ? -1 : 1
+        // Date ordering is chronological across files and folders.
+        if (state.sort !== "date_desc" && state.sort !== "date_asc" && isFolderEntry(a) !== isFolderEntry(b)) return isFolderEntry(a) ? -1 : 1
         switch (state.sort) {
             case "date_desc":
-                return getEntryDate(b) - getEntryDate(a)
+                return getEntryDate(b) - getEntryDate(a) || ((b.kind !== "missing-file" ? b.msgId : 0) - (a.kind !== "missing-file" ? a.msgId : 0))
             case "date_asc":
-                return getEntryDate(a) - getEntryDate(b)
+                return getEntryDate(a) - getEntryDate(b) || ((a.kind !== "missing-file" ? a.msgId : 0) - (b.kind !== "missing-file" ? b.msgId : 0))
             case "name_asc":
                 return getEntryName(a).localeCompare(getEntryName(b), undefined, { numeric: true, sensitivity: "base" })
             case "name_desc":
@@ -1750,6 +1757,48 @@ async function loadDirectoryPage(
     }
 }
 
+/** Date order must be applied before pagination, across both independent searches.
+ * Telegram search is message-ID ordered, which is not folder creation order after
+ * metadata is rewritten. A complete listing avoids hiding the newest item on a later page.
+ */
+async function loadChronologicalPages(client: any, parentFolderId: string | undefined, refreshSequence: number): Promise<BrowserEntry[] | null> {
+    const items: BrowserEntry[] = []
+    const seen = new Set<string>()
+    const query = state.query
+    for (const kind of ["folder", "file"] as const) {
+        let offsetId: number | undefined
+        for (;;) {
+            const options = { parentFolderId, query, limit: 100, offsetId }
+            const records = kind === "folder"
+                ? await listFolderRecords(client, options)
+                : await listFileCards(client, options)
+            if (refreshSequence !== browserRefreshSequence) return null
+            if (!records.length) break
+            for (const record of records) {
+                const entry = kind === "folder"
+                    ? folderEntryFromRecord(record as TglfsFolderRecord)
+                    : fileEntryFromRecord(record as FileCardRecord)
+                const key = entry.id
+                if (!seen.has(key)) { seen.add(key); items.push(entry) }
+            }
+            const next = records[records.length - 1].msgId
+            if (offsetId !== undefined && next >= offsetId) break
+            offsetId = next
+            // Probe again even after a short filtered page: external/older clients
+            // may have records that were excluded from this search batch.
+        }
+    }
+    const visible = withoutHiddenEntries(items)
+    applySort(visible)
+    state.pages = []
+    for (let i = 0; i < visible.length; i += state.pageSize) state.pages.push(visible.slice(i, i + state.pageSize))
+    if (!state.pages.length) state.pages.push([])
+    state.hasMore = false
+    state.totalItems = visible.length
+    state.totalPages = state.pages.length
+    return state.pages[0]
+}
+
 async function loadFirstPage(client: any, refreshSequence = browserRefreshSequence): Promise<BrowserEntry[] | null> {
     state.pages = []
     state.currentPage = 0
@@ -1762,6 +1811,9 @@ async function loadFirstPage(client: any, refreshSequence = browserRefreshSequen
     if (state.virtual) return await loadVirtualPage(client, state.virtual, refreshSequence)
     const parentFolderId = listingParentFolderId()
     if (!parentFolderId) locationResolver.clear()
+    if (state.sort === "date_desc" || state.sort === "date_asc") {
+        return await loadChronologicalPages(client, parentFolderId, refreshSequence)
+    }
     const countPromise = countDirectoryEntries(client, {
         parentFolderId,
         query: state.query,
@@ -3630,7 +3682,7 @@ function computeHistoryRows(mode: HistoryModeState): HistoryRow[] {
     }
 
     rows.sort((a, b) => {
-        if ((a.item.kind === "folder") !== (b.item.kind === "folder")) return a.item.kind === "folder" ? -1 : 1
+        if (state.sort !== "date_desc" && state.sort !== "date_asc" && (a.item.kind === "folder") !== (b.item.kind === "folder")) return a.item.kind === "folder" ? -1 : 1
         switch (state.sort) {
             case "date_desc":
                 return historyItemTime(b.item) - historyItemTime(a.item)
@@ -4984,8 +5036,9 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         writePreference(SORT_STORAGE_KEY, state.sort)
         if (historyMode) {
             renderHistoryListing()
-        } else if (state.pages[state.currentPage]) {
-            renderBrowser(state.pages[state.currentPage])
+        } else {
+            // Changing order changes page boundaries, not just the current page.
+            void refreshBrowser?.({ showLoading: true })
         }
     })
     document.getElementById("viewList")?.addEventListener("click", () => setViewMode("list"))
@@ -4995,7 +5048,6 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         if (historyMode) return
         if (state.currentPage > 0) {
             state.currentPage--
-            state.hasMore = state.currentPage < state.pages.length - 1 || state.hasMore
             renderBrowser(state.pages[state.currentPage])
             document.getElementById("browserContent")?.scrollTo({ top: 0 })
         }
@@ -5004,11 +5056,11 @@ export async function initFileBrowser(client: any, config: Config.Config) {
         if (historyMode) return
         if (state.currentPage < state.pages.length - 1 && state.pages[state.currentPage + 1]?.length) {
             state.currentPage++
-            state.hasMore = state.currentPage < state.pages.length - 1 || state.hasMore
             renderBrowser(state.pages[state.currentPage])
             document.getElementById("browserContent")?.scrollTo({ top: 0 })
             return
         }
+        if (!state.hasMore) return
         nextButton.disabled = true
         const items = await loadNextPage(activeBrowserClient ?? client)
         if (items.length > 0) {
